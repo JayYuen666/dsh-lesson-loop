@@ -1,0 +1,6 @@
+// lesson-loop/tsconfig.json —— 编译选项全部继承 @jayyuen666/dsh-plugin-shared/config/tsconfig.base.json，这里只留本包与基线不同的部分。
+{
+  "extends": "@jayyuen666/dsh-plugin-shared/config/tsconfig.base.json",
+  "include": ["host.ts", "lib/**/*.ts", "test/**/*.ts", "vitest.config.ts", "build-client.mjs"],
+  "exclude": ["test/client-*.test.ts"]
+}

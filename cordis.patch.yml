@@ -1,0 +1,12 @@
+# lesson-loop（2026-09-12）：自进化闭环总线 + 规则卡（人工升格）+ 复发/干净会话度量 + 衰减。
+#
+# 观察端（已接入）：danger-guard（FactGate/危险命令/密钥路径拒绝）、quality-gate
+# （门禁失败）、session-rescue（瞬时失败/max-tokens/未闭合待办）——三方都用
+# ctx.get('lessonLoop') 可选读，总线缺失只丢报告、绝不拖垮报告方。
+#
+# 组合包层：本文件由 package.json 的 dsh.bundle.patch 指向，随
+# `dsh plugin --profile web add/remove ./plugins/lesson-loop` 维护。
+# 行按裸包名引用本包（client-modules 只扫描裸包名条目的 dsh.client 声明）。
+- insert:
+    - id: lesson-loop
+      name: "@jayyuen666/dsh-lesson-loop"
