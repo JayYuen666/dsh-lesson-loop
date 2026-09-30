@@ -2,7 +2,7 @@
 //
 // 为什么值得一条测试（两个坏方向都不报错、只在线上发作）：发布形态下 host.js 躺在
 // node_modules 里被 dsh 载入——
-//   1) 内联：`@jayyuen666/dsh-plugin-shared/lib/http` 这类**子路径**说明符一旦被打进产物，shared 的
+//   1) 内联：`@jayyuen66/dsh-plugin-shared/lib/http` 这类**子路径**说明符一旦被打进产物，shared 的
 //      模块级状态就在每个插件里各复制一份；rolldown 的 external 字符串项是精确匹配，
 //      只列包名会漏掉子路径，故 build-host.mjs 按「包名段」判定（该坑已在脚本注释登记）。
 //   2) 残留：产物里只要还剩 `./lib/xxx.ts`，Node 载入即抛 ERR_UNSUPPORTED_NODE_MODULES_
@@ -47,11 +47,11 @@ describe("buildHost()", () => {
     );
     // 子路径说明符：external 字符串项匹配不到的那个坑
     assert.ok(
-      out.includes('from "@jayyuen666/dsh-plugin-shared/lib/http"'),
+      out.includes('from "@jayyuen66/dsh-plugin-shared/lib/http"'),
       "shared/http 必须外部化",
     );
     assert.ok(
-      out.includes('from "@jayyuen666/dsh-plugin-shared/lib/project-key"'),
+      out.includes('from "@jayyuen66/dsh-plugin-shared/lib/project-key"'),
       "shared/project-key 必须外部化（lib/lesson-store.ts 的 project 单源）",
     );
     assert.ok(
@@ -60,11 +60,11 @@ describe("buildHost()", () => {
     );
     assert.ok(!/^function brandString\(/mu.test(out), "产物不得内联 brandString 的函数体");
     assert.ok(
-      out.includes('from "@jayyuen666/dsh-plugin-shared/lib/record"'),
+      out.includes('from "@jayyuen66/dsh-plugin-shared/lib/record"'),
       "shared/record 必须外部化（SP-D 起 isRecord/fieldOf 是跨包单点，内联=每个插件各持一份）",
     );
     assert.ok(
-      out.includes('from "@jayyuen666/dsh-plugin-shared/lib/jsonl"'),
+      out.includes('from "@jayyuen66/dsh-plugin-shared/lib/jsonl"'),
       "shared/jsonl 必须外部化（对半收缩判据与 ctx-observe 同源；写盘与内部 catch 留本包）",
     );
   });
@@ -82,7 +82,7 @@ describe("闸门的外部化面（shared/lib/trust）", () => {
     // external 的字符串项是精确匹配，子路径一旦漏掉就把整份判据复制进本包产物（判据分叉的起点）。
     const out = await buildHost();
     assert.ok(
-      out.includes('from "@jayyuen666/dsh-plugin-shared/lib/trust"'),
+      out.includes('from "@jayyuen66/dsh-plugin-shared/lib/trust"'),
       "shared/trust 必须外部化",
     );
     assert.ok(!/^function guardTrust\(/mu.test(out), "产物不得内联 guardTrust 的函数体");

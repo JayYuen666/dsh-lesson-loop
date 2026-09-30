@@ -1,4 +1,4 @@
-# @jayyuen666/dsh-lesson-loop
+# @jayyuen66/dsh-lesson-loop
 
 [中文](#中文) · [English](#english)
 
@@ -8,7 +8,7 @@
 
 - dsh 的自进化闭环插件：守卫拒绝、门禁失败、异常续跑、人工差评经一条总线沉淀为项目教训与规则卡，已确认的规则在会话开始注回模型。
 - Host 半 `provide` 出 `lessonLoop` 服务（其他插件经 `ctx.get("lessonLoop")` 可选读），client 半是 web 设置卡（开关 + 规则评审台，`dsh.client` 声明 `platform: web`、`immediately: true`）。
-- 机器永不自动升格：候选规则只有人在卡片上 `arm` 才生效。运行期依赖只有 `@deepseek-ai/schemastery`（宿主 fork，公共 `schemastery` 没有 `.volatile()`）、`@deepseek-ai/dsh-home-paths`、`@jayyuen666/dsh-plugin-shared`；版本要求写在 `peerDependencies` 与 `engines.dsh`（同为 `>=0.2.0-rc.2`）。
+- 机器永不自动升格：候选规则只有人在卡片上 `arm` 才生效。运行期依赖只有 `@deepseek-ai/schemastery`（宿主 fork，公共 `schemastery` 没有 `.volatile()`）、`@deepseek-ai/dsh-home-paths`、`@jayyuen66/dsh-plugin-shared`；版本要求写在 `peerDependencies` 与 `engines.dsh`（同为 `>=0.2.0-rc.2`）。
 
 ### 自进化闭环的四个阶段
 
@@ -20,16 +20,14 @@
 ### 安装
 
 ```sh
-npm config --global @jayyuen666:registry=https://npm.pkg.github.com
-printf '//npm.pkg.github.com/:_authToken=<PAT:read:packages>\n' >> ~/.npmrc
-dsh plugin --profile web add @jayyuen666/dsh-lesson-loop
+dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 ```
 
-本包与运行期依赖 `@jayyuen666/dsh-plugin-shared` 都在 GitHub Packages 上，连读私有包同样要凭据，token 必须先配好再 `add`；卸载用 `dsh plugin --profile web remove @jayyuen666/dsh-lesson-loop`。
+本包与运行期依赖 `@jayyuen66/dsh-plugin-shared` 都在公共 npm 上，安装侧不需要凭据；卸载用 `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`。
 
 ### 在 dsh 里启用
 
-- 包内 `cordis.patch.yml`（由 `package.json` 的 `dsh.bundle.patch` 指向）里的注册行是 `- id: lesson-loop` + `name: "@jayyuen666/dsh-lesson-loop"`；必须按裸包名引用，client 半才会被装载。
+- 包内 `cordis.patch.yml`（由 `package.json` 的 `dsh.bundle.patch` 指向）里的注册行是 `- id: lesson-loop` + `name: "@jayyuen66/dsh-lesson-loop"`；必须按裸包名引用，client 半才会被装载。
   - `dsh plugin --profile web add/remove` 维护这一层，`dsh --profile web --dump-config` 可验证。
 - 部署默认可写在注册行的 `config:` 上，优先级为设置卡运行时值 > 行 `config` > 包内置默认，配置不合法时加载失败（响亮报错）。
 - `settings` 是唯一插件级硬依赖（`default.inject = ["settings"]`）；四条 `/_dsh/lesson-loop/*` 路由另挂在 `inject(["webServer"])` 的子 fiber 上（真实宿主上 webServer 比本条目晚到位约 1 秒，只在 apply 里 `ctx.get` 读一次就永不注册）。其余服务（`timer` / `commands` / `systemPrompt` / `llm`）可选读：缺位只让对应能力不注册，装载照跑。
@@ -48,7 +46,7 @@ dsh plugin --profile web add @jayyuen666/dsh-lesson-loop
   - session-rescue 报 `transient-failure` / `max-tokens` / `unfinished-turn`。
 - `factgate-deny` 与 `secret-path` 的签名折叠到类别级稳定键 `edit-before-factgate` / `edit-before-secret-path`，具体路径与命令留在证据的 `signature` 里。
   - 于是一条通用教训不再按文件碎成几十张卡。
-  - 调用方建议经 `@jayyuen666/dsh-plugin-shared/lib/lesson-bus` 的 `settleLessonCall`，同步抛错与异步拒绝归到同一个出口。
+  - 调用方建议经 `@jayyuen66/dsh-plugin-shared/lib/lesson-bus` 的 `settleLessonCall`，同步抛错与异步拒绝归到同一个出口。
 
 ### 设置项
 
@@ -116,7 +114,7 @@ dsh plugin --profile web add @jayyuen666/dsh-lesson-loop
 - A self-evolution loop plugin for dsh: guard denials, gate failures, abnormal resumptions and human negative feedback go through one bus, sink into project lessons and rule cards, and confirmed rules get injected back into the model at session start.
 - The host half `provide`s the `lessonLoop` service (other plugins read it optionally via `ctx.get("lessonLoop")`); the client half is a web settings card (switches + rule review desk, declared in `dsh.client` as `platform: web`, `immediately: true`).
 - A machine never promotes a rule: a candidate takes effect only after a human presses `arm` in the card.
-- Runtime dependencies are only `@deepseek-ai/schemastery` (the host's fork - public `schemastery` has no `.volatile()`), `@deepseek-ai/dsh-home-paths` and `@jayyuen666/dsh-plugin-shared`.
+- Runtime dependencies are only `@deepseek-ai/schemastery` (the host's fork - public `schemastery` has no `.volatile()`), `@deepseek-ai/dsh-home-paths` and `@jayyuen66/dsh-plugin-shared`.
   - The version requirement `>=0.2.0-rc.2` is written in both `peerDependencies` and `engines.dsh`.
 
 ### The four stages of the loop
@@ -129,16 +127,14 @@ dsh plugin --profile web add @jayyuen666/dsh-lesson-loop
 ### Install
 
 ```sh
-npm config --global @jayyuen666:registry=https://npm.pkg.github.com
-printf '//npm.pkg.github.com/:_authToken=<PAT:read:packages>\n' >> ~/.npmrc
-dsh plugin --profile web add @jayyuen666/dsh-lesson-loop
+dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 ```
 
-Both this package and its runtime dependency `@jayyuen666/dsh-plugin-shared` live on GitHub Packages, and reading private packages needs credentials too, so configure the token before `add`; remove it with `dsh plugin --profile web remove @jayyuen666/dsh-lesson-loop`.
+Both this package and its runtime dependency `@jayyuen66/dsh-plugin-shared` are on the public npm registry, so installs need no credentials; remove it with `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`.
 
 ### Enabling it in dsh
 
-- The in-package `cordis.patch.yml`, pointed at by `dsh.bundle.patch` in `package.json`, carries the registration line `- id: lesson-loop` + `name: "@jayyuen666/dsh-lesson-loop"`; the bare package name is what makes the client half load.
+- The in-package `cordis.patch.yml`, pointed at by `dsh.bundle.patch` in `package.json`, carries the registration line `- id: lesson-loop` + `name: "@jayyuen66/dsh-lesson-loop"`; the bare package name is what makes the client half load.
   - `dsh plugin --profile web add/remove` maintains that layer, and `dsh --profile web --dump-config` verifies it.
 - Deployment defaults may go on the registration line's `config:`; precedence is runtime value in the settings card > line `config` > built-in default, and invalid config fails the load loudly.
 - `settings` is the only plugin-level hard dependency (`default.inject = ["settings"]`). Every other service (`timer` / `commands` / `systemPrompt` / `llm`) is read optionally: a missing one only skips that capability, the plugin still loads.
@@ -158,7 +154,7 @@ Both this package and its runtime dependency `@jayyuen666/dsh-plugin-shared` liv
   - session-rescue reports `transient-failure` / `max-tokens` / `unfinished-turn`.
 - Signatures of `factgate-deny` and `secret-path` fold into the category-level stable keys `edit-before-factgate` / `edit-before-secret-path`, while the concrete path or command stays in the evidence `signature`.
   - One general lesson therefore no longer shatters into dozens of per-file cards.
-  - Callers should go through `settleLessonCall` from `@jayyuen666/dsh-plugin-shared/lib/lesson-bus`, which routes sync throws and async rejections to one exit.
+  - Callers should go through `settleLessonCall` from `@jayyuen66/dsh-plugin-shared/lib/lesson-bus`, which routes sync throws and async rejections to one exit.
 
 ### Settings
 

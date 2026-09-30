@@ -12,8 +12,8 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { isRecord } from "@jayyuen666/dsh-plugin-shared/lib/record";
-import { errorText } from "@jayyuen666/dsh-plugin-shared/lib/errors";
+import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 import { trimJsonl } from "./jsonl-fuse.ts";
 
 /** JSONL 单行容错解析：坏行/非对象 → null（供 readJsonl 计 bad）。 */

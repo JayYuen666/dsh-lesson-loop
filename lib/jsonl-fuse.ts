@@ -8,7 +8,7 @@
 // 分家之后这枚裁尾入口有了真实生产消费者（appendJsonl 每次追加前问它一次），不再只是测试面。
 
 import { readFileSync, statSync, writeFileSync } from "node:fs";
-import { shrinkJsonlTail } from "@jayyuen666/dsh-plugin-shared/lib/jsonl";
+import { shrinkJsonlTail } from "@jayyuen66/dsh-plugin-shared/lib/jsonl";
 
 /** 超限时按行对半收缩（判据在 shared/lib/jsonl.ts，与 ctx-observe 同源；单行超限保末行兜底）。
  *  错误出口留在这里吞掉：本包的承诺是"落库失败只日志、不抛穿宿主热路径"。 */

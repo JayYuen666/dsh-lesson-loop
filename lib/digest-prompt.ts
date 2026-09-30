@@ -14,7 +14,7 @@ import { fenceUntrusted } from "./prompt.ts";
 import type { NegativeFeedback } from "./negative-feedback.ts";
 import { fill } from "./messages.ts";
 import type { LessonLoopMessages } from "./messages.ts";
-import { fieldOf, isRecord } from "@jayyuen666/dsh-plugin-shared/lib/record";
+import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 /** 近期教训去重压背景（同 signature 只留最新一条 detail；全量文本）。 */
 export function lessonsBackground(

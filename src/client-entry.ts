@@ -31,7 +31,7 @@ import type { ConfigForm, ConfigFormSnapshot } from "@deepseek-ai/dsh-client-ui-
 import type { ConfigPageForm } from "@deepseek-ai/dsh-client-ui-plugin-manager/client";
 import { UI_MESSAGES } from "./ui-messages.ts";
 import type { LocaleNs, Translate } from "./ui-messages.ts";
-import { fieldOf, isRecord } from "@jayyuen666/dsh-plugin-shared/lib/record";
+import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 /** 本包 `NS` 的第三重身份：官方 locale 的命名空间（前两重 = loader 条目 id 与 settings
  *  命名空间 = `configForms.get(NS)` 的入参，见下面那段「两个不同的标识」）。这一重必须
@@ -56,7 +56,7 @@ const NS: LocaleNs = "lesson-loop";
 // 写成裸条目 id（`lesson-loop`）时 ledger 里没有这个键 → 插件页永不出卡。
 // 包名真源：`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`；
 // test/profile-bundle.ts 把真源读进测试，test/build-client.test.ts 的漂移针据此钉。
-const BUNDLE_PKG = "@jayyuen666/dsh-lesson-loop";
+const BUNDLE_PKG = "@jayyuen66/dsh-lesson-loop";
 
 const STATS_PATH = "/_dsh/lesson-loop/stats";
 const RULE_ACTION_PATH = "/_dsh/lesson-loop/rule-action";

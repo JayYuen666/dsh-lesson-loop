@@ -49,12 +49,12 @@ import type { SystemPrompt } from "@deepseek-ai/dsh-system-prompt";
 import type { TimerService } from "@deepseek-ai/cordis-plugin-timer";
 // 共享 webServer 样板：sendJson/queryParam/guardBody（跨域 + CSRF + body 上限）
 // 与 session-rescue/zvec-grep/ocr-review 的同名实现收敛到 shared，避免双份维护。
-import { sendJson, queryParam, guardBody } from "@jayyuen666/dsh-plugin-shared/lib/http";
+import { sendJson, queryParam, guardBody } from "@jayyuen66/dsh-plugin-shared/lib/http";
 // 信任闸门：四条路由的 handler 第一条语句都走它（Host 权威 → sec-fetch-site → Origin）。
-import { guardTrust } from "@jayyuen666/dsh-plugin-shared/lib/trust";
+import { guardTrust } from "@jayyuen66/dsh-plugin-shared/lib/trust";
 // catch 值转日志文本：直接用 shared 的 errorText（本包曾经由 lesson-store 的
 // describeError 转发同一份逻辑）。
-import { errorText } from "@jayyuen666/dsh-plugin-shared/lib/errors";
+import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 import { LessonStore, deriveProject, PERSIST_FAILED } from "./lib/lesson-store.ts";
 import type {
   LessonRecord,
@@ -86,8 +86,8 @@ import {
   LOCALE_SETTINGS_NAMESPACE,
   messagesFor,
   resolveLocalePreference,
-} from "@jayyuen666/dsh-plugin-shared/lib/locale";
-import { fieldOf, isRecord } from "@jayyuen666/dsh-plugin-shared/lib/record";
+} from "@jayyuen66/dsh-plugin-shared/lib/locale";
+import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 // ── 守卫小件（泛型防御纵深，不用断言；session-rescue/client 同款）──────────
 

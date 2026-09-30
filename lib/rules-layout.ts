@@ -13,7 +13,7 @@
 import { normalizeRuleCardRow, unknownArray } from "./lesson-store.ts";
 import type { RuleCard } from "./lesson-store.ts";
 import { PLUGIN_NAME } from "./prompt.ts";
-import { fieldOf } from "@jayyuen666/dsh-plugin-shared/lib/record";
+import { fieldOf } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 /**
  * 规则库存身的设置命名空间 = 本包 profile **条目 id**（`lesson-loop`，见 cordis.patch.yml

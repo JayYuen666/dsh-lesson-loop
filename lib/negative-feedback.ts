@@ -8,7 +8,7 @@
 // packages/feedback 刻意不进模型上下文，这里是它的唯一出口（经用户手动命令触发）：差评正文
 // 全量保留，不截断；已撤回/改成好评的槽位一律不算负面信号。
 
-import { fieldOf } from "@jayyuen666/dsh-plugin-shared/lib/record";
+import { fieldOf } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 /** 从对象安全读字段：字面量键走变量参数，绕开 dot-notation 与
  *  noPropertyAccessFromIndexSignature 的互斥。 */

@@ -9,4 +9,4 @@
 # 行按裸包名引用本包（client-modules 只扫描裸包名条目的 dsh.client 声明）。
 - insert:
     - id: lesson-loop
-      name: "@jayyuen666/dsh-lesson-loop"
+      name: "@jayyuen66/dsh-lesson-loop"

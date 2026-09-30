@@ -29,9 +29,9 @@
 // 重读重放"（LessonStore.commit），**绝不把基于陈旧读的整数组写回去**。
 
 import { randomUUID } from "node:crypto";
-import { deriveProjectKey } from "@jayyuen666/dsh-plugin-shared/lib/project-key";
+import { deriveProjectKey } from "@jayyuen66/dsh-plugin-shared/lib/project-key";
 import type { LessonLoopMessages } from "./messages.ts";
-import { fieldOf, isRecord } from "@jayyuen666/dsh-plugin-shared/lib/record";
+import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 // 事件流水的落盘面（追加/读取/磁盘保险丝）在 lib/lesson-jsonl.ts：这一层的失败纪律是"只日志、
 // 不抛穿热路径"，与本文件的规则库 CAS 回执是两件事，因此分家。
 import { appendJsonl, readJsonl } from "./lesson-jsonl.ts";

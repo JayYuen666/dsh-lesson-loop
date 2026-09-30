@@ -17,7 +17,7 @@
 // 新起草的规则卡正文没有理由是中文。模板里的 signature 与 category 取值域仍是**数据**
 // （同 digest.ts 的处理：键名与枚举面留在原文件，只把说明文字进字典）。
 // console.* 的日志文案也不在此列——那是给排障的人看的，不随界面语言切换。
-import type { MessagesCatalog } from "@jayyuen666/dsh-plugin-shared/lib/locale";
+import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
 /** 字典模板的插值参数（数值由调用点现算，字典只收整行模板）。 */
 export type MessageParams = Readonly<Record<string, string | number>>;

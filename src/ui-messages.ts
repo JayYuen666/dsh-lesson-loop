@@ -13,7 +13,7 @@
 // `rules` 字段——里的用户数据、host 侧回执），
 // 卡片照原样显示，绝不查表、也绝不因界面语言改写。
 import type { TranslateNS as OfficialTranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
-import type { MessagesCatalog } from "@jayyuen666/dsh-plugin-shared/lib/locale";
+import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
 /** 本包设置卡产出的全部界面文案。 */
 export interface UiMessages {

@@ -26,12 +26,12 @@
 import Schema from "@deepseek-ai/schemastery";
 // 规则库读写口绑官方声明（type-only：运行时服务由 ctx 注入，值导入会破坏 host.js 自包含）。
 import type { SettingsForms } from "@deepseek-ai/dsh-settings";
-import { errorText } from "@jayyuen666/dsh-plugin-shared/lib/errors";
+import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 import type { RuleCard, RulesRead, RulesRepository, RulesWriteOutcome } from "./lesson-store.ts";
 // 段名与 `rules` 字段名（以及"解析值 → 卡数组"那一步投影）在 lib/rules-layout.ts：本文件是
 // 端口实现，坐标是另一端，两边各改各的就会长成"卡片绑的段 ≠ 这里读的段"。
 import { RULES_FIELD, SETTINGS_NAMESPACE, cardsOfValue } from "./rules-layout.ts";
-import { fieldOf } from "@jayyuen666/dsh-plugin-shared/lib/record";
+import { fieldOf } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 /**
  * 单字段声明：类型判定**不在这里**发生。
