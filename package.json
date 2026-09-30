@@ -1,6 +1,6 @@
 {
   "name": "@jayyuen66/dsh-lesson-loop",
-  "version": "1.2.1",
+  "version": "1.0.0",
   "description": "Self-evolution lesson loop for dsh: unified lesson bus (danger-guard / quality-gate / session-rescue reporters) + rule cards with human-confirmed promotion, violation/suppressed measurement, and decay. Host half provides the 'lessonLoop' service; client half renders the review card.",
   "license": "MIT",
   "author": "JayYuen",
@@ -48,7 +48,7 @@
     "@deepseek-ai/dsh-brand": "0.2.0-rc.2",
     "@deepseek-ai/dsh-home-paths": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "3.18.4",
-    "@jayyuen66/dsh-plugin-shared": "^0.6.3"
+    "@jayyuen66/dsh-plugin-shared": "^1.0.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.4",
