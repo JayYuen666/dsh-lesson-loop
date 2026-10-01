@@ -443,6 +443,16 @@ function fireDisposed(ctx: FakeCtx, session: unknown): void {
   ctx.handlers["session/disposed"][0](session);
 }
 
+/** 触发 settings/document-updated：宿主在某命名空间的设置文档变化时推送，
+ *  locale 偏好缓存据此失效。命名空间原样传入，便于验证"别的条目变更不误伤本包缓存"。 */
+function fireSettingsUpdated(ctx: FakeCtx, ns: string): void {
+  const handlers = ctx.handlers["settings/document-updated"] ?? [];
+  assert.ok(handlers.length > 0, "settings/document-updated 未接线");
+  for (const handler of handlers) {
+    handler(ns);
+  }
+}
+
 /** 从 stats GET 取本实例的 csrf（rule-action 端点要带它）。 */
 function csrfOf(ctx: FakeCtx): string {
   const res = makeRes();
@@ -682,6 +692,63 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(ctx.section?.name, PLUGIN_ID_FIXTURE);
       assert.equal(ctx.section.order, 1560);
       assert.match(textOf(ctx.section), /自进化环/u);
+    });
+
+    it("locale 偏好读一次即缓存：重复求值不重复 describe，推送失效信号后才重读", () => {
+      // 段的 text 每次提示词装配都求值 → localeMessages 是本包频度最高的读点，
+      // 而 describe() 对每个活跃条目都要 schema.toJSON() + JSON.stringify 算 revision。
+      const ctx = makeCtx();
+      ctx.localeValue = { preference: "zh" };
+      let describeCalls = 0;
+      const base = ctx.settings.describe;
+      ctx.settings.describe = (): unknown[] => {
+        describeCalls += 1;
+        return base();
+      };
+      apply(ctx);
+      // 那个读口还被规则库共用，装配期就调过若干次；且装配链路（store/digest）会先
+      // 取一次 locale 把缓存捂热。故以「装配后的计数」为基线，只看后续的增量。
+      const warm = describeCalls;
+      assert.match(textOf(ctx.section), /自进化环/u, "缓存捂热时装配期读的是中文");
+      assert.equal(describeCalls, warm, "缓存捂热后重复求值不再读 describe()");
+
+      fireSettingsUpdated(ctx, "other-plugin");
+      assert.match(textOf(ctx.section), /自进化环/u, "别的命名空间变更后仍走缓存");
+      assert.equal(describeCalls, warm, "别的命名空间变更不误伤本包的缓存");
+
+      // 宿主推的是「locale 这条变了」，但描述符此刻还没变：仍用已缓存的文案。
+      fireSettingsUpdated(ctx, "locale");
+      textOf(ctx.section);
+      assert.equal(describeCalls, warm + 1, "locale 失效后重读一次");
+
+      // 上一步重读到的是「失效那一刻」的描述符，那会儿还是中文。描述符真变了之后，
+      // 宿主再推一次失效信号，重读才拿得到新文案——这正是推送式失效的契约。
+      ctx.localeValue = { preference: "en" };
+      fireSettingsUpdated(ctx, "locale");
+      assert.match(textOf(ctx.section), /self-evolution loop/u, "重读后文案换成英文");
+      assert.equal(describeCalls, warm + 2, "换语言那趟又读了一次");
+      assert.match(textOf(ctx.section), /self-evolution loop/u, "此后回到缓存");
+      assert.equal(describeCalls, warm + 2, "新语言同样只读一次");
+    });
+
+    it("缺席不缓存：locale 条目迟到时每趟都重读，语言不会被永久钉死", () => {
+      const ctx = makeCtx();
+      let describeCalls = 0;
+      const base = ctx.settings.describe;
+      ctx.settings.describe = (): unknown[] => {
+        describeCalls += 1;
+        return base();
+      };
+      apply(ctx);
+      const afterApply = describeCalls;
+      textOf(ctx.section);
+      const afterFirst = describeCalls;
+      assert.ok(afterFirst > afterApply, "条目缺席时不缓存：这一趟又读了 describe()");
+      textOf(ctx.section);
+      assert.ok(describeCalls > afterFirst, "缺席时每趟都重读");
+
+      ctx.localeValue = { preference: "en" };
+      assert.match(textOf(ctx.section), /self-evolution loop/u, "条目到位后立即跟上语言");
     });
 
     it("sectionEnabled=false → 段仍在，但 text 求值为空串（renderPrompt 丢掉空段）", () => {

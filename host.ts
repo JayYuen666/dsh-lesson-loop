@@ -442,12 +442,14 @@ interface HostCtx {
    *  @deepseek-ai/dsh-session/lib/types/index.d.ts:51）；本包只读它的 `id`，那道
    *  `stringIdOf`/`isRecord` 守卫照旧（官方类型说的是宿主的承诺，交付由守卫负责）。
    *  ⚠ 不换 `Context["on"]`：那是全仓延后项（泛型 `on<K extends keyof Events>` 会重写每一枚
-   *  监听器签名，ctx-observe/host.ts:328-336 记着同一条理由）。 */
+   *  监听器签名，ctx-observe/host.ts:328-336 记着同一条理由）。按重载逐枚点名，
+   *  新增事件时加一条签名即可，不必把整张事件表拖进来。 */
   on: ((
     event: "session/disposed",
     listener: (session: Parameters<Events["session/disposed"]>[0]) => void,
   ) => unknown) &
-    ((event: "agent/created", listener: (payload: AgentCreatedPayload) => void) => unknown);
+    ((event: "agent/created", listener: (payload: AgentCreatedPayload) => void) => unknown) &
+    ((event: "settings/document-updated", listener: (ns: unknown) => void) => unknown);
 }
 
 // ── 配置 ─────────────────────────────────────────────────────────────────
@@ -1259,22 +1261,6 @@ function settingsSnapshot(config: Config): ResolvedSettings {
   };
 }
 
-/** 本包 host 侧产出的一切文案随官方 locale 偏好走（用户在「设置 → 常规」改语言后
- *  下一条回显/注入就是新语言）。起草新规则卡的 statement 正文也在这条链上（模板经
- *  store 的 messages 注入口取用）；条目 `rules` 里**已落库**的正文是用户数据，
- *  永不因语言切换被改写——这里读的只是官方 `locale` 段。
- *  跨命名空间读在 0.1.7 只有 describe() 一条路：挑出 ns === 'locale' 那一条的 value
- *  （未装 client-locale / 那条没有 volatile 字段 → 宿主不投影它 → undefined → 中文默认）。 */
-function localeMessagesFor(svc: HostCtx): LessonLoopMessages {
-  // 返回值域按 `readonly unknown[]` 收（见 lib/rules-namespace.ts 的 SettingsCasSurface），
-  // 所以这里两位字段一律经 `fieldOf` 从 unknown 读——与规则库那条链同一个口径：
-  // "读到了东西"不等于"读得懂"，读不懂就退中文默认，绝不按声明猜。
-  const row = svc.settings
-    .describe()
-    .find((item) => fieldOf(item, "ns") === LOCALE_SETTINGS_NAMESPACE);
-  return messagesFor(MESSAGES, resolveLocalePreference(fieldOf(row, "value")));
-}
-
 /** 建总线与规则引擎：装载期一次性取阈值给构造器，之后每次 report/decay 前都会 syncStore
  *  现读，改动不必重启。 */
 function buildLessonStore(
@@ -1631,8 +1617,41 @@ export function apply(ctx: Context, config: Config): void {
   // 每次现读引用当前值：设置卡改完下一个事件/回合即生效，不必重挂载插件。
   const settingsOf: SettingsOf = () => settingsSnapshot(config);
 
-  // host 侧一切文案随官方 locale 偏好走（取用口每次现读官方 `locale` 段，见 localeMessagesFor）。
-  const localeMessages: MessagesOf = () => localeMessagesFor(svc);
+  // host 侧一切文案随官方 locale 偏好走：用户在「设置 → 常规」改语言后，下一条回显/注入
+  // 就是新语言（不重启、不另开本包自己的 locale 设置项）。起草新规则卡的 statement 正文
+  // 也在这条链上；条目 `rules` 里**已落库**的正文是用户数据，永不因语言切换被改写。
+  // 跨命名空间读在 0.1.7 只有 describe() 一条路（未装 client-locale / 那条没有 volatile
+  // 字段 → 宿主不投影它 → undefined → 中文默认）。返回值域按 `readonly unknown[]` 收，
+  // 故字段一律经 `fieldOf` 从 unknown 读——与规则库那条链同一口径：「读到了东西」不等于
+  // 「读得懂」，读不懂就退中文默认，绝不按声明猜。
+  //
+  // 偏好读一次即缓存：describe() 对每个活跃条目都要 schema.toJSON() + JSON.stringify 算
+  // revision 再投影三份，而 systemPrompt section 的 text 每次提示词装配都求值——那是本包
+  // 频度最高的读点。失效靠宿主推送：写配置 → app-boot/config-reload → SettingsForms
+  // invalidate() → 微任务里 describe() → 对 raw 变化的条目 emit('settings/document-updated')。
+  let cachedPreference: unknown = undefined;
+  let hasCachedPreference = false;
+  svc.on("settings/document-updated", (ns: unknown) => {
+    if (ns === LOCALE_SETTINGS_NAMESPACE) {
+      hasCachedPreference = false;
+    }
+  });
+  const localeMessages: MessagesOf = (): LessonLoopMessages => {
+    // **缺席不缓存**：locale 条目可能晚于本条目才到位，缓存一次缺席就把语言跟随永久钉死。
+    if (!hasCachedPreference) {
+      const row = svc.settings
+        .describe()
+        .find((item) => fieldOf(item, "ns") === LOCALE_SETTINGS_NAMESPACE);
+      if (row !== undefined) {
+        cachedPreference = fieldOf(row, "value");
+        hasCachedPreference = true;
+      }
+    }
+    return messagesFor(
+      MESSAGES,
+      resolveLocalePreference(hasCachedPreference ? cachedPreference : undefined),
+    );
+  };
 
   const store = buildLessonStore(svc, settingsOf, localeMessages);
 
