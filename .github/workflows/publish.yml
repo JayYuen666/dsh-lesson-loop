@@ -1,0 +1,56 @@
+name: publish
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  # npm trusted publishing（OIDC）：官方文档里 id-token: write 是必需项，缺了报
+  # ENEEDAUTH。runner 上没配过 trusted publisher 时这行无害——npm 探测不到 OIDC
+  # 环境就回落到下面的 token，两条路并存，所以不必等 npmjs.com 配好才合。
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: 登录 registry（发布用 npm 站点的 access token，权限 Read and write）
+        env:
+          TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          TOKEN_TIDY="$(printf '%s' "$TOKEN" | tr -d '\r\n[:space:]')"
+          if [ -z "$TOKEN_TIDY" ]; then echo "TOKEN 是空的——secret 没配上？"; exit 1; fi
+          if [ "$TOKEN" != "$TOKEN_TIDY" ]; then echo "注意：secret 里含空白/换行，已剔除后使用"; fi
+          case "$TOKEN_TIDY" in
+            npm_*) echo "token 形态：npm access token";;
+            ghp_*|github_pat_*) echo "这是 GitHub token——发到公共 npm 需要 npm 站点自己的 token（www.npmjs.com → Access Tokens），GH 的 token 对 npmjs 无效"; exit 1;;
+            *) echo "注意：前缀不是 npm_，请确认它确实是 npm 的 access token";;
+          esac
+          junk=$(printf %s "$TOKEN_TIDY" | tr -d "A-Za-z0-9_-" | wc -c | tr -d " ")
+          echo "token 度量：长度=${#TOKEN_TIDY}；非法字符数=$junk"
+          if [ "$junk" != "0" ]; then
+            echo "凭据里混进了非 token 字符（引号、说明文字之类）——请只贴 npm_ 开头那一串，不要带引号"
+            exit 1
+          fi
+          grep -v "registry.npmjs.org/:_authToken" "$HOME/.npmrc" > "$HOME/.npmrc.tmp" || true
+          if [ -f "$HOME/.npmrc.tmp" ]; then mv "$HOME/.npmrc.tmp" "$HOME/.npmrc"; fi
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$TOKEN_TIDY" >> "$HOME/.npmrc"
+      - name: registry 预检（身份与依赖库可见性）
+        env:
+          TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          TOKEN_TIDY="$(printf '%s' "$TOKEN" | tr -d '\r\n[:space:]')"
+          echo "whoami: $(curl -s -H "Authorization: Bearer $TOKEN_TIDY" "https://registry.npmjs.org/-/whoami")"
+          code=$(curl -s -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/@jayyuen66%2fdsh-plugin-shared")
+          echo "读 @jayyuen66/dsh-plugin-shared：HTTP $code"
+          echo "判读：200=依赖库已公开，可以发；404=shared 还没发到 npmjs，先发它（本包 pnpm install 会因此取不到依赖）"
+          [ "$code" = "200" ] || exit 1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
+      # prepack 会重建 host.js/client.js/dist，产物不入库也发得出去
+      - run: pnpm publish --no-git-checks --access public
