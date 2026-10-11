@@ -27,11 +27,11 @@ import type { Session, SessionEvent, SessionHeader } from "@deepseek-ai/dsh-sess
 // - `LlmRuntime`：`Context.llm` 的类型（installed @deepseek-ai/dsh-llm/lib/types/index.d.ts:29-31）
 // - `AgentDefaultModelConfig`：`Context.agentDefaultModel` 的类型（installed
 //   @deepseek-ai/dsh-agent-default-model/lib/types/index.d.ts:6-8, :24）
-// - `Session` / `SessionHeader`：installed @deepseek-ai/dsh-session/lib/types/index.d.ts:118,
-//   :122 与 lib/types/types.d.ts:58-90
+// - `Session` / `SessionHeader`：installed @deepseek-ai/dsh-session/lib/types/index.d.ts:135 起
+//   （`header` :150、`id` :154）与 lib/types/types.d.ts:58-95
 import type { AgentDefaultModelConfig } from "@deepseek-ai/dsh-agent-default-model";
 // 注入消息的 id 位是官方幻影品牌 `MessageId`，唯一合法构造口是官方 `brandString`（恒等函数；
-// 口径：dsh-brand 在 dependencies，产物留裸说明符，不再内联）。本文件与 host.ts 共用这
+// 口径：dsh-brand 在 peerDependencies，产物留裸说明符，不再内联）。本文件与 host.ts 共用这
 // 同一条口径——两半各自自包含，谁也不 import 谁的运行时。
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type {
@@ -59,9 +59,9 @@ export type { SessionEvent } from "@deepseek-ai/dsh-session";
 /**
 /**
  * 会话的归因读取面 = **官方 `Session` 的键名投影**（installed
- * @deepseek-ai/dsh-session/lib/types/index.d.ts：`get id(): SessionId` :122、
- * `readonly header: SessionHeader` :118）。
- * 值域两处都收窄：整枚 `Session` 是带 private 字段的类（:105-107 → 名义比较），本包与
+ * @deepseek-ai/dsh-session/lib/types/index.d.ts：`get id(): SessionId` :154、
+ * `readonly header: SessionHeader` :150）。
+ * 值域两处都收窄：整枚 `Session` 是带 private 字段的类（:135-139 → 名义比较），本包与
  * 测试的替身永远满足不了；`header` 只读 `cwd`（官方即 `readonly cwd?: string`，
  * lib/types/types.d.ts:69），因为 `deriveProject` 只要根目录。可缺失是本包对**跨进程
  * 边界**的口径（命令 handler 递来的 agent.session 是否具备某位只能运行时判，
@@ -77,7 +77,7 @@ export interface SessionLike {
 
 /**
  * 蒸馏请求帧的形状 = 官方 `GenerateOptions.messages` 受理的那一档。
- * installed @deepseek-ai/dsh-llm/lib/types/types.d.ts:464
+ * installed @deepseek-ai/dsh-llm/lib/types/types.d.ts:475
  * `RequestMessage = Message | RequestUserInput`——**两档都受理**：本包的帧带稳定 `id` 与
  * producer 归属（`source.form` 声明"这段上下文是要读的指令"，见 lib/prompt.ts），故走完整的
  * 官方 `UserMessage`（`id` 是品牌 `MessageId`，installed lib/types/brand.d.ts:14，构造口只有
@@ -219,7 +219,7 @@ export interface DigestResult {
  * runDigest 的收尾入参：消息表（语言由调用点决定）+ 用户附加说明 + **本会话事件流**。
  * `events` 由调用方取好交进来（host 走官方 `ctx.sessionQuery.observeSession()`），本文件
  * 不再自己读会话日志：官方把同步事件读面 `Session.snapshotEvents` 标成 `@deprecated`
- * （installed @deepseek-ai/dsh-session/lib/types/index.d.ts:186-187 "new calls are
+ * （installed @deepseek-ai/dsh-session/lib/types/index.d.ts:218-224 "new calls are
  * prohibited"），而本文件是纯函数、拿不到 ctx——把取数留在唯一真正持有 ctx 的那一侧。
  * 值域是官方判别联合（`SessionEvent`，shared/本包都按它分支），非数组交付一律退空表
  * 那条 `unknownArray` 判据仍然生效。

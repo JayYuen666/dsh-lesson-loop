@@ -6,7 +6,8 @@
 // ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING（实测），而发布出去的包正是躺在
 // node_modules 里被 dsh 载入的；官方示例包（docs/user/develop/basic/publish.zh.md
 // 的 hello-plugin）也是包根放 index.js 产物。本仓 host.ts + client.js 同形态。
-// 不产 .d.ts：插件包对外没有 TS API——dsh 按包名载入运行，没有人 import 它。
+// 声明不在这儿产：`npm run build:types`（build-types.mjs）出 types/，`exports` 的 `.` 入口
+// 同时挂 types/default。缺声明没有运行期信号，只有 import 本包的消费方在 strict 下拿 TS7016。
 // 顶部 node reference：oxlint 类型检查对 .mjs 不自动加载 @types/node，需显式声明
 // 才能解析 node:fs/promises、process、import.meta（否则整文件按 error 类型误报 unsafe）。
 import { readFile, writeFile } from "node:fs/promises";
@@ -41,8 +42,9 @@ function dependencyNames(field) {
   return Object.keys(table).filter((name) => typeof table[name] === "string");
 }
 
-// dependencies/peerDependencies 一律外部化：它们由 pnpm 真实安装，产物里保留裸
-// 说明符才拿得到单例（内联会把 shared 的模块级状态复制成多份）。子路径说明符同样
+// dependencies/peerDependencies 一律外部化：前者由安装提供、后者由宿主在场提供，产物里保留
+// 裸说明符才拿得到单例（内联会把 shared 的模块级状态复制成多份，也会让宿主包的符号身份
+// 变成按本包副本计算的那一枚）。子路径说明符同样
 // 要外部化——external 的字符串项是精确匹配，所以按「包名段」判定而不是枚举子路径。
 const externalNames = new Set([
   ...dependencyNames("dependencies"),

@@ -1,0 +1,17 @@
+// lesson-loop/tsconfig.types.json —— 只为**发布**产出声明；类型检查仍走 tsconfig.json。
+// declaration + emitDeclarationOnly 只出 .d.ts 不出 .js（运行期产物由 rolldown 管）。
+// include 不含 test/** 与 src/**：types/ 整目录进 `files`，测试声明不该随包公开；
+// src/** 是客户端那半，与 danger-guard 的 `./client` 一样不带 types 条件。
+// 声明里残留的 `.ts` 后缀由 build-types.mjs 改写，rewriteRelativeImportExtensions 管不到声明。
+{
+  "extends": "@jayyuen66/dsh-plugin-shared/config/tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "rootDir": ".",
+    "outDir": "types",
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false
+  },
+  "include": ["host.ts", "lib/**/*.ts"]
+}

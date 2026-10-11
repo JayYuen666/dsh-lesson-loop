@@ -19,7 +19,7 @@ import type { SlotRegistry } from "@deepseek-ai/dsh-client-ui-renderer/client";
 import type { ConfigForm, ConfigFormSnapshot } from "@deepseek-ai/dsh-client-ui-settings/client";
 // 槽位契约的所有权在属主包：`plugins.bundle.config` 由 plugin-manager 通过
 // `declare module '@deepseek-ai/dsh-client-ui-slots' { interface SlotMap }` 交出
-// （installed `dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts:95-104`，
+// （installed `dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts:111-120`，
 // 文件头明写「A registrant merges this contract with `import type` and registers through
 // `ctx.slots`; it never imports this package at runtime」）。本包原先没把那份 merge 载入
 // program：槽位名只是 `ClientCtx.slots` 手抄签名里的一枚 `string`，拼错 key 编译期不红，
@@ -46,11 +46,11 @@ const NS: LocaleNs = "lesson-loop";
 //  - 下面这个常量 = 本包在 profile 里那条 bundle 的**包名**，只当槽位 key 用。
 // `plugins.bundle.config` 是按 bundle 包名 keyed 的槽位：宿主把注册项的 key 与
 // bundle 包名精确相等匹配后才渲染（installed
-// dsh-client-ui-plugin-manager/lib/client.js:1821 的
+// dsh-client-ui-plugin-manager/lib/client.js:2762 的
 // `renderSlot("plugins.bundle.config", { view: "page" }, { entryKey: pkg.name })` →
 // dsh-client-ui-renderer/lib/client.js:1154 的 `e.options.key === opts?.entryKey`；
-// 同文件 :2698 的 `configured: ledger.bundles.has(openPkg.name)` 读的就是这批 key），
-// 契约文本 installed dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts:96-100
+// 同插件页 :3791 的 `configured: ledger.bundles.has(openPkg.name)` 读的就是这批 key），
+// 契约文本 installed dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts:111-115
 // （"keyed by the bundle's package name"），首方先例
 // dsh-experimental-client-ui-voice-input/lib/client.js:5659-5661。
 // 写成裸条目 id（`lesson-loop`）时 ledger 里没有这个键 → 插件页永不出卡。
@@ -286,7 +286,7 @@ export type LocaleCatalog = Record<BuiltInLocaleId, LocaleDictOf<typeof NS>>;
 /** 本卡自己的渲染视模型（官方 `ConfigFormSnapshot` 的有用子集 + 兜底值）。
  *  `status`/`writable` 两位不再手写联合：它们取自属主包交给配置页的那份官方状态
  *  （`ConfigPageForm['state']`，installed `dsh-client-ui-plugin-manager/lib/types/client/
- *  slot-contract.d.ts:150-155`，其类型就是官方 `ConfigFormSnapshot<Record<string, unknown>>`
+ *  slot-contract.d.ts:166-171`，其类型就是官方 `ConfigFormSnapshot<Record<string, unknown>>`
  *  的再投影）。宿主把 status 的取值域或 writable 的必选性一改，这里当场红。
  *  两者都满足才允许写，故保持**必选**，不用可选位假装它们会缺（writable 是独立于 status
  *  的「Host 文档是否接受写入」位，memory 模式永假）；`value` 是本卡的兜底收窄（官方

@@ -3,8 +3,8 @@
 //
 // 形态照抄 session-rescue/test/integration/loader-boot.test.ts：
 // - lesson-loop 的 host 半边由真实的 cordis + cordis-plugin-loader（本包 devDependencies
-//   里的那对，与 dsh 自带同版本：4.0.3 / 1.0.3；写死安装位置的话独立仓 CI 整条红）走
-//   Node 原生 import 载入（源码态 .ts 副本 + 发布态 .js 产物各测一次，见下方 fixture 注释）；
+//   里的那对；写死安装位置的话独立仓 CI 整条红）走 Node 原生 import 载入
+//   （源码态 .ts 副本 + 发布态 .js 产物各测一次，见下方 fixture 注释）；
 // - 宿主服务 settings 用「真实现 0.1.7 语义」的假件（makeSettingsProvider：describe() 给
 //   value/user/revision + provider 层 update() 带 CAS 与 SettingsConflictError + configure()），
 //   其余宿主服务（timer/webServer/commands/…）一律缺席——它们都是 lesson-loop 的可选读，
@@ -47,6 +47,8 @@ const FIXTURE_DIR = path.join(PKG_ROOT, ".tmp");
 const FIXTURE_PKG = path.join(FIXTURE_DIR, "pkg");
 const FIXTURE_HOST = path.join(FIXTURE_PKG, "host.ts");
 const FIXTURE_HOST_JS = path.join(FIXTURE_PKG, "host.js");
+/** 舱壁用例的兄弟条目夹具：一枚只 provide 服务的插件，故意写成 .js（免走类型剥离那条路）。 */
+const FIXTURE_SIBLING = path.join(FIXTURE_PKG, "sibling.js");
 
 /** 设置命名空间 = 条目 id = host.ts 的 PLUGIN_NAME（0.1.7：注册是隐式的）。 */
 const SWITCH_NS = "lesson-loop";
@@ -115,6 +117,27 @@ interface Mount {
   eventsPath: string;
 }
 
+/** cordis 的 `FiberState` 是 `const enum`（运行时擦除），只能按发布 d.ts 的数值比对。 */
+const ST = { ACTIVE: 2, FAILED: 3 } as const;
+
+/** 舱壁用例的兄弟条目：只 provide 一枚服务，用来核对失败不外溢。 */
+const SIBLING_ID = "bulkhead-sibling";
+
+/**
+ * 条目缺席时回 NaN，让断言报"条目没就位"而不是静默通过。
+ *
+ * @param entry - loader 条目
+ * @returns FiberState 数值
+ */
+function stateOf(entry: TestEntry | undefined): number {
+  return (entry?.fiber as { state?: number } | undefined)?.state ?? Number.NaN;
+}
+
+/** 按 id 取 loader 条目。 */
+function entryOf(ctx: TestCtx, id: string): TestEntry | undefined {
+  return [...ctx.loader.entries()].find((item) => item.id === id);
+}
+
 /**
  * 照抄 quality-gate/host.ts 的 reportProblemToBus 字段构造上报载荷：
  * category 由 problem.kind 决定、signature = gate.command.join(" ")、evidence = {root, command, kind}。
@@ -143,8 +166,12 @@ function gateFailurePayload(turn: number): BusReportInput {
  * value/user/revision + update 带 CAS + configure 收页面策略）；DSH_HOME 由调用方指向临时
  * 目录，让 cacheFile 落在临时 cache 下。
  * hostEntry 决定装载哪一份 host（默认源码态副本；发布态产物见对应用例）。
+ * options.config 是条目行的**初始** config；options.sibling 先挂一枚只 provide 服务的兄弟条目。
  */
-async function mount(hostEntry: string = FIXTURE_HOST): Promise<Mount> {
+async function mount(
+  hostEntry: string = FIXTURE_HOST,
+  options: { config?: Record<string, unknown>; sibling?: boolean } = {},
+): Promise<Mount> {
   const provider = makeSettingsProvider();
   const settings = {
     ...provider,
@@ -163,8 +190,20 @@ async function mount(hostEntry: string = FIXTURE_HOST): Promise<Mount> {
   const ctx = new CordisContext();
   await ctx.plugin(dependencies);
   await ctx.plugin(Loader);
-  await ctx.loader.create({ id: SWITCH_NS, name: hostEntry });
-  await ctx.loader.await();
+  if (options.sibling === true) {
+    await ctx.loader.create({ id: SIBLING_ID, name: FIXTURE_SIBLING });
+  }
+  const entryOptions: { id: string; name: string; config?: unknown } = {
+    id: SWITCH_NS,
+    name: hostEntry,
+  };
+  if (options.config !== undefined) {
+    entryOptions.config = options.config;
+  }
+  await ctx.loader.create(entryOptions);
+  // 舱壁用例里本包那条 fiber 预期 FAILED，整桌 await 会把它的错抛回来；装载是否健康由
+  // 各用例自己按 fiber 状态与服务可见性断言。
+  await ctx.loader.await().catch(() => null);
   // 装载期一次性迁移是 apply 里 `void (async …)()` 的 fire-and-forget 纯微任务链（见 host.ts）。
   // 空规则库上它本就是 no-op（write:false 不写不推进 revision），但一个宏任务边界即把它彻底排干，
   // 保证首条 report 的 commit 不与迁移交错——断言因此只反映 report 自身的效果。
@@ -214,6 +253,11 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate 门禁失败上�
     await cp(HOST_TS, FIXTURE_HOST);
     await cp(path.join(PKG_ROOT, "lib"), path.join(FIXTURE_PKG, "lib"), { recursive: true });
     await writeFile(FIXTURE_HOST_JS, await buildHost(), "utf8");
+    await writeFile(
+      FIXTURE_SIBLING,
+      'export default {\n  name: "bulkhead-sibling",\n  apply(ctx) {\n    ctx.provide("siblingProbe", { ping: () => "pong" });\n  },\n};\n',
+      "utf8",
+    );
   });
 
   beforeEach(() => {
@@ -236,7 +280,9 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate 门禁失败上�
   });
 
   afterAll(async () => {
-    await rm(FIXTURE_DIR, { recursive: true, force: true });
+    // 只清自己那份：FIXTURE_DIR 是整棵 .tmp，别的集成测试（host-contract）在同目录下有自己的
+    // 夹具，vitest 默认并行跑文件，删整棵树会把正在装载的夹具抽走。
+    await rm(FIXTURE_PKG, { recursive: true, force: true });
   });
 
   it(
@@ -334,15 +380,64 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate 门禁失败上�
       const bus = inst.ctx.get("lessonLoop") as BusService;
       expect(bus, "总线关着前服务仍是可见的（区别‘服务缺位’与‘服务自关’）").toBeDefined();
 
-      // 0.1.7：开关只能来自条目行的 config（插件侧已无 settings.register，卡片写的也是这一层）。
-      // 经 loader 的条目写口翻它 = 真宿主里设置卡 mutate 的下游那一步；这份 loader 会重挂载
-      // 条目（1.0.3 还没有 volatile 就地提交那条路），故服务要重新 ctx.get——旧句柄背后的
-      // 引用随旧 fiber 一起作废，拿着它读到的还是翻转前的值。
+      // 开关只能来自条目行的 config（0.1.7 起插件侧无 settings.register）；经条目写口翻它
+      // = 真宿主里设置卡 mutate 的下游那一步。
+      const fiberBefore = entryOf(inst.ctx, SWITCH_NS)?.fiber;
       await setEntryConfig(inst, { reportEnabled: false });
       const after = inst.ctx.get("lessonLoop") as BusService;
       const receipt = await after.report(gateFailurePayload(1));
       expect(receipt).toStrictEqual({ ok: false, reason: "disabled" });
       expect(existsSync(inst.eventsPath), "关闭态不许创建 events.jsonl").toBe(false);
+
+      // 全为 volatile 的 config 变化走 loader 的 `_commitVolatile` 就地提交，不重挂载条目。
+      // 改回重挂载的话这两条会红，而卡片"写完立刻生效"就换成了另一套取值口径。
+      expect(entryOf(inst.ctx, SWITCH_NS)?.fiber, "volatile-only 不许重挂载条目").toBe(fiberBefore);
+      expect(inst.ctx.get("lessonLoop"), "同一 fiber ⇒ 旧句柄就是新句柄").toBe(bus);
+      await expect(
+        bus.report(gateFailurePayload(2)),
+        "就地提交后拿翻转前的句柄必须读到新值",
+      ).resolves.toStrictEqual({ ok: false, reason: "disabled" });
+    },
+  );
+
+  // ── 舱壁隔离：本包 provide 的是兄弟插件依赖的服务，装载失败不许外溢 ──────────────
+
+  it(
+    "舱壁：本包条目 config 非法只杀自己那条 fiber，兄弟条目与服务照旧",
+    { timeout: 30_000 },
+    async () => {
+      // decayIntervalMs 的官方约束是 natural().min(1000)，500 在 resolveConfig 阶段就被拒。
+      const inst = await mount(FIXTURE_HOST, {
+        config: { decayIntervalMs: 500 },
+        sibling: true,
+      });
+      live = inst.ctx;
+
+      expect(stateOf(entryOf(inst.ctx, SWITCH_NS)), "本包条目须停在 FAILED").toBe(ST.FAILED);
+      expect(inst.ctx.get("lessonLoop"), "FAILED 的条目不许已经 provide 总线").toBeUndefined();
+      expect(
+        existsSync(path.join(process.env["DSH_HOME"] ?? "", "cache", SWITCH_NS)),
+        "装载失败不许创建 cache/lesson-loop",
+      ).toBe(false);
+      expect(stateOf(entryOf(inst.ctx, SIBLING_ID)), "兄弟条目不许被带下水").toBe(ST.ACTIVE);
+      const probe = inst.ctx.get("siblingProbe") as { ping: () => string } | undefined;
+      expect(probe?.ping()).toBe("pong");
+    },
+  );
+
+  it(
+    "反向对照：同一组合喂合法 config 时两条 fiber 都 ACTIVE（上一条的 FAILED 不是夹具坏了）",
+    { timeout: 30_000 },
+    async () => {
+      const inst = await mount(FIXTURE_HOST, {
+        config: { decayIntervalMs: 60_000 },
+        sibling: true,
+      });
+      live = inst.ctx;
+      expect(stateOf(entryOf(inst.ctx, SWITCH_NS))).toBe(ST.ACTIVE);
+      expect(stateOf(entryOf(inst.ctx, SIBLING_ID))).toBe(ST.ACTIVE);
+      expect(inst.ctx.get("lessonLoop")).toBeDefined();
+      expect(inst.ctx.get("siblingProbe")).toBeDefined();
     },
   );
 });

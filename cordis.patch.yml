@@ -1,4 +1,4 @@
-# lesson-loop（2026-09-12）：自进化闭环总线 + 规则卡（人工升格）+ 复发/干净会话度量 + 衰减。
+# lesson-loop：自进化闭环总线 + 规则卡（人工升格）+ 复发/干净会话度量 + 衰减。
 #
 # 观察端（已接入）：danger-guard（FactGate/危险命令/密钥路径拒绝）、quality-gate
 # （门禁失败）、session-rescue（瞬时失败/max-tokens/未闭合待办）——三方都用

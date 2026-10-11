@@ -3,4 +3,5 @@ client.js
 .toolchain/
 host.js
 coverage/
+types/
 .tmp/

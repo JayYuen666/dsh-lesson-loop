@@ -19,7 +19,8 @@
 //
 // 运行方式：dsh cordis Loader 直接 import 本 .ts（Node ≥22.18 类型剥离）。
 // 运行时值导入三枚：schemastery（宿主 fork）、@deepseek-ai/dsh-home-paths、@deepseek-ai/dsh-brand
-// （都在 dependencies，产物留裸说明符）；@deepseek-ai/cordis 等服务面一律 type-only。
+// （都在 peerDependencies，产物留裸说明符；不进 dependencies——见 test/publish-manifest.test.ts）；
+// @deepseek-ai/cordis 等服务面一律 type-only。
 
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -34,7 +35,8 @@ import type { Context, Events, Fiber, Volatile } from "@deepseek-ai/cordis";
 // 注入消息的 id 位是官方幻影品牌 `MessageId`（installed @deepseek-ai/dsh-llm/lib/types/
 // brand.d.ts:14），唯一合法构造口是官方 `brandString`（@deepseek-ai/dsh-brand/lib/types/
 // index.d.ts:28，恒等函数）。它也是本文件的 @deepseek-ai/* 值导入之一：落在
-// dependencies、产物留裸说明符（放 devDependencies 会被 rolldown 内联进 host.js）
+// peerDependencies、产物留裸说明符（只在 devDependencies 会被 rolldown 内联进 host.js；
+// 写进 dependencies 则会在消费方 profile 里物化出第二份宿主实例，两者都不行）
 // ——与 danger-guard 的 `brandNumber`、session-rescue 的 `brandString` 同一处、同一理由。
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type { Agent } from "@deepseek-ai/dsh-agent";
@@ -51,7 +53,9 @@ import type { TimerService } from "@deepseek-ai/cordis-plugin-timer";
 // 与 session-rescue/zvec-grep/ocr-review 的同名实现收敛到 shared，避免双份维护。
 import { sendJson, queryParam, guardBody } from "@jayyuen66/dsh-plugin-shared/lib/http";
 // 信任闸门：四条路由的 handler 第一条语句都走它（Host 权威 → sec-fetch-site → Origin）。
-import { guardTrust } from "@jayyuen66/dsh-plugin-shared/lib/trust";
+// isNonLoopbackBindHost 管同一判据的绑定地址侧——宿主 0.2.1-alpha.2 起通配地址载入即拒，
+// 比 `=== "0.0.0.0"` 恒为 false。
+import { guardTrust, isNonLoopbackBindHost } from "@jayyuen66/dsh-plugin-shared/lib/trust";
 // catch 值转日志文本：直接用 shared 的 errorText（本包曾经由 lesson-store 的
 // describeError 转发同一份逻辑）。
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
@@ -127,15 +131,15 @@ function hasCallableRegister(value: unknown): boolean {
 
 /**
  * webServer 可选服务投影：官方 `WebServer`（@deepseek-ai/dsh-host-webserver，installed
- * `lib/types/index.d.ts:67` 起是 cordis `Service` 子类 + `exact`/`prefixes`/`upgrades`/
+ * `lib/types/index.d.ts:119` 起是 cordis `Service` 子类 + `exact`/`prefixes`/`upgrades`/
  * `fallback`/`server` 等一堆 private 字段 → TS 对类按名义比，测试替身满足不了整类型）的
- * 方法面 `Pick`，本包只 `register()`（installed `:90`）。
+ * 方法面 `Pick`，本包只 `register()`（installed `:157`）。
  * 旧镜像在这里手抄过一枚 route：`kind: string`（一处**静默加宽**——官方 `WebRouteKind`
- * 是 `'exact' | 'prefix'` 字面量联合，installed `:31`/`:34`。kind 拼错在运行时**不会**报错：
+ * 是 `'exact' | 'prefix'` 字面量联合，installed `:32`/`:35`。kind 拼错在运行时**不会**报错：
  * 官方 register 走 `route.kind === "exact" ? this.exact : this.prefixes`（installed
- * `lib/index.js:178`），任何非 `"exact"` 的串都被塞进**前缀**表，于是本应精确命中的端点会
+ * `lib/index.js:299`），任何非 `"exact"` 的串都被塞进**前缀**表，于是本应精确命中的端点会
  * 连子路径一起吃掉）、`path`、以及 handler 的 `(IncomingMessage, ServerResponse)` 形参与
- * `void | Promise<void>` 返回（installed `:33-39`）。现在全部来自官方 `WebRoute`，
+ * `void | Promise<void>` 返回（installed `:34-40`）。现在全部来自官方 `WebRoute`，
  * 拼错的 kind 在编译期就红，disposer 亦按官方 `() => void` 收。别名取名 `WebServerService`：
  * 官方导出名 `WebServer` 已被上面的 type import 占用，同名会互相顶掉
  * （ctx-observe / zvec-grep / ocr-review 同款）。
@@ -174,12 +178,12 @@ function isCommandsService(value: unknown): value is CommandsService {
 
 /**
  * systemPrompt 服务投影：官方 `SystemPrompt`（@deepseek-ai/dsh-system-prompt，installed
- * `lib/types/index.d.ts:226` 起是 cordis `Service` 子类 + private `layers`/`toolOrder`
- * → 名义比较）的 `section` 方法面（installed `:239`）。载荷即官方 `PromptSection`
+ * `lib/types/index.d.ts:234` 起是 cordis `Service` 子类 + private `layers`/`toolOrder`
+ * → 名义比较）的 `section` 方法面（installed `:247`）。载荷即官方 `PromptSection`
  * （installed `:47-70`）：`name`/`order` 必填，`text` 允许静态串**或**每次拼装以
  * `AssembleContext`（installed `:37-45`）求值的 provider——旧镜像把 provider 的入参抄成了
  * `unknown`，那是加宽后的假面；官方还多两枚本包不用的可选旗标 `interpolate`/`complete`。
- * 返回是官方承诺的 "the exact Cordis effect disposer" `() => void`（installed `:237-239`）。
+ * 返回是官方承诺的 "the exact Cordis effect disposer" `() => void`（installed `:245-247`）。
  */
 type SystemPromptService = Pick<SystemPrompt, "section">;
 function isSystemPromptService(value: unknown): value is SystemPromptService {
@@ -213,7 +217,7 @@ function isTimerService(value: unknown): value is TimerFace {
  * （同文件 :47 —— `observeSession(sessionId: SessionId, options?): Promise<SessionObservation>`）。
  * 本包只取这一位：`SessionObservation.events` 就是"该会话此刻的不可变事件切片"
  * （installed lib/types/observation.d.ts:15-19），替代已被官方标 `@deprecated` 的
- * `Session.snapshotEvents`（@deepseek-ai/dsh-session/lib/types/index.d.ts:186-192，
+ * `Session.snapshotEvents`（@deepseek-ai/dsh-session/lib/types/index.d.ts:218-224，
  * "new calls are prohibited"）。`SessionQueryEngine` 是 cordis `Service` 子类
  * （:35 起 + private 字段 → 名义比较），故只 `Pick`，不取整类。
  */
@@ -360,8 +364,8 @@ type TimerDisposer = ReturnType<TimerService["setTimeout"]>;
 
 /**
  * 归因读的那两位 = **官方 `Session` 的键名投影**（installed @deepseek-ai/dsh-session/
- * lib/types/index.d.ts：`get id(): SessionId` :122、`readonly header: SessionHeader` :118）。
- * 值域不取整类：`Session` 带 private 字段（:105-107）→ TS 按名义比较，本包的替身会话永远
+ * lib/types/index.d.ts：`get id(): SessionId` :154、`readonly header: SessionHeader` :150）。
+ * 值域不取整类：`Session` 带 private 字段（:135-139）→ TS 按名义比较，本包的替身会话永远
  * 满足不了；`header` 又只读本包判定"是不是子代理会话"用到的三位
  * （installed @deepseek-ai/dsh-llm 域外、dsh-session/lib/types/types.d.ts:69/:81/:87
  *  的 `cwd`/`origin`/`delegationDepth`，官方三者本来就都可缺）。键名一处都不重述。
@@ -410,7 +414,7 @@ interface HostCtx {
    *  `get<K extends string & keyof this>(name: K, strict?: boolean): undefined | this[K]`）：
    *  本包读的 `webServer` / `commands` / `llm` / `agentDefaultModel` / `systemPrompt` **全部**
    *  是官方声明进 `Context` 的名字（installed @deepseek-ai/dsh-host-webserver/lib/types/
-   *  index.d.ts:15-18、@deepseek-ai/dsh-commands/lib/types/index.d.ts:65、
+   *  index.d.ts:16-19、@deepseek-ai/dsh-commands/lib/types/index.d.ts:65、
    *  @deepseek-ai/dsh-llm/lib/types/index.d.ts:29-31、
    *  @deepseek-ai/dsh-agent-default-model/lib/types/index.d.ts:6-8、
    *  @deepseek-ai/dsh-system-prompt 同名增强），故走泛型臂拿到 `undefined | 官方服务类`，
@@ -439,7 +443,7 @@ interface HostCtx {
   effect: Context["effect"];
   /** 事件接线面：两枚事件名与载荷都由官方事件表交出（`Parameters<Events[…]>[0]`），
    *  本地不重述签名。`session/disposed` 的载荷就此是官方 `Session`（installed
-   *  @deepseek-ai/dsh-session/lib/types/index.d.ts:51）；本包只读它的 `id`，那道
+   *  @deepseek-ai/dsh-session/lib/types/index.d.ts:50）；本包只读它的 `id`，那道
    *  `stringIdOf`/`isRecord` 守卫照旧（官方类型说的是宿主的承诺，交付由守卫负责）。
    *  ⚠ 不换 `Context["on"]`：那是全仓延后项（泛型 `on<K extends keyof Events>` 会重写每一枚
    *  监听器签名，ctx-observe/host.ts:328-336 记着同一条理由）。按重载逐枚点名，
@@ -804,9 +808,10 @@ function installLessonRoutes(
     return noDisposer;
   }
   const webServer = webServerRaw;
-  // 非回环服务面唯一的可读信号（installed dsh-host-webserver d.ts `:50`/`:83`）：
-  // 绑 0.0.0.0 时本机网卡持有的地址才算可信权威，回环档不必用它。
-  const servingNonLoopback = webServer.host === "0.0.0.0";
+  // 非回环服务面的信号只有绑定字面量这一枚（官方 `Config.host` 的 trustedHosts 那面在
+  // webStartup 服务上，插件侧读不到）。绑非回环地址时本机网卡持有的 IP 才算可信权威，
+  // 回环档不必用它——归类交给 shared 的谓词，别在这里比字面量。
+  const servingNonLoopback = isNonLoopbackBindHost(webServer.host);
   const csrf = randomUUID();
   const routes: RouteRuntime = { store, stats, messagesOf, csrf, servingNonLoopback };
   const disposeStats = webServer.register({

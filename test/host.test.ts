@@ -4,7 +4,7 @@
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, networkInterfaces } from "node:os";
 import path from "node:path";
 import { setImmediate as flushAsync } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -256,6 +256,9 @@ function makeCtx(
   };
   // 默认服务面（测试按需覆盖 services 字段）
   ctx.services["webServer"] = {
+    // 宿主 0.2.1-alpha.2 起 `Config.host` 是任意本机 IP 字面量（通配地址载入即拒），
+    // 替身照这个形状给一枚，别再留 undefined 让绑定侧的判据没机会跑。
+    host: "127.0.0.1",
     register(route: { path: string; handler: (req: FakeReq, res: FakeRes) => void }) {
       ctx.routes[route.path] = route.handler;
       return () => {
@@ -656,6 +659,24 @@ const EDITABLE_FIELDS = [
   "rules",
   "sectionEnabled",
 ];
+
+// ── 非回环服务面判据的两枚夹具（描述块外声明：oxlint 的 consistent-function-scoping
+//    不许把只读环境表的函数嵌进 describe，consistent-return 又禁 `return undefined`）──
+/** 本机实装的第一枚非回环 IPv4；纯回环环境（容器 CI）没有，回 null。 */
+function firstNonLoopbackIPv4(): string | null {
+  for (const infos of Object.values(networkInterfaces())) {
+    for (const info of infos ?? []) {
+      if (info.family === "IPv4" && !info.address.startsWith("127.")) {
+        return info.address;
+      }
+    }
+  }
+  return null;
+}
+
+const LAN_BIND = firstNonLoopbackIPv4();
+/** TEST-NET-1（RFC 5737）：本机任何网卡都不会持有它。 */
+const NOT_LOCAL_AUTHORITY = "192.0.2.11";
 
 describe("host：lesson-loop 的宿主半", () => {
   beforeEach(() => {
@@ -2741,6 +2762,51 @@ describe("host：lesson-loop 的宿主半", () => {
       );
       assert.equal(badRes.code, 403);
       assert.match(badRes.body ?? "", /cross-origin request rejected/u);
+    });
+
+    // ── servingNonLoopback 的取值口径（宿主 0.2.1-alpha.2 起）──────────────────
+    // 官方 `Config.host` 从 `'127.0.0.1' | '0.0.0.0'` 换成任意本机 IP 字面量，通配地址在
+    // 载入即拒。本包当时那枚 `webServer.host === "0.0.0.0"` 于是恒为 false：绑真实网卡的
+    // 插件把自己的 Host 权威整片拒成 403「untrusted host authority」，而类型检查、构建与
+    // 其余信任用例一条都不红。下面两条一放一拒，把这个只在装机时才暴露的分支钉在测试面上。
+
+    it.skipIf(LAN_BIND === null)(
+      "绑网卡地址时该网卡权威照常放行（回归钉：比字面量会让这里恒 403）",
+      () => {
+        if (LAN_BIND === null) {
+          return;
+        }
+        const ctx = makeCtx();
+        (ctx.services["webServer"] as { host: string }).host = LAN_BIND;
+        apply(ctx);
+        const res = makeRes();
+        ctx.routes[STATS_ROUTE]?.(
+          makeReq({
+            url: STATS_ROUTE,
+            headers: { host: `${LAN_BIND}:8787`, origin: `http://${LAN_BIND}:8787` },
+          }),
+          res,
+        );
+        assert.equal(res.code, 200, `绑 ${LAN_BIND} 时 ${LAN_BIND} 就是本机可信权威`);
+      },
+    );
+
+    it("回环绑定时私网权威照旧拒（不许用「恒为 true」绕过上面那条）", () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const res = makeRes();
+      ctx.routes[STATS_ROUTE]?.(
+        makeReq({
+          url: STATS_ROUTE,
+          headers: {
+            host: `${NOT_LOCAL_AUTHORITY}:8787`,
+            origin: `http://${NOT_LOCAL_AUTHORITY}:8787`,
+          },
+        }),
+        res,
+      );
+      assert.equal(res.code, 403);
+      assert.match(res.body ?? "", /untrusted host authority/u);
     });
   });
 

@@ -88,7 +88,7 @@ function fakeLlm(
         const first = options.messages[0]?.content[0];
         capture.prompt = first?.type === "text" ? first.text : undefined;
       }
-      // 流块就此是官方 `StreamChunk`（installed dsh-llm/lib/types/types.d.ts:406-436）：
+      // 流块就此是官方 `StreamChunk`（installed dsh-llm/lib/types/types.d.ts:417-447）：
       // text-delta 必带 `index`，finish 必带 `reason`。
       yield { type: CHUNK_TEXT_DELTA, index: 0, text: response };
       yield { type: "finish", reason: { kind: "stop" } };
@@ -214,6 +214,34 @@ describe("digest 蒸馏管线", () => {
     it("事件流缺失/畸形安全返回空", () => {
       assert.deepEqual(collectNegativeFeedback([]), []);
       assert.deepEqual(collectNegativeFeedback([null, 42, { type: 1 }]), []);
+    });
+
+    it("会话日志里的 plugin: 记录不进蒸馏输入（宿主 0.2.1-alpha.2 起的 ignorable 面）", () => {
+      // 官方把插件记录开成 `plugin:<名>` 命名空间的 ignorable 事件，V3→V4 还会把未知可忽略事件
+      // 改名进这一层，所以 observeSession() 的切片里一定混有读不懂的条目。载荷刻意长得像差评：
+      // 一旦被当成 feedback/record 处理，别家的状态就会被喂成人工差评再升格成规则卡。
+      const events = [
+        {
+          type: EVENT_MESSAGE_PUT,
+          data: { item: { messageId: "m1", rating: "negative", note: "真差评" } },
+        },
+        {
+          // 本包自己名下的记录（若将来写进会话日志，也不该被读成反馈）
+          type: "plugin:@jayyuen66/dsh-lesson-loop/digest",
+          data: { text: "看着像会话备注", category: "not-a-feedback-category" },
+        },
+        {
+          // 别家插件的记录，形状仿 feedback/record 与 feedback/message-put
+          type: "plugin:example/other",
+          data: { text: "别家的状态", item: { messageId: "m1", rating: "negative", note: "伪造" } },
+        },
+        { type: "plugin:example", data: null },
+        // 迁移改名前的未知可忽略事件形态：仍不该产出任何东西
+        { type: "unknown-ignorable-event", data: { note: "未知事件" } },
+      ];
+      const out = collectNegativeFeedback(events);
+      assert.equal(out.length, 1, "只有真差评进输入");
+      assert.deepEqual(out[0], { messageId: "m1", note: "真差评", kind: "message" });
     });
   });
 
