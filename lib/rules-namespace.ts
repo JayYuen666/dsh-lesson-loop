@@ -6,11 +6,11 @@
 //   2. settings provider 已自带跨进程写锁（atomic-write 的 .lock 兄弟文件）、
 //      逐 namespace 合并与"外部编辑热加载"，规则库正是需要这三件事的状态面。
 //
-// 0.1.7 起规则数组与开关**同属一段**（`lesson-loop`），这不是妥协而是唯一形态：宿主
+// 0.2.1-alpha.2 里规则数组与开关**同属一段**（`lesson-loop`），这不是妥协而是唯一形态：宿主
 // 的设置面按 profile 条目建模（一个条目一份 `Config`、一个命名空间 = 条目 id），
 // 插件侧的 `settings.register`/`get`/`installSection` 已整体移除——再开一段就等于再造
 // 一个插件条目。旧那条"分属两段"的理由（provider 用 `schema(mergeLayers(base, section))`
-// 校验，坏存量把 register 打回、连带打死另一段）在 0.1.7 换了一种触发方式，因此也换了
+// 校验，坏存量把 register 打回、连带打死另一段）在 0.2.1-alpha.2 换了一种触发方式，因此也换了
 // 一道闸门，见下面 RulesFieldSchema 的 `.loose()` 与 load() 的 user 层判定。
 //
 // 读写口径（LessonStore 的 RulesRepository 实现）：
@@ -72,7 +72,7 @@ const RuleCardSchema = Schema.object({
  * 规则库字段：本条目 `Config` 里的一个 volatile 数组（空库 = `[]`）。
  *
  * 三段各有理由，改之前逐段读：
- *   - `.volatile()`：0.1.7 只有标了 volatile 的字段会被宿主投影成设置表单并允许写入
+ *   - `.volatile()`：0.2.1-alpha.2 只有标了 volatile 的字段会被宿主投影成设置表单并允许写入
  *     （packages/settings/settings/src/schema.ts:37-47 + index.ts:308-309/386）。规则库
  *     要活读写，这一层不能省；也因此**没有**"注册被打回"这条路了——条目 Config 的校验
  *     发生在 cordis 装载期（vendor/cordis/src/fiber.ts:50-61 resolveConfig 抛
@@ -81,7 +81,7 @@ const RuleCardSchema = Schema.object({
  *     数组类型判定会抛——**同段**的开关连同整条总线会跟着这个条目一起不加载。`.loose()`
  *     让子树判定失败退到该字段的默认值（vendor/schemastery/src/index.ts:551），条目照常
  *     装载，坏值只影响规则库自己。"读不懂"另有判定，见 load()。
- *   - `.default([])`：0.1.7 没有 base 层，原 RULES_BASE 的 `{ rules: [] }` 就落在这里。
+ *   - `.default([])`：0.2.1-alpha.2 没有 base 层，原 RULES_BASE 的 `{ rules: [] }` 就落在这里。
  *     数组是**整片覆盖**（mergeLayers 不数组合并），所以默认值必须是完整值——空库的完整
  *     值就是 `[]`。schemastery 给 array 预置的 meta.default 本来就是 `[]`，显式写出是为了
  *     让"底座 → 默认"这条映射在 schema 上看得见。
@@ -133,7 +133,7 @@ function isSettingsConflict(error: unknown): boolean {
 /**
  * user 层里的 `rules` 键是不是"人改坏的形状"（存在、但不是数组）。
  *
- * 这就是 0.1.7 版的"注册被存量坏数据打回"判定：`.loose()` 让 cordis 把坏值解析成 `[]`，
+ * 这就是 0.2.1-alpha.2 版的"注册被存量坏数据打回"判定：`.loose()` 让 cordis 把坏值解析成 `[]`，
  * 于是 value 层看着完全合法——只盯 value 就会把"我读不懂"当成"别人确实没写过"，下一次
  * 提交顺手把整段（连人还没修好的那部分一起）覆掉。`describe().user` 是文档原文那一层
  * （宿主用 projectForm(form, override) 投出来，只丢 undefined、不做类型修正），坏值在

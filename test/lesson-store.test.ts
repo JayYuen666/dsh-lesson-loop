@@ -2,7 +2,17 @@
 // + 规则库端口（RulesRepository）的跨进程纪律。
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync, statSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  existsSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+  statSync,
+  appendFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -27,12 +37,11 @@ import { draftStatement } from "../lib/statement-draft.ts";
 import { DEFAULT_DECAY, decayVerdict } from "../lib/decay-policy.ts";
 import type { DecayPolicy } from "../lib/decay-policy.ts";
 import { appendJsonl, readJsonl } from "../lib/lesson-jsonl.ts";
-import { trimJsonl } from "../lib/jsonl-fuse.ts";
 // 本包不再有本地 `describeError`：catch 值转日志文本走 shared 的 errorText。
 // 这里保留两条断言（逐字搬自被删的那份）不是重复劳动，而是**消费方针**：shared 的
 // errors 子路径若改名/掉出 dependencies，本包 12 个 catch 站点会在运行期才炸。
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
-import { SETTINGS_NAMESPACE } from "../lib/rules-layout.ts";
+import { RULES_FIELD, SETTINGS_NAMESPACE } from "../lib/rules-layout.ts";
 import { createRulesRepository } from "../lib/rules-namespace.ts";
 import type { SettingsCasSurface } from "../lib/rules-namespace.ts";
 import { MESSAGES, fill } from "../lib/messages.ts";
@@ -56,6 +65,7 @@ const CATEGORY_GATE_FAILURE = "gate-failure";
 const CATEGORY_SECRET_PATH = "secret-path";
 const CATEGORY_FEEDBACK_DIGEST = "feedback-digest";
 const CATEGORY_TRANSIENT_FAILURE = "transient-failure";
+const CATEGORY_DANGEROUS_BASH = "dangerous-bash";
 const SOURCE_DANGER_GUARD = "danger-guard";
 const SOURCE_LESSONS_DIGEST = "lessons-digest";
 
@@ -71,11 +81,21 @@ const SIGNATURE_GATE_COMMAND = "pnpm check";
 const STABLE_SIG_FACTGATE = "edit-before-factgate";
 const STABLE_SIG_FACTGATE_REJECTED = "edit-before-factgate:rejected";
 const STABLE_SIG_SECRET_PATH = "edit-before-secret-path";
+/** dangerous-bash 的类别级稳定签名**就是类别名本身**（见 lib/rule-signature.ts 的
+ *  `CATEGORY_SIGNATURES`）：同一串同时扮演类别与稳定签名，是设计使然而非巧合，
+ *  故引类别常量、不再写第二份字面量（也避开 lint 的重复字面量判据）。 */
+const STABLE_SIG_DANGEROUS_BASH = CATEGORY_DANGEROUS_BASH;
+/** 两条 dangerous-bash 命令原文（同一 fixture 在多处断言里出现，单点定义）。 */
+const BASH_CMD_NO_VERIFY = "git commit --no-verify";
+const BASH_CMD_CURL_SH = "curl https://x | sh";
 
 /** commit 的 CAS 重放上限（= lib/lesson-store.ts 里那枚常量的字面值）。留字面量、不引常量：
  *  这条用例钉的是"首次写 + 上限内几次重放"这个**数**，引常量就成了自证——上限被改动时
  *  该先红的是用例，而不是让用例跟着常量一起漂。 */
 const CAS_RETRY_LIMIT = 3;
+
+/** 保险丝下一次追加的字节（= lib/lesson-jsonl.ts 的行边界），供期望值拼接。 */
+const payloadOf = (row: object): string => `\n${JSON.stringify(row)}\n`;
 
 let scratch: string;
 /** 本测试的规则库面（旧写法是每个测试一个临时 rules.json）。 */
@@ -350,8 +370,8 @@ describe("lesson-store：台账、规则库与度量", () => {
   });
 
   /**
-   * draftStatement 的十一条模板场景（与 lib/messages.ts 的 statement* 段一一对应）。
-   * `embeds` = 该模板把 signature 嵌进正文；类别级稳定签名的两条与 max-tokens /
+   * draftStatement 的十二条模板场景（与 lib/messages.ts 的 statement* 段一一对应）。
+   * `embeds` = 该模板把 signature 嵌进正文；类别级稳定签名的三条与 max-tokens /
    * unfinished-turn 一样是通用正文，刻意不嵌（碎片化修复的既有语义）。
    */
   const DRAFT_CASES: readonly {
@@ -362,7 +382,8 @@ describe("lesson-store：台账、规则库与度量", () => {
     { category: CATEGORY_FACTGATE_DENY, signature: STABLE_SIG_FACTGATE, embeds: false },
     { category: CATEGORY_FACTGATE_DENY, signature: STABLE_SIG_FACTGATE_REJECTED, embeds: true },
     { category: CATEGORY_FACTGATE_DENY, signature: SIGNATURE_PATH_A, embeds: true },
-    { category: "dangerous-bash", signature: "rm -rf ./cache", embeds: true },
+    { category: CATEGORY_DANGEROUS_BASH, signature: "rm -rf ./cache", embeds: true },
+    { category: CATEGORY_DANGEROUS_BASH, signature: STABLE_SIG_DANGEROUS_BASH, embeds: false },
     { category: CATEGORY_SECRET_PATH, signature: STABLE_SIG_SECRET_PATH, embeds: false },
     { category: CATEGORY_SECRET_PATH, signature: SIGNATURE_SECRET_PATH, embeds: true },
     { category: CATEGORY_GATE_FAILURE, signature: SIGNATURE_GATE_COMMAND, embeds: true },
@@ -390,9 +411,9 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.match(draftStatement("unknown-cat", "sig", MESSAGES.zh), /sig/u);
     });
 
-    it("locale=en：起草出的十一条正文全是英文（不含汉字），且不留占位符", async () => {
+    it("locale=en：起草出的十二条正文全是英文（不含汉字），且不留占位符", async () => {
       const statementKeys = Object.keys(MESSAGES.en).filter((key) => key.startsWith("statement"));
-      assert.equal(statementKeys.length, 11, "字典 statement* 段与模板场景表同源");
+      assert.equal(statementKeys.length, 12, "字典 statement* 段与模板场景表同源");
       assert.equal(DRAFT_CASES.length, statementKeys.length);
       for (const scenario of DRAFT_CASES) {
         const drafted = draftStatement(scenario.category, scenario.signature, MESSAGES.en);
@@ -522,6 +543,40 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.deepEqual(
         rules[0].evidence.map((row) => row.detail),
         ["a 路径证据", "b 路径证据"],
+      );
+    });
+
+    it("dangerous-bash 碎片（命令原文形态，多数不含斜杠）也收拢到类别级稳定卡", async () => {
+      // 旧写入侧按命令分片，而命令原文多数既无斜杠也无扩展名（`git commit --no-verify`）：
+      // 迁移若沿用路径判据，这类卡一张都不会被动到——写入侧已不再增长它们，它们也永远
+      // 命中不了度量，只会一直占着列表。故该类别按"非稳定签名即碎片"归并。
+      const store = seedStore([
+        diskRow({
+          id: "b-a",
+          category: CATEGORY_DANGEROUS_BASH,
+          signature: BASH_CMD_NO_VERIFY,
+          evidence: [ev("--no-verify")],
+        }),
+        diskRow({
+          id: "b-b",
+          category: CATEGORY_DANGEROUS_BASH,
+          signature: "bash -c 'rm -rf /tmp/x'",
+          evidence: [ev("嵌套 shell")],
+        }),
+      ]);
+      assert.equal(store.rules().length, 2);
+      const merged = await store.migrateFragmentRules();
+      assert.equal(merged, 1);
+      const rules = store.rules();
+      assert.equal(rules.length, 1);
+      const [card] = rules;
+      assert.ok(card !== undefined, "归并后只剩那张稳定卡");
+      assert.equal(card.signature, STABLE_SIG_DANGEROUS_BASH);
+      assert.equal(card.occurrences, 2);
+      assert.deepEqual(
+        card.evidence.map((row) => row.detail),
+        ["--no-verify", "嵌套 shell"],
+        "各条命令的证据随归并保留",
       );
     });
 
@@ -708,12 +763,29 @@ describe("lesson-store：台账、规则库与度量", () => {
       await store.report(rec() as never);
       assert.equal(ruleById(store, id)?.status, "rejected");
       assert.equal(ruleById(store, id)?.recurrences, 1);
-      // 第二次复发：recurrences=2 ≥ 2 → 转回候选，occurrences=2
+      // 第二次复发：recurrences=2 ≥ 2 → 转回候选；累计观察数只增不减：1（首报）+ 2（复发）= 3
       await store.report(rec() as never);
       const card = ruleById(store, id);
       assert.equal(card?.status, "candidate");
       assert.equal(card.recurrences, 0);
-      assert.equal(card.occurrences, 2);
+      assert.equal(card.occurrences, 3, "rejected 期的复发并进 occurrences，不是覆盖");
+    });
+
+    it("累计观察数不被revive抹小：存量 occurrences=10 的卡复活后仍 ≥ 10", async () => {
+      const store = makeStore({ reviveThreshold: 2 });
+      const { candidate } = await store.report(rec() as never);
+      const { id } = candidate!;
+      await store.ruleAction(id, "reject");
+      // 另一进程把累计观察数改成 10（人审前的历史观测，端口侧热加载）
+      const rows = store.rules();
+      const target = rows.find((rule) => rule.id === id);
+      assert.ok(target !== undefined, "卡已在库");
+      target.occurrences = 10;
+      facet.setExternally(rows);
+      await store.report(rec() as never);
+      await store.report(rec() as never);
+      assert.equal(ruleById(store, id)?.status, "candidate");
+      assert.equal(ruleById(store, id)?.occurrences, 12, "10 + 2 次复发；旧实现会写成 2");
     });
 
     it("reject 动作清零 recurrences", async () => {
@@ -806,6 +878,31 @@ describe("lesson-store：台账、规则库与度量", () => {
       await store.report(rawRec({ signature: "/repo/src/c.ts" }) as never);
       await store.report(rawRec({ signature: SIGNATURE_PATH_D }) as never);
       assert.equal(store.rules().length, 3);
+    });
+
+    it("dangerous-bash 折成一张卡，且每次命中的**命令原文**都落在证据里", async () => {
+      const store = makeStore({ promoteThreshold: 3 });
+      // 旧形态的两处毛病一起钉住：① 每条不同命令各开一张碎片卡，occurrences 恒为 1、
+      // 永远够不到升格门槛；② "认不准"那一类（bash-nested-shell-unconfirmed）签名是常量、
+      // 命令原文压根没进证据，卡片里只有逐字相同的模板文——人审时看不出该审什么。
+      const first = await store.report(
+        rec({ category: CATEGORY_DANGEROUS_BASH, signature: BASH_CMD_NO_VERIFY }) as never,
+      );
+      const second = await store.report(
+        rec({ category: CATEGORY_DANGEROUS_BASH, signature: BASH_CMD_CURL_SH }) as never,
+      );
+      assert.equal(store.rules().length, 1, "同类别不同命令必须汇成一张卡");
+      assert.equal(first.candidate?.signature, STABLE_SIG_DANGEROUS_BASH);
+      assert.equal(second.candidate?.occurrences, 2);
+      // 命令原文没丢：raw ≠ folded 时 evidenceRow 把原文写进 evidence.signature。
+      const [card] = store.rules();
+      assert.ok(card !== undefined, "必须刚好留下那张 dangerous-bash 稳定卡");
+      assert.deepEqual(
+        card.evidence.map((row) => row.signature),
+        [BASH_CMD_NO_VERIFY, BASH_CMD_CURL_SH],
+      );
+      // 稳定正文是通用文案，不把某一条命令嵌进去。
+      assert.ok(!card.statement.includes("git commit"), "稳定正文不该嵌单条命令");
     });
 
     it("教训全量落 JSONL（不截断），detail 原样在盘", async () => {
@@ -972,9 +1069,25 @@ describe("lesson-store：台账、规则库与度量", () => {
         statement: "s2",
         detail: "d",
       });
-      assert.equal(c1.id, c2.id);
-      assert.equal(c2.occurrences, 2);
-      assert.equal(c2.statement, "s1");
+      assert.equal(c1.card.id, c2.card.id);
+      assert.equal(c2.card.occurrences, 2);
+      assert.equal(c2.card.statement, "s1");
+      assert.equal(c1.persisted, true);
+    });
+
+    it("落库失败（端口拒写）→ persisted:false，且库里确实没有这张卡", async () => {
+      const scripted = scriptedRulesRepository({ outcomes: ["rejected"] });
+      const store = makeStore({ rules: scripted.repo });
+      const receipt = await store.addCandidate({
+        project: "p",
+        category: CATEGORY_FEEDBACK_DIGEST,
+        signature: "sig",
+        statement: "s1",
+        detail: "d",
+      });
+      assert.equal(receipt.persisted, false, "回执必须讲真话：这次没写进规则库");
+      assert.equal(receipt.card.signature, "sig", "计划态仍带着本次改动返回（供调用方组织文案）");
+      assert.equal(store.rules().length, 0, "库里一张卡也不该有——/lessons-digest 不许谎报已创建");
     });
 
     it("origin 标记 lessons-digest", async () => {
@@ -986,7 +1099,7 @@ describe("lesson-store：台账、规则库与度量", () => {
         statement: "st",
         detail: "d",
       });
-      assert.equal(candidate.origin, SOURCE_LESSONS_DIGEST);
+      assert.equal(candidate.card.origin, SOURCE_LESSONS_DIGEST);
     });
   });
 
@@ -1496,37 +1609,156 @@ describe("lesson-store：台账、规则库与度量", () => {
     });
   });
 
-  describe("trimJsonl / appendJsonl 磁盘保险丝", () => {
-    it("单行超限且切到只剩 2 行 → 停手（不制造空文件、不截单行）", async () => {
+  describe("appendJsonl 磁盘保险丝（裁剪与追加共用一把锁）", () => {
+    it("单行超限且切到只剩 2 行 → 停手（不制造空文件、不截单行）", () => {
       const file = path.join(scratch, "one.jsonl");
       const huge = `${"x".repeat(500)}\n`;
       writeFileSync(file, huge);
-      trimJsonl(file, 10);
-      assert.equal(readFileSync(file, "utf8"), huge);
+      appendJsonl(file, { a: 1 }, 10);
+      assert.equal(
+        readFileSync(file, "utf8"),
+        `${huge}${payloadOf({ a: 1 })}`,
+        "超限的单行原样留着",
+      );
       const two = `${"y".repeat(50)}\n${"z".repeat(50)}\n`;
       writeFileSync(file, two);
-      trimJsonl(file, 10);
+      appendJsonl(file, { a: 2 }, 10);
       // 半收缩到 ["zzz…", ""] 即 2 行：宁可超限也不清空用户的最后一行
-      assert.equal(readFileSync(file, "utf8"), `${"z".repeat(50)}\n`);
+      assert.equal(readFileSync(file, "utf8"), `${"z".repeat(50)}\n${payloadOf({ a: 2 })}`);
     });
 
-    it("半收缩时切点落在空行 → 去掉前置换行；仍超限则继续收缩", async () => {
+    it("半收缩切点落在空行 → 去前置换行、仍超限继续收缩；裁剪失败不误伤追加", () => {
       const file = path.join(scratch, "many.jsonl");
       writeFileSync(file, "aaaa\nbbbb\n\ncccc\n");
-      trimJsonl(file, 3);
-      assert.equal(readFileSync(file, "utf8"), "cccc\n");
+      appendJsonl(file, { a: 1 }, 3);
+      assert.equal(readFileSync(file, "utf8"), `cccc\n${payloadOf({ a: 1 })}`);
       const big = path.join(scratch, "big.jsonl");
       writeFileSync(big, "1234567890\n".repeat(6));
-      trimJsonl(big, 5);
-      assert.ok(statSync(big).size <= 30);
-      // 不存在的路径：尽力而为，不抛
-      trimJsonl(path.join(scratch, "nope", "x.jsonl"), 5);
+      appendJsonl(big, { a: 2 }, 5);
+      // 裁到半程即停（判据在 shared）：上限 = 裁剪结果那 30 字节 + 本次追加的一行
+      assert.ok(statSync(big).size <= 30 + payloadOf({ a: 2 }).length);
+      // 文件还不存在：裁剪的 statSync 先炸（吞掉），追加照常把它建出来
+      const fresh = path.join(scratch, "fresh.jsonl");
+      appendJsonl(fresh, { a: 3 }, 5);
+      assert.equal(readFileSync(fresh, "utf8"), payloadOf({ a: 3 }));
     });
 
-    it("appendJsonl 自建缺失目录", async () => {
+    it("appendJsonl 自建缺失目录；尺寸没超阈值时裁剪空转", () => {
       const file = path.join(scratch, "deep", "nested", LEDGER_FILE_NAME);
       appendJsonl(file, { a: 1 }, 0);
       assert.equal(readJsonl(file).length, 1);
+      appendJsonl(file, { a: 2 }, 1_000_000);
+      assert.equal(readJsonl(file).length, 2, "阈值远大于文件：裁剪不动作，追加照常");
+    });
+
+    it("已存在但**空**的文件：行边界判定不越界，直接追加", async () => {
+      const file = path.join(scratch, "empty.jsonl");
+      writeFileSync(file, "");
+      appendJsonl(file, { a: 1 }, 0);
+      appendJsonl(file, { a: 2 }, 0);
+      assert.deepEqual(
+        readJsonl(file).map((row) => row["a"]),
+        [1, 2],
+        "空文件不该触发补换行（那会写出一条空行）",
+      );
+    });
+
+    it("残尾保护：文件尾是半行时先补换行，本次记录仍可解析（不然与残行拼成一条坏行被整条丢掉）", async () => {
+      const file = path.join(scratch, "torn.jsonl");
+      const torn = '{"category":"c","signature":"s1"';
+      writeFileSync(file, torn);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      appendJsonl(file, { category: "c", signature: "s2" }, 0);
+      const rows = readJsonl(file);
+      assert.deepEqual(
+        rows.map((row) => row["signature"]),
+        ["s2"],
+        "新记录必须自成一行（修复前它与残行合并成坏行、整条消失）",
+      );
+      assert.equal(
+        readFileSync(file, "utf8"),
+        `${torn}\n${JSON.stringify({ category: "c", signature: "s2" })}\n`,
+        "残行字节保留在盘上（补换行而不是删数据），只让读侧如实报坏行",
+      );
+      assert.match(String(warn.mock.calls[0]?.[0]), /1 malformed lesson line/u);
+      warn.mockRestore();
+    });
+
+    it("坏行 warn 只在计数变化时出现（/stats 每轮全量读不刷屏）", async () => {
+      const file = path.join(scratch, "bad.jsonl");
+      writeFileSync(file, `{坏行\n${JSON.stringify({ a: 1 })}\n`);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      readJsonl(file);
+      readJsonl(file);
+      readJsonl(file);
+      assert.equal(warn.mock.calls.length, 1, "计数没变就不该重复 warn");
+      appendFileSync(file, "{第二条坏行\n");
+      readJsonl(file);
+      assert.equal(warn.mock.calls.length, 2, "坏行数变了要再报一次");
+      warn.mockRestore();
+    });
+
+    it("锁被别的进程持有（新锁）→ 追加照常、裁剪跳过，且不碰别人的锁", () => {
+      const file = path.join(scratch, "busy.jsonl");
+      const lock = `${file}.lock`;
+      const oversized = `${"a".repeat(200)}\n`;
+      writeFileSync(file, oversized);
+      writeFileSync(lock, "");
+      appendJsonl(file, { a: 1 }, 10);
+      assert.equal(
+        readFileSync(file, "utf8"),
+        `${oversized}${payloadOf({ a: 1 })}`,
+        "拿不到锁只跳过裁剪：超限的流水原样留着",
+      );
+      assert.ok(existsSync(lock), "别人的锁不得被我们顺手删掉");
+    });
+
+    it("陈旧锁（超 10s 没释放）→ 接管后照常裁剪，临界区结束归还锁", () => {
+      const file = path.join(scratch, "stale.jsonl");
+      const lock = `${file}.lock`;
+      writeFileSync(file, `${"a".repeat(100)}\n${"b".repeat(100)}\n`);
+      writeFileSync(lock, "");
+      const past = new Date(Date.now() - 60_000);
+      utimesSync(lock, past, past);
+      appendJsonl(file, { a: 1 }, 10);
+      const text = readFileSync(file, "utf8");
+      assert.ok(!text.includes("a".repeat(100)), "陈旧锁被接管：更旧的那段裁掉了");
+      assert.ok(text.includes("b".repeat(100)), "最新那段留着");
+      assert.ok(text.endsWith(payloadOf({ a: 1 })), "本次追加落在新文件尾");
+      assert.ok(!existsSync(lock), "接管成功=我们成了持有者，临界区结束要释放");
+    });
+
+    it("陈旧锁但接管失败（锁路径是目录）→ 跳过裁剪也不丢本次追加", () => {
+      const file = path.join(scratch, "dirlock.jsonl");
+      const lock = `${file}.lock`;
+      const oversized = `${"a".repeat(200)}\n`;
+      writeFileSync(file, oversized);
+      mkdirSync(lock);
+      const past = new Date(Date.now() - 60_000);
+      utimesSync(lock, past, past);
+      appendJsonl(file, { a: 1 }, 10);
+      assert.equal(
+        readFileSync(file, "utf8"),
+        `${oversized}${payloadOf({ a: 1 })}`,
+        "接管失败（rm 不动目录）只跳过裁剪",
+      );
+      assert.ok(existsSync(lock), "接管失败的锁保持原样");
+    });
+
+    it("追加目标本身写不进（是目录）→ 只日志，且失败路径也释放锁", () => {
+      const target = path.join(scratch, "dir-target");
+      mkdirSync(target);
+      const error = vi.spyOn(console, "error").mockImplementation(() => {
+        // 断言在下方
+      });
+      appendJsonl(target, { a: 1 }, 10);
+      assert.match(String(error.mock.calls[0]?.[0]), /lesson append failed/u);
+      error.mockRestore();
+      assert.ok(!existsSync(`${target}.lock`), "临界区失败由 finally 释放锁，别让后来者等陈旧");
     });
   });
 
@@ -1550,7 +1782,7 @@ describe("lesson-store：台账、规则库与度量", () => {
     });
 
     it("draftStatement 覆盖每个已知分类", async () => {
-      assert.match(draftStatement("dangerous-bash", "rm -rf", MESSAGES.zh), /危险 shell/u);
+      assert.match(draftStatement(CATEGORY_DANGEROUS_BASH, "rm -rf", MESSAGES.zh), /危险 shell/u);
       assert.match(draftStatement(CATEGORY_SECRET_PATH, ".env", MESSAGES.zh), /密钥/u);
       assert.match(
         draftStatement(CATEGORY_TRANSIENT_FAILURE, "cavoti code", MESSAGES.zh),
@@ -1720,14 +1952,14 @@ describe("lesson-store：台账、规则库与度量", () => {
       const arcReceipt = await store.report(rawRec({ signature: "arc-me" }) as never);
       const archived = arcReceipt.candidate!;
       await store.ruleAction(archived.id, "archive");
-      const armedCard = await store.addCandidate({
+      const armedReceipt = await store.addCandidate({
         project: PROJECT_KEY_FIXTURE,
         category: CATEGORY_GATE_FAILURE,
         signature: "keep-me",
         statement: "模型想改写的正文",
         detail: "蒸馏上下文",
       });
-      const rejectedCard = await store.addCandidate({
+      const rejectedReceipt = await store.addCandidate({
         project: PROJECT_KEY_FIXTURE,
         category: CATEGORY_GATE_FAILURE,
         signature: "rej-me",
@@ -1735,13 +1967,16 @@ describe("lesson-store：台账、规则库与度量", () => {
         detail: "蒸馏上下文",
         source: "manual",
       });
-      const archivedCard = await store.addCandidate({
+      const archivedReceipt = await store.addCandidate({
         project: PROJECT_KEY_FIXTURE,
         category: CATEGORY_GATE_FAILURE,
         signature: "arc-me",
         statement: "模型想改写的正文",
         detail: "蒸馏上下文",
       });
+      const armedCard = armedReceipt.card;
+      const rejectedCard = rejectedReceipt.card;
+      const archivedCard = archivedReceipt.card;
       assert.equal(armedCard.id, id);
       assert.equal(armedCard.status, "armed");
       assert.equal(armedCard.statement, "人工规则");
@@ -2207,6 +2442,53 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(ruleById(store, "a1"), undefined);
     });
 
+    it("两张 armed 撞键：被并的 armed 卡的生命周期度量必须累加（不许凭空消失）", async () => {
+      const store = seedStore([
+        diskRow({
+          id: "m1",
+          project: "one-b4b81874",
+          cwd: "/w/one",
+          category: CATEGORY_GATE_FAILURE,
+          signature: SIGNATURE_GATE_COMMAND,
+          status: "armed",
+          armedAt: 5,
+          violation: 2,
+          suppressed: 1,
+          samples: 4,
+          occurrences: 3,
+          lastViolationAt: 20,
+        }),
+        diskRow({
+          id: "m2",
+          project: "two-23fa702a",
+          cwd: "/w/one",
+          category: CATEGORY_GATE_FAILURE,
+          signature: SIGNATURE_GATE_COMMAND,
+          status: "armed",
+          armedAt: 9,
+          violation: 1,
+          suppressed: 3,
+          samples: 2,
+          occurrences: 7,
+          lastSuppressedAt: 30,
+        }),
+      ]);
+      assert.deepEqual(await store.migrateProjectKeys(), { rewrites: 1, merged: 1 });
+      const rules = store.rules();
+      assert.equal(rules.length, 1);
+      const [keptRule] = rules;
+      assert.ok(keptRule !== undefined, "撞键后只剩一张卡");
+      // 同级取观察次数多者当主卡：m2（occurrences 7 > 3）
+      assert.equal(keptRule.id, "m2");
+      assert.equal(keptRule.status, "armed");
+      assert.equal(keptRule.violation, 3, "2 + 1：被并的 armed 卡的复发数必须并进来");
+      assert.equal(keptRule.suppressed, 4, "1 + 3");
+      assert.equal(keptRule.samples, 6, "4 + 2");
+      assert.equal(keptRule.lastViolationAt, 20, "锚点取较晚者（不能因并卡把锚点拉早）");
+      assert.equal(keptRule.lastSuppressedAt, 30);
+      assert.equal(keptRule.armedAt, 9);
+    });
+
     it("同级撞键取观察次数多者当主卡（两个方向都成立）", async () => {
       const stable = { category: CATEGORY_GATE_FAILURE, signature: SIGNATURE_GATE_COMMAND };
       const busiestFirst = seedStore([
@@ -2494,6 +2776,54 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(scripted.saves(), 0);
     });
 
+    it("落盘失败不报成功：收尾清算与衰减都如实说「没存住」", async () => {
+      // armed + violation 4 / suppressed 4：满足降级裁决（复发 4 ≥ 3、证据 8 ≥ 5、比值 0.5），
+      // 但端口每次都拒写 —— 库里那一行必须原样不动，返回值与日志都不许假装已生效。
+      // 用真 CAS 假件（而不是 scripted 端口）来钉"库里那行原样不动"：真端口每次读取都从
+      // 文档原文重新归一出新对象，被拒的那次改动不可能顺着引用漏回库里。
+      const armed = cardOf({
+        id: "armed-1",
+        signature: "cmd-armed",
+        status: "armed",
+        violation: 4,
+        suppressed: 4,
+        armedAt: 1,
+        lastViolationAt: 2,
+        lastSuppressedAt: 3,
+      });
+      const provider = makeSettingsProvider({ [SETTINGS_NAMESPACE]: { [RULES_FIELD]: [armed] } });
+      provider.failWrites(10);
+      const store = otherProcess(attachRulesRepository(provider));
+      const error = vi.spyOn(console, "error").mockImplementation(() => {
+        // 断言在下方
+      });
+      const info = vi.spyOn(console, "info").mockImplementation(() => {
+        // 断言在下方
+      });
+
+      await store.sessionEnded(PROJECT_KEY_FIXTURE, new Set(), new Set(["armed-1"]), "s-1");
+      const decay = await store.runDecay();
+
+      assert.equal(decay.demoted, 0, "没写进库就不许报 demoted（库里的状态仍是 armed）");
+      assert.equal(decay.undeterminable, 0);
+      assert.equal(ruleById(store, "armed-1")?.status, "armed", "端口拒写 ⇒ 库里的行原样不动");
+      assert.equal(ruleById(store, "armed-1")?.suppressed, 4, "收尾清算的增量也没落盘");
+      assert.equal(provider.writesOf(SETTINGS_NAMESPACE), 0);
+      // 卸载清算那条路不带 sessionId（进程退出时未必知道是谁）：日志同样要如实说没存住。
+      await store.sessionEnded(PROJECT_KEY_FIXTURE, new Set(), new Set(["armed-1"]));
+      const errors = error.mock.calls.map(String).join("\n");
+      assert.match(errors, /unknown session: session settle for project .* was NOT persisted/u);
+      assert.match(errors, /session settle for project .* was NOT persisted/u);
+      assert.match(errors, /1 demote\(s\) were NOT persisted/u);
+      assert.doesNotMatch(
+        info.mock.calls.map(String).join("\n"),
+        /session settled|1 demoted/u,
+        "计划态不许进成功日志",
+      );
+      error.mockRestore();
+      info.mockRestore();
+    });
+
     it("存量坏数据打回注册时不覆写他人数据（映射 4 的空库覆写面）", async () => {
       const poisoned = "用户手改坏的存量段";
       const provider = makeSettingsProvider({ [SETTINGS_NAMESPACE]: { rules: poisoned } });
@@ -2509,7 +2839,7 @@ describe("lesson-store：台账、规则库与度量", () => {
   });
 
   // ── 坏存量的点名时机：第一次"真看得见那一行"时，而不是装载那一刻 ──────────────
-  // 0.1.7 的 describe() 只收 ACTIVE fiber，而插件 apply 跑在自己变 ACTIVE 之前，所以开机
+  // 0.2.1-alpha.2 的 describe() 只收 ACTIVE fiber，而插件 apply 跑在自己变 ACTIVE 之前，所以开机
   // 那一刻"看不见自己的行"是常态（真实宿主隔离实测过）。在装载期报错要么把时序说成"你写坏了
   // 数据"、要么每次开机白刷一行；两种都不肯要。判据因此挪进 load()：行不在→静默按不可用处理，
   // 行在且 rules 非数组→报一次，修好后重新武装（再坏还要再报）。

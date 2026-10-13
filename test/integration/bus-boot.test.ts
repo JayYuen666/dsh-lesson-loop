@@ -5,11 +5,11 @@
 // - lesson-loop 的 host 半边由真实的 cordis + cordis-plugin-loader（本包 devDependencies
 //   里的那对；写死安装位置的话独立仓 CI 整条红）走 Node 原生 import 载入
 //   （源码态 .ts 副本 + 发布态 .js 产物各测一次，见下方 fixture 注释）；
-// - 宿主服务 settings 用「真实现 0.1.7 语义」的假件（makeSettingsProvider：describe() 给
+// - 宿主服务 settings 用「真实现 0.2.1-alpha.2 语义」的假件（makeSettingsProvider：describe() 给
 //   value/user/revision + provider 层 update() 带 CAS 与 SettingsConflictError + configure()），
 //   其余宿主服务（timer/webServer/commands/…）一律缺席——它们都是 lesson-loop 的可选读，
 //   缺失只让对应 effect 走 noDisposer，不影响 report 这条主链。
-//   ⚠ 开关（enabled/reportEnabled/…）不再经这份假件：0.1.7 移除了 settings.register，
+//   ⚠ 开关（enabled/reportEnabled/…）不再经这份假件：0.2.1-alpha.2 移除了 settings.register，
 //   插件读的是 cordis 按条目 Config 解析出来的 volatile 引用，所以翻开关走
 //   `entry.update({ config })`（见 setEntryConfig），正是真宿主设置卡写口的下游一步。
 // 保持「非产品服务全 mock、插件本体全真实」的 dsh 测试纪律。
@@ -50,7 +50,7 @@ const FIXTURE_HOST_JS = path.join(FIXTURE_PKG, "host.js");
 /** 舱壁用例的兄弟条目夹具：一枚只 provide 服务的插件，故意写成 .js（免走类型剥离那条路）。 */
 const FIXTURE_SIBLING = path.join(FIXTURE_PKG, "sibling.js");
 
-/** 设置命名空间 = 条目 id = host.ts 的 PLUGIN_NAME（0.1.7：注册是隐式的）。 */
+/** 设置命名空间 = 条目 id = host.ts 的 PLUGIN_NAME（0.2.1-alpha.2：注册是隐式的）。 */
 const SWITCH_NS = "lesson-loop";
 /** cacheFile("events.jsonl") 的展开式：dshHomePath("cache", "lesson-loop", name)。 */
 const EVENTS_REL = path.join("cache", SWITCH_NS, "events.jsonl");
@@ -162,7 +162,7 @@ function gateFailurePayload(turn: number): BusReportInput {
 }
 
 /**
- * 挂载一份真实 Loader 组合的会话。settings 用真实现 0.1.7 语义的假件（describe 给
+ * 挂载一份真实 Loader 组合的会话。settings 用真实现 0.2.1-alpha.2 语义的假件（describe 给
  * value/user/revision + update 带 CAS + configure 收页面策略）；DSH_HOME 由调用方指向临时
  * 目录，让 cacheFile 落在临时 cache 下。
  * hostEntry 决定装载哪一份 host（默认源码态副本；发布态产物见对应用例）。
@@ -216,7 +216,7 @@ async function mount(
 }
 
 /**
- * 翻开关 = 改条目行的 config（0.1.7：设置卡的 mutate 经 configEditor.edit 走的正是这一步）。
+ * 翻开关 = 改条目行的 config（0.2.1-alpha.2：设置卡的 mutate 经 configEditor.edit 走的正是这一步）。
  * 装的这份 loader（1.0.3）在 config 变化时重挂载条目，所以调用方之后要重新 ctx.get 取服务。
  */
 async function setEntryConfig(inst: Mount, config: Record<string, unknown>): Promise<void> {
@@ -380,7 +380,7 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate 门禁失败上�
       const bus = inst.ctx.get("lessonLoop") as BusService;
       expect(bus, "总线关着前服务仍是可见的（区别‘服务缺位’与‘服务自关’）").toBeDefined();
 
-      // 开关只能来自条目行的 config（0.1.7 起插件侧无 settings.register）；经条目写口翻它
+      // 开关只能来自条目行的 config（0.2.1-alpha.2 里插件侧无 settings.register）；经条目写口翻它
       // = 真宿主里设置卡 mutate 的下游那一步。
       const fiberBefore = entryOf(inst.ctx, SWITCH_NS)?.fiber;
       await setEntryConfig(inst, { reportEnabled: false });

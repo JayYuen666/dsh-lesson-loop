@@ -2,6 +2,51 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.2
+
+### Fixed
+
+- **开机迁移在真实宿主上曾经静默空转**。`startBootMigrations` 在 `apply()` 内同步读规则库，而宿主 `settings.describe()` 只投影 `entry.fiber.state === ACTIVE` 的条目、`apply` 又跑在自己那条 fiber 变 ACTIVE **之前**（harness `packages/settings/settings/src/index.ts:305-306` 与 `:665-672`）——那一刻读到的 describe() 是空的，规则库端口判「不可用」，`commit` 不写，于是存量碎片归并（`migrateFragmentRules`）与 project 键归一（`migrateProjectKeys`）**一次都不执行**，日志一声不响。现在迁移先 `fiber.await()` 等本条目 settle 再读（装载失败即收手）；`isHostCtx` 契约守卫同步核验 `fiber.await` 这一位。新增集成测试 `test/integration/activation-order.test.ts`：假件按 harness 真实语义门控 describe()（非 ACTIVE 不投影），并断言"每一次规则库读取都发生在 ACTIVE 之后"——修复前那条断言会红。
+- **事件流水尾部的半行会吞掉下一条教训**。`appendJsonl` 无条件追加，文件尾若不是换行（崩溃、ENOSPC 半写、外部编辑留下的残行），新记录会与残行拼成**一条**坏行被读侧整条丢弃，而 `report()` 仍回 `ok:true`。现在追加前先补一个换行（残行字节保留在盘上，读侧如实报坏行）；坏行 warn 改为"计数变化时才报"（`/stats` 每轮全量读不再刷屏）。
+- **`/lessons-digest` 曾谎报已蒸馏**。`addCandidate` 丢弃 `commit` 的落盘结果，CAS 冲突耗尽或端口拒写时仍回显"已蒸馏 N 条候选规则"，而规则库里一张卡都没有。现在回执带 `persisted`，命令把未落盘的那批单独报成 `digestPartialFailure`（error 回执）并提示重试。
+- **收尾清算与周期衰减不再把计划当事实报**。`sessionEnded` 在写失败时不再打 "session settled"（改打一条 error 点名没存住、下次会话收尾重试），`runDecay` 只在**真的写进库**后才报 `demoted` 计数（写失败时报 0 并点明"规则仍是 armed"）。
+- **revive 不再抹小累计观察数**：rejected 卡转回候选时把复发次数**并入** `occurrences`（旧实现写 `occurrences = recurrences`，卡片上的"观察 N 次"会凭空变小）。
+- **project 键撞车合并会丢掉生命周期度量**：两张 armed 卡撞同键时，被并那张的 `violation`/`suppressed`/`samples` 现在累加进主卡（三个时间戳取较晚者，衰减锚点不被拉早）——旧实现只折叠观察类字段，等于把一条规则真实被测到的证据抹掉。
+- **卡片保存改为一次原子提交**：改用官方 `ConfigForm.mutate(ops, revision)`（一次校验、一次 CAS、一次落盘），并消费受理位——被拒时报错并**保留草稿**（旧实现逐字段写、忽略受理位、无条件清草稿，中途失败会留下改了一半的库，用户却以为全保存成功）。
+- **卡片不再把解析异常原文贴给用户**：`/stats` 回包不是 JSON 时（路由未注册，SPA fallback 回一页 HTML）显示本地化兜底文案，原文只进 console。
+- **数字输入不再与模型长期分叉**：越界/非数草稿在失焦时纠回模型值（此前输入框会永久显示一个从未被接受的数）。
+- **未知规则状态不再被塞进默认折叠的分组**：状态漂移兜成 `unknown` 并与候选同列可见、原文状态串显形、不给动作按钮（旧实现归 `archived`，宿主要新增合法状态时用户会完全看不到那张卡）。
+- **卡片字段分组一次遍历**（旧实现对同一份规则数组做四次 filter，规则库一大就是 4N 次比较 × 每次渲染）。
+- **卡片声明挂在 `configForms.whileServed` 上**：宿主没投影本命名空间时页面不再出现一张全只读、stats 也拉不到的空卡（官方首方口径同款）；`apply` 增加按 ctx 的幂等守卫（重复 apply 会让官方 locale 对同名 `(ns, locale)` 抛错，整条 client fiber 变 FAILED）。
+- **文档口径对齐代码**：两份 README 的「不可判定」说明改为与 `decay-policy.ts` 一致——`suppressed` 为 0 且（静置超过 `decayDays`，锚点为最近一次活动）或（复发已达 `demoteThreshold`）即不可判定，而不是"两个计数器都为 0"，并写明出现一次 `pass` 即退出该态。
+- **事件流水的裁剪会覆盖并发追加的那一行**。裁剪是"读整份 → 按行裁尾 → 写回"，另一进程在「读完之后、写回之前」追加的记录被整段覆盖掉（事件静默消失，而 `report()` 仍回 `ok`）。现在 `lib/jsonl-fuse.ts` 把裁剪与追加放进**同一把跨进程排他锁**：`.lock` 兄弟文件以 `wx`（O_CREAT|O_EXCL）原子占位，`mtime` 超过 10s 视为持有者已死、可接管，**拿不到锁仍追加、只跳过裁剪**（宁可这轮不裁，绝不丢事件）；整文件重写改走 `.tmp` + 原子 `rename`，读者要么见旧全文、要么见新全文。取舍：每条追加多两次同步 fs 调用；崩溃时可能留下 `.lock`/`.tmp` 两个兄弟文件（前者靠陈旧接管回收，后者是覆盖写、下一轮裁剪自然复用）。
+- **locale 偏好未注册时，host 的回显文案不再一律中文**：四条路由里只有 `rule-action` 产人读文案，现在按请求的 `Accept-Language` 协商（`lib/messages.ts` 新增 `localeFromAcceptLanguage`：q 值降序 + 主语言子标签；`*`/表外语言/坏 q 值/空串判不出 → 中文缺省）。官方 locale 条目在场时设置优先，请求头不参与；注入段与起草正文没有请求可依，仍走设置偏好。
+- **卡片字段的三处口径修正**：规则卡补渲染 `signature`（投影一直带着它，卡面此前只显示正文，人审时判不出"管的是哪条命令/路径"）；所有按钮补 `type="button"`（将来被套进 `<form>` 时不会默认变成 submit）；`lessonsCount` 与规则字段改走**同一数值容忍度**（数字或**非空**数字字符串），`numericOf` 不再把空白串读成 `0`（`Number("  ")` 是 0，收下等于把"字段缺失"虚报成"计数为 0"）。
+
+### Changed
+
+- **client 分组懒渲染**：每组默认只画 20 条 + 「加载更多」（每组各记已展开条数，组间互不影响），标题与副标题的计数仍按全量——规则库不设条数上限，展开时不再一次渲染上千张卡。不做完整虚拟化：折叠面板不是长列表，滚动容器/测量/回收那套复杂度换不来对应收益。
+- **`build-client.mjs` 的 `external` 对齐官方 client 基线**：从硬编码 `["react"]` 改为官方 `PLATFORM_MODULES` 九枚（外壳预置的冻结模块表）∪ 本包 `dsh.client.external`（现无声明），并在测试里逐条钉住——基座里的模块必须保持外部引用，内联一份副本就是同一个模块两份身份（宿主只认模块表那一条）。
+- 注释里反复出现的「0.1.7」统一改成现装版本 `0.2.1-alpha.2`：它是 harness 的旧版本号，留着容易被读成本包版本（本包是 `0.1.x` 线）。
+
+### Added
+
+- `test/integration/activation-order.test.ts`：真实 cordis + Loader 下的**装载时序契约**（见上）。
+- `test/integration/http-routes.test.ts`：四条 `/_dsh/lesson-loop/*` 路由的**真实 HTTP 契约**——真 `@deepseek-ai/dsh-host-webserver`（127.0.0.1:0）+ 真 `node:http` 请求，覆盖 `kind: "exact"`（子路径不被吃掉）、405 的 `Allow`、缺/错 csrf 的 403、413（含 content-length 与流式两条路径）、以及信任闸门三判据在真请求上的落点。
+- `test/client-data.test.ts`：client 半的**数据面**契约（此前零覆盖）——`/stats` 拉取与错误呈现、rule-action 的 csrf 与回执、原子保存（ops/revision/受理位）、越界输入纠偏、未知状态可见性；测试侧带一个最小的有状态 hook 运行时（setter 身份跨渲染稳定，否则 effect 会与 setState 自激）。
+- `test/publish-manifest.test.ts` 新增五条发布面门禁：`dsh.client` 必须伴随 `./client` export 且在发布面内、`dsh.bundle.patch` 指向存在且随包发布的文件、patch 的裸条目 id 与包名必须与代码里的 settings 命名空间同源、client 与 host 两半的端点/请求头常量一致、`client.js` 的 `require` 清单只允许平台模块。
+- `test/host.test.ts`：`/lessons-digest` 的"部分失败"回执用例、装载失败（`fiber.await` 重抛）时迁移整条收手的用例。
+- `test/lesson-store.test.ts`：残尾保护、空文件追加、坏行 warn 去重、落盘失败不报成功（含无 sessionId 的卸载清算）、两张 armed 卡撞键累加度量、revive 不抹小累计观察数等用例。
+- `test/digest.test.ts`：候选没写进规则库时落进 `dropped` 的用例。
+- 事件流水读取加 `(size, mtimeMs)` 解析缓存：卡片轮询 `/stats` 不再每轮把整份流水重新解析；`/stats` 一次读取同时用于投影与计数（此前同一轮读两遍规则库）。
+- `test/lesson-store.test.ts` 新增用例：同类别两条不同命令必须汇成**一张卡**（`occurrences=2`），且两条命令原文分别落在各自证据行的 `signature` 上；稳定正文不含单条命令。`DRAFT_CASES` 增补稳定签名一格（11 → 12 条模板）。
+- 新增用例覆盖：事件流水保险丝（忙锁跳过裁剪、陈旧锁接管、接管失败也不丢追加、失败路径释放锁）；`accept-language` 协商的纯函数与真 HTTP 回显；client 分组懒渲染、数值口径与 `signature` 渲染；`build-client` 的 external 基座；`dangerous-bash` 的存量碎片迁移。
+
+### Fixed（`dangerous-bash` 类别，先于本批）
+
+- **`dangerous-bash` 类的教训现在可审，且不再碎片化**。该类别原先**未登记**在 `CATEGORY_SIGNATURES` 里，于是两处毛病并存：① 每条不同命令各开一张 `occurrences=1` 的碎片卡，永远够不到 `promoteThreshold`（默认 3）；② "认不准"的那一种（`bash-nested-shell-unconfirmed`）签名是常量、**命令原文根本没进证据**，卡片里每一条证据都是逐字相同的模板拒绝文案——人审时看不出该审哪条命令。现在该类别折叠到类别级稳定签名 `dangerous-bash`，**每次命中的命令原文落进 `evidence.signature`**（走 `evidenceRow` 的既有机制：`raw ≠ folded` 才写该键），正文改走通用模板 `statementDangerousBashStable`（不嵌单条命令，与 `secret-path` 同形）。
+- 存量碎片由启动时的 `migrateFragmentRules` 一次性收拢（幂等；碎片判据**按类别**走：路径型类别看 `looksLikePathSignature`，`dangerous-bash` 的命令原文一律算碎片——路径判据只能偶然命中它（`curl https://… | sh` 里那个斜杠），`git commit --no-verify` 这类会被整批漏掉；跨项目绝不合并）。**下次启动自动执行**，各条命令原文随证据保留，无人工动作丢失。判据收在 `lib/rule-signature.ts` 的 `isFragmentSignatureOf`（`test/lesson-store.test.ts` 有一条两条命令碎片归并的用例钉住）。
+
 ## 0.1.1
 
 本版出库两批工作，它们在同一份工作区里成型、从未分成两个发布：**（a）发布形态整改**——入口面、依赖表归属、发布流水线与门禁，都在"装出去之后"那一侧；**（b）宿主生态与工具链升到当前发布线**（`0.2.0-rc.2` → `0.2.1-alpha.2`，途经 `alpha.1` 那一步从未单独出库）。另补四类只在装机或发布之后才暴露的东西：绑定地址的取值口径、随包发布的类型声明、发布清单里的归属文档，以及真实 cordis 下的装载契约与产物体积闸门。

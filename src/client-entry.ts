@@ -16,7 +16,11 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { BuiltInLocaleId } from "@deepseek-ai/dsh-client-locale/client";
 import type { LocaleDictOf } from "@deepseek-ai/dsh-client-ui-slots";
 import type { SlotRegistry } from "@deepseek-ai/dsh-client-ui-renderer/client";
-import type { ConfigForm, ConfigFormSnapshot } from "@deepseek-ai/dsh-client-ui-settings/client";
+import type {
+  ConfigForm,
+  ConfigFormSnapshot,
+  ConfigForms as ConfigFormsService,
+} from "@deepseek-ai/dsh-client-ui-settings/client";
 // 槽位契约的所有权在属主包：`plugins.bundle.config` 由 plugin-manager 通过
 // `declare module '@deepseek-ai/dsh-client-ui-slots' { interface SlotMap }` 交出
 // （installed `dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts:111-120`，
@@ -63,6 +67,12 @@ const RULE_ACTION_PATH = "/_dsh/lesson-loop/rule-action";
 // SVG path 的 `d` 属性是固定方法名，改用变量作计算键以绕过短名检查
 const PATH_KEY = "d";
 
+/** 分组懒渲染的每页条数：每组默认只画前 N 条，余下由「加载更多」按页放出。
+ *  规则库不设条数上限，而一次渲染上千张卡会让设置页展开时明显卡顿；不做完整虚拟化
+ *  （折叠面板不是长列表，滚动容器/测量/回收那套复杂度换不来对应的收益），
+ *  "每组一页 + 手动加载"已把首屏成本按住。 */
+const RULES_PAGE_SIZE = 20;
+
 /** 规则卡状态白名单：与 host lib/lesson-store 的 RULE_STATUSES 同集合。 */
 const RULE_STATUSES: ReadonlySet<string> = new Set([
   "candidate",
@@ -72,9 +82,10 @@ const RULE_STATUSES: ReadonlySet<string> = new Set([
   "archived",
 ]);
 
-type RuleCardStatus = RuleCardView["status"];
+/** 白名单里的状态（`unknown` 是本地兜底态，不是服务端会发的值）。 */
+type KnownRuleStatus = Exclude<RuleCardView["status"], "unknown">;
 
-function isRuleStatus(value: unknown): value is RuleCardStatus {
+function isRuleStatus(value: unknown): value is KnownRuleStatus {
   return typeof value === "string" && RULE_STATUSES.has(value);
 }
 
@@ -83,13 +94,19 @@ function strField(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
 
-/** 数值字段读取：只认 number 与数字字符串两种形态，其余视为漂移。 */
+/** 数值字段读取：只认 number 与**非空**数字字符串两种形态，其余视为漂移。
+ *  空白串不算 0：`Number("")` 与 `Number("  ")` 都是 0，照收就会把"字段缺失/被清空"
+ *  读成"计数为 0"（与 undefined 同一渲染结果，但语义相反：0 会被当真，缺省走兜底）。
+ *  空串要走 numField 的兜底、走 numericOf 的 undefined。 */
 function numericOf(value: unknown): number | undefined {
   let result: number | undefined;
-  if (typeof value === "number" || typeof value === "string") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      result = parsed;
+  if (typeof value === "number") {
+    result = Number.isFinite(value) ? value : undefined;
+  } else if (typeof value === "string") {
+    const text = value.trim();
+    if (text !== "") {
+      const parsed = Number(text);
+      result = Number.isFinite(parsed) ? parsed : undefined;
     }
   }
   return result;
@@ -104,8 +121,10 @@ function numField(value: unknown, fallback: number): number {
 /**
  * 规则卡逐字段归一（/stats 投影）。旧实现查 id+status 就断言整张卡，服务端
  * 新增或改名字段会让下游按 string/number 用的字段拿到 undefined。
- * 只有 id 是硬要求（动作按钮按 id 回填），其余补默认；status 漂移归 archived
- * （与 host 读取同一取向：归到"退役"分组里等人处理，不当活跃规则渲染）。
+ * 只有 id 是硬要求（动作按钮按 id 回填），其余补默认。
+ * status 漂移**不当 archived**：兜成 `unknown` 并保留原文（statusText），分组时与候选同列
+ * （默认展开、看得见），只是不给动作按钮——旧口径把它塞进默认折叠的"已拒绝/归档"里，
+ * 宿主将来新增一个合法状态时用户会完全看不到这张卡，还会以为规则被归档了。
  */
 function normalizeRuleCardView(value: unknown): RuleCardView | null {
   const id = fieldOf(value, "id");
@@ -119,7 +138,8 @@ function normalizeRuleCardView(value: unknown): RuleCardView | null {
     category: strField(fieldOf(value, "category"), "unknown"),
     signature: strField(fieldOf(value, "signature"), ""),
     statement: strField(fieldOf(value, "statement"), ""),
-    status: isRuleStatus(statusRaw) ? statusRaw : "archived",
+    status: isRuleStatus(statusRaw) ? statusRaw : "unknown",
+    statusText: typeof statusRaw === "string" ? statusRaw : "",
     createdAt: numField(fieldOf(value, "createdAt"), 0),
     occurrences: numField(fieldOf(value, "occurrences"), 0),
     violation: numField(fieldOf(value, "violation"), 0),
@@ -163,11 +183,14 @@ function parseStatsValue(parsed: unknown): StatsPayload {
   }
   const { ok, csrf, rules, lessonsCount, error } = parsed;
   const ruleViews = rulesField(rules);
+  // 与规则字段同一容忍度（数字或非空数字串）：口径一致，才不会出现"规则行的计数读得进、
+  // 副标题的总数读不进"这种一半渲染一半空白的形状。
+  const lessons = numericOf(lessonsCount);
   return {
     ...(ok === true ? { ok: true } : {}),
     ...(typeof csrf === "string" ? { csrf } : {}),
     ...(ruleViews === undefined ? {} : { rules: ruleViews }),
-    ...(typeof lessonsCount === "number" ? { lessonsCount } : {}),
+    ...(lessons === undefined ? {} : { lessonsCount: lessons }),
     ...(typeof error === "string" ? { error } : {}),
   };
 }
@@ -214,6 +237,7 @@ const CARD_CSS = [
   ".llc-rule{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-primary,inherit)}",
   ".llc-rule-meta{color:var(--dsw-alias-label-tertiary,#8a8f99);margin-top:4px}",
   ".llc-statement{white-space:pre-wrap;word-break:break-word}",
+  ".llc-rule-sig{color:var(--dsw-alias-label-tertiary,#8a8f99);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px;word-break:break-all;font-size:12px}",
   ".llc-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}",
   ".llc-btn{appearance:none;font:inherit;font-size:12px;cursor:pointer;border-radius:6px;padding:4px 10px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1,transparent);color:var(--dsw-alias-label-primary,inherit)}",
   ".llc-btn-primary{background:var(--dsw-alias-brand-primary,#e07856);border-color:var(--dsw-alias-brand-primary,#e07856);color:var(--dsw-alias-label-primary-foreground,#fff)}",
@@ -237,7 +261,10 @@ export interface RuleCardView {
   category: string;
   signature: string;
   statement: string;
-  status: "candidate" | "armed" | "demoted" | "rejected" | "archived";
+  /** 渲染用状态：服务端状态不在白名单里时是 `"unknown"`（可见但无动作）。 */
+  status: "candidate" | "armed" | "demoted" | "rejected" | "archived" | "unknown";
+  /** 服务端原样状态串（`status === "unknown"` 时靠它把未知值显形给用户）。 */
+  statusText: string;
   createdAt: number;
   occurrences: number;
   violation: number;
@@ -261,7 +288,7 @@ interface StatsPayload {
 }
 
 /**
- * 0.1.7 的客户端配置面：一个条目（= profile 条目 id，本包 `lesson-loop`）的共享表单。
+ * 0.2.1-alpha.2 的客户端配置面：一个条目（= profile 条目 id，本包 `lesson-loop`）的共享表单。
  * 契约源：installed
  * `dsh-client-ui-settings/lib/types/client/config-form-types.d.ts` 的 `ConfigForm<T>`
  * （`getSnapshot:38` / `subscribe:44` / `set:65` / `unset:73`；`mutate:55` 本卡不用），
@@ -276,6 +303,14 @@ interface StatsPayload {
  * provider 的 forms 表里，随 provider 的 fiber 一起回收），消费者无权销毁它。
  */
 export type EntryForm = ConfigForm<Record<string, unknown>>;
+
+/** 一次原子提交的入参类型（官方 `mutate` 的 ops 数组）：本卡不重述路径段/取值域，
+ *  全部由官方成员推出。 */
+type SettingsOps = Parameters<EntryForm["mutate"]>[0];
+/** ops 里 set 分支的取值（官方 JSON 值域）：草稿层因此与真正能写进文档的值同域。 */
+type SettingsValue = Extract<SettingsOps[number], { op: "set" }>["value"];
+/** 草稿层：字段名 → 待写值；`undefined` 表示"恢复组合层默认"（提交时走 unset）。 */
+type FieldDraft = Record<string, SettingsValue | undefined>;
 
 /** 官方 `LocaleRuntime.register` 类型化重载的字典参数，取在本包命名空间上：
  * `Record<BuiltInLocaleId, LocaleDictOf<'lesson-loop'>>`——两语（官方 `BuiltInLocaleId`）
@@ -293,6 +328,9 @@ export type LocaleCatalog = Record<BuiltInLocaleId, LocaleDictOf<typeof NS>>;
  *  `value: T | undefined` → 首个快照受理前落成空对象供渲染）。 */
 export interface CardSnapshot extends Pick<ConfigPageForm["state"], "status" | "writable"> {
   value: Record<string, unknown>;
+  /** 本次读到的那份快照的 revision（官方 `ConfigFormSnapshot.revision`，首个宿主视图
+   *  到达前是 undefined）：save 的原子提交拿它当 CAS 栅栏（`mutate(ops, revision)`）。 */
+  revision: ConfigPageForm["state"]["revision"];
 }
 
 // ── 请求工具 ─────────────────────────────────────────────────────────────
@@ -380,6 +418,9 @@ export function ruleMetaLines(t: Translate, rule: RuleCardView): string[] {
   if (rule.status === "rejected" && typeof rule.recurrences === "number" && rule.recurrences > 0) {
     lines.push(t("metaRevive", { count: rule.recurrences }));
   }
+  if (rule.status === "unknown") {
+    lines.push(t("metaStatusUnknown", { status: rule.statusText === "" ? "?" : rule.statusText }));
+  }
   if (rule.origin === "lessons-digest") {
     lines.push(t("metaFromDigest"));
   }
@@ -424,6 +465,7 @@ function armedActionsRow(deps: RuleActionsProps): ReactNode {
     createElement(
       "button",
       {
+        type: "button",
         className: "llc-btn",
         disabled: busy,
         onClick: () => {
@@ -435,6 +477,7 @@ function armedActionsRow(deps: RuleActionsProps): ReactNode {
     createElement(
       "button",
       {
+        type: "button",
         className: "llc-btn",
         disabled: busy,
         onClick: () => {
@@ -455,6 +498,7 @@ function candidateActionsRow(deps: RuleActionsProps): ReactNode {
     createElement(
       "button",
       {
+        type: "button",
         className: "llc-btn llc-btn-primary",
         disabled: busy,
         onClick: () => {
@@ -470,6 +514,7 @@ function candidateActionsRow(deps: RuleActionsProps): ReactNode {
     createElement(
       "button",
       {
+        type: "button",
         className: "llc-btn",
         disabled: busy,
         onClick: () => {
@@ -481,6 +526,7 @@ function candidateActionsRow(deps: RuleActionsProps): ReactNode {
     createElement(
       "button",
       {
+        type: "button",
         className: "llc-btn",
         disabled: busy,
         onClick: () => {
@@ -501,6 +547,7 @@ function retiredActionsRow(deps: RuleActionsProps): ReactNode {
     createElement(
       "button",
       {
+        type: "button",
         className: "llc-btn",
         disabled: busy,
         onClick: () => {
@@ -563,9 +610,15 @@ function RuleItem(props: RuleItemProps): ReactNode {
     setDraft,
   };
   return createElement(
-    "li",
+    "div",
     { className: "llc-rule" },
     createElement("div", { className: "llc-statement" }, rule.statement),
+    // signature 是规则库里的**数据**（命令原文/路径/规范化签名），原样显示、不查表：
+    // 正文是人写的整句，判"这条规则在管什么"靠的恰恰是这枚签名——projection 一直带着它，
+    // 卡片旧版把它丢了，人审时只能靠正文猜。
+    rule.signature === ""
+      ? null
+      : createElement("div", { className: "llc-rule-sig" }, rule.signature),
     createElement("div", { className: "llc-rule-meta" }, meta),
     rule.status === "armed" ? armedActionsRow(actions) : null,
     rule.status === "candidate" || rule.status === "demoted" ? candidateActionsRow(actions) : null,
@@ -583,14 +636,18 @@ export interface LlcCardProps {
   t: Translate;
   useCard: <State>(selector: (snap: CardSnapshot) => State) => State;
   /**
-   * 单字段写入 / 清除（直通 0.1.7 的 `ConfigForm.set` / `unset`，见
-   * config-form-types.d.ts:65 / :73）。两个 promise 都**只有传输失败才 reject**，
-   * 宿主拒绝或跳过写入回 `false`——本卡沿用 0.1.6 的判定点：只把 reject 当失败呈现
-   * （见 save 的 catch），受理位不消费。被拒的那一项因此表现为"快照仍是旧值 +
-   * 草稿被清空"，而不是错误条；要改成看受理位是一次独立的取舍，不在迁移范围内做。
+   * 原子提交：直通 0.2.1-alpha.2 的 `ConfigForm.mutate`（installed
+   * `dsh-client-ui-settings/lib/types/client/config-form-types.d.ts:55`）——**一次**
+   * 带上全部字段改动与读到的 revision，由宿主一次校验、一次 CAS、一次落盘。
+   *
+   * 为什么不是逐字段 `set`/`unset`（0.1.6 的写法，也是本卡此前的实现）：那是一串彼此
+   * 独立的 CAS 写，① 中途失败会留下"改了一半"的库（前面几个字段已落盘、后面没有），
+   * ② 被拒的那几个字段既没有错误条、草稿又被清空，用户以为全保存成功了。受理位
+   * （`true` = 宿主接受）因此必须消费：false 时保留草稿并出错误条。
+   *
+   * 传输失败才 reject；宿主拒绝/跳过写入回 `false`（同官方契约）。
    */
-  set: (field: string, value: unknown) => Promise<boolean>;
-  unset: (field: string) => Promise<boolean>;
+  mutate: EntryForm["mutate"];
   initialOpen?: boolean;
 }
 
@@ -670,7 +727,8 @@ export interface NumberInputRowProps {
   hint: string;
   field: string;
   value: unknown;
-  onChange: (field: string, value: unknown) => void;
+  /** 只提交合法数值（越界/非数在 onEntry 里被拦下）：取值域与官方 set 分支同域。 */
+  onChange: (field: string, value: SettingsValue) => void;
   onEmpty: (field: string) => void;
   disabled?: boolean;
   min?: number;
@@ -703,6 +761,20 @@ function NumberInputRow(props: NumberInputRowProps): ReactNode {
       props.onChange(props.field, parsed);
     }
   };
+  // 越界/非数输入不提交（上面 onEntry 的分支），草稿因此会与模型分叉：不纠回来的话输入框
+  // 永久显示 "10" 而库里是 1，用户以为 10 已被接受。失焦是纠偏点（输入中途不动，避免
+  // 边打字边被改回）。
+  const onLeave = (): void => {
+    if (text === "") {
+      return;
+    }
+    const parsed = Number(text);
+    const lower = props.min ?? -Infinity;
+    const upper = props.max ?? Infinity;
+    if (!Number.isFinite(parsed) || parsed < lower || parsed > upper) {
+      setText(num);
+    }
+  };
   return createElement(
     "div",
     { className: "llc-row" },
@@ -718,6 +790,7 @@ function NumberInputRow(props: NumberInputRowProps): ReactNode {
         value: text,
         disabled: props.disabled === true,
         onChange: onEntry,
+        onBlur: onLeave,
       }),
     ),
   );
@@ -735,7 +808,7 @@ function buildConfigRows(deps: {
   t: Translate;
   writable: boolean;
   eff: (field: string) => unknown;
-  setField: (field: string, value: unknown) => void;
+  setField: (field: string, value: SettingsValue) => void;
   clearField: (field: string) => void;
 }): ReactNode[] {
   const { t, writable, eff, setField, clearField } = deps;
@@ -867,6 +940,19 @@ interface RuleGroups {
   retired: RuleCardView[];
 }
 
+/** 分组键（= 上面的四组）：懒渲染的"已展开条数"按它逐组记账。 */
+type GroupKey = keyof RuleGroups;
+
+/** 每组各记一份初始页：组间互不影响（展开候选不该顺带把 armed 也全画出来）。 */
+function initialShownCounts(): Record<GroupKey, number> {
+  return {
+    candidates: RULES_PAGE_SIZE,
+    armed: RULES_PAGE_SIZE,
+    demoted: RULES_PAGE_SIZE,
+    retired: RULES_PAGE_SIZE,
+  };
+}
+
 /** 卡片各区块共用的渲染输入：状态位 + 写口 + 动作回调，一次组装、按引用往下传。
  *  区块函数都是普通函数而不是组件（不引入新的 React 节点），树形与拆出前逐字节一致。 */
 interface CardView {
@@ -882,10 +968,14 @@ interface CardView {
   ruleBusy: boolean;
   showAll: boolean;
   groups: RuleGroups;
+  /** 分组懒渲染：该组已展开的条数（每组各记一份，见 initialShownCounts）。 */
+  shownOf: (key: GroupKey) => number;
+  /** 「加载更多」：把该组的已展开条数再加一页。 */
+  onShowMore: (key: GroupKey) => void;
   /** 未到达时保持 undefined，由副标题显式占位。 */
   lessonsCount: number | undefined;
   eff: (field: string) => unknown;
-  setField: (field: string, value: unknown) => void;
+  setField: (field: string, value: SettingsValue) => void;
   clearField: (field: string) => void;
   onDone: (ok: boolean, message?: string) => void;
   setRuleBusy: (nextBusy: boolean) => void;
@@ -895,14 +985,23 @@ interface CardView {
   onToggle: () => void;
 }
 
-/** 按 status 分四组（顺序与拆出前一致：候选 → armed → 降级 → 已拒绝/归档）。 */
+/** 按 status 分四组（顺序与拆出前一致：候选 → armed → 降级 → 已拒绝/归档）。
+ *  一次遍历分完（旧写法对同一份规则数组做四次 filter，规则库一大就是 4N 次比较 ×
+ *  每次渲染），未知状态与候选同组：它必须**看得见**（见 normalizeRuleCardView）。 */
 function groupRules(rules: RuleCardView[]): RuleGroups {
-  return {
-    candidates: rules.filter((row) => row.status === "candidate"),
-    armed: rules.filter((row) => row.status === "armed"),
-    demoted: rules.filter((row) => row.status === "demoted"),
-    retired: rules.filter((row) => row.status === "rejected" || row.status === "archived"),
-  };
+  const groups: RuleGroups = { candidates: [], armed: [], demoted: [], retired: [] };
+  for (const row of rules) {
+    if (row.status === "candidate" || row.status === "unknown") {
+      groups.candidates.push(row);
+    } else if (row.status === "armed") {
+      groups.armed.push(row);
+    } else if (row.status === "demoted") {
+      groups.demoted.push(row);
+    } else {
+      groups.retired.push(row);
+    }
+  }
+  return groups;
 }
 
 /** 折叠箭头：`d` 属性走计算键（PATH_KEY）以避开短名检查。 */
@@ -927,8 +1026,15 @@ function renderChevron(open: boolean): ReactNode {
   );
 }
 
-/** 一个评审分节：标题带计数，空组显式占位，非空逐条出 RuleItem。 */
-function renderRuleSection(view: CardView, title: string, list: RuleCardView[]): ReactNode {
+/** 一个评审分节：标题带计数，空组显式占位，非空只画该组已展开的前若干条 + 「加载更多」。
+ *  懒渲染的判据是**渲染**而不是数据：切片只影响这里画几张卡，`view.groups` 里始终是全量，
+ *  标题上的计数、卡片副标题的计数都照全量走（别让分页把"一共有多少条"也改小）。 */
+function renderRuleSection(
+  view: CardView,
+  key: GroupKey,
+  title: string,
+  list: RuleCardView[],
+): ReactNode {
   const { t } = view;
   const heading = createElement(
     "div",
@@ -936,13 +1042,32 @@ function renderRuleSection(view: CardView, title: string, list: RuleCardView[]):
     sectionHeadingText(t, title, list.length),
   );
   const emptyLabel = t("emptyGroup");
+  const shown = view.shownOf(key);
+  const hidden = list.length - shown;
+  const moreButton =
+    hidden > 0
+      ? createElement(
+          "button",
+          {
+            type: "button",
+            className: "llc-btn",
+            onClick: () => {
+              view.onShowMore(key);
+            },
+          },
+          t("loadMore", { count: hidden }),
+        )
+      : null;
+  // div 而不是 ul：挂载点是插件页的 <section>（不是列表），里面还混着 savebar/提示这类
+  // 非 li 子节点——ul 的直接子节点只能是 li，列表语义在这里本来就是错的。
+  // 切片在 shown ≥ list.length 时原样返回整表：不需要"要不要截断"的分支。
   const body =
     list.length === 0
       ? createElement("div", { className: "llc-empty" }, emptyLabel)
       : createElement(
-          "ul",
-          { style: { listStyle: "none", margin: "0", padding: "0" } },
-          list.map((row) =>
+          "div",
+          null,
+          list.slice(0, shown).map((row) =>
             createElement(RuleItem, {
               key: row.id,
               t,
@@ -953,6 +1078,7 @@ function renderRuleSection(view: CardView, title: string, list: RuleCardView[]):
               setBusy: view.setRuleBusy,
             }),
           ),
+          moreButton,
         );
   return createElement("div", null, heading, body);
 }
@@ -992,6 +1118,7 @@ function renderRetiredBlock(view: CardView): ReactNode {
         createElement(
           "button",
           {
+            type: "button",
             className: "llc-btn",
             onClick: () => {
               view.setShowAll(!showAll);
@@ -999,7 +1126,7 @@ function renderRetiredBlock(view: CardView): ReactNode {
           },
           retiredLabel,
         ),
-        showAll ? renderRuleSection(view, retiredTitle, retired) : null,
+        showAll ? renderRuleSection(view, "retired", retiredTitle, retired) : null,
       )
     : null;
 }
@@ -1013,7 +1140,7 @@ function renderCardBody(view: CardView): ReactNode {
   const demotedTitle = t("sectionDemoted");
   const armedTitle = t("sectionArmed");
   return createElement(
-    "ul",
+    "div",
     { className: "llc-body" },
     view.statsError === null
       ? null
@@ -1034,9 +1161,9 @@ function renderCardBody(view: CardView): ReactNode {
       onSave: view.onSave,
       onDiscard: view.onDiscard,
     }),
-    renderRuleSection(view, candidatesTitle, view.groups.candidates),
-    renderRuleSection(view, demotedTitle, view.groups.demoted),
-    renderRuleSection(view, armedTitle, view.groups.armed),
+    renderRuleSection(view, "candidates", candidatesTitle, view.groups.candidates),
+    renderRuleSection(view, "demoted", demotedTitle, view.groups.demoted),
+    renderRuleSection(view, "armed", armedTitle, view.groups.armed),
     retiredToggle,
     createElement("div", { className: "llc-hint", style: { marginTop: "8px" } }, hintLabel),
   );
@@ -1060,26 +1187,29 @@ function settleStats(result: StatsPayload, sink: StatsSink): void {
   }
 }
 
-/** 拉取统计并落进 sink。模块层函数：effect 与 save/onDone 共用，组件里不为此引入任何 React hook。 */
+/** 拉取统计并落进 sink。模块层函数：effect 与 save/onDone 共用，组件里不为此引入任何 React hook。
+ *  传输/解析失败（路由未注册时 SPA fallback 会回一页 HTML，`res.json()` 当场抛）一律落
+ *  本地化兜底文案——把 `Unexpected token '<'` 这类解析异常原文贴到用户面前，既不是本卡
+ *  该说的话，也指不到真实原因。原文只进 console 供排查。 */
 async function reloadStats(sink: StatsSink): Promise<void> {
   try {
     settleStats(await fetchStats(), sink);
   } catch (error) {
-    sink.setStatsError(String(error instanceof Error ? error.message : error));
+    console.error("[lesson-loop] stats request failed:", error);
+    sink.setStatsError(sink.t("statsUnavailable"));
   }
 }
 
-/** 差异字段逐个写回共享表单：undefined 走 unset（= 恢复默认），其余走 set。 */
-async function writeTouchedFields(
-  props: Pick<LlcCardProps, "set" | "unset">,
-  touched: Record<string, unknown>,
-  keys: readonly string[],
-): Promise<unknown[]> {
-  return Promise.all(
-    keys.map((key) => {
-      const fieldValue = touched[key];
-      return fieldValue === undefined ? props.unset(key) : props.set(key, fieldValue);
-    }),
+/**
+ * 差异字段 → 一次原子提交的 ops（顺序与用户改动顺序一致：Object.keys 保持插入序）。
+ * undefined 走 unset（= 恢复组合层默认），其余走 set。
+ * 官方 `SettingsPathOpView` 的 `path` 是分段路径：本卡的字段都是顶层标量，段长恒为 1。
+ */
+function saveOpsOf(touched: FieldDraft, keys: readonly string[]): SettingsOps {
+  return keys.map((key) =>
+    touched[key] === undefined
+      ? { op: "unset" as const, path: [key] }
+      : { op: "set" as const, path: [key], value: touched[key] },
   );
 }
 
@@ -1093,12 +1223,12 @@ function LlcCard(props: LlcCardProps): ReactNode {
   const { value } = snap;
   const writable = snap.status === "ready" && snap.writable;
   // 保存条状态：touched = 用户动过的字段（undefined = 恢复默认/unset）
-  const [touched, setTouched] = useState<Record<string, unknown>>({});
+  const [touched, setTouched] = useState<FieldDraft>({});
   const [busy, setBusy] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const eff = (field: string): unknown => (field in touched ? touched[field] : value[field]);
   const dirty = diffTouched(touched, value).length > 0;
-  const setField = (field: string, nextValue: unknown): void => {
+  const setField = (field: string, nextValue: SettingsValue): void => {
     setTouched((entry) => ({ ...entry, [field]: nextValue }));
   };
   const clearField = (field: string): void => {
@@ -1108,6 +1238,11 @@ function LlcCard(props: LlcCardProps): ReactNode {
   const [statsError, setStatsError] = useState<string | null>(null);
   const [ruleBusy, setRuleBusy] = useState(false);
   const [showAll, setShowAll] = useState(false);
+  // 分组懒渲染：每组各记一份已展开条数（初始页见 initialShownCounts；「加载更多」各加一页）。
+  const [shownCounts, setShownCounts] = useState<Record<GroupKey, number>>(initialShownCounts);
+  const onShowMore = (key: GroupKey): void => {
+    setShownCounts((prev) => ({ ...prev, [key]: prev[key] + RULES_PAGE_SIZE }));
+  };
 
   // 展开即拉取。卡片组件保持「零直接 React hook」的形态（测试架直调组件函数读
   // createElement 产物，不存在 dispatcher），拉取逻辑提为模块层 reloadStats(sink)，
@@ -1128,8 +1263,16 @@ function LlcCard(props: LlcCardProps): ReactNode {
     setBusy(true);
     setSaveError(null);
     try {
-      await writeTouchedFields(props, touched, keys);
+      // 一次原子提交：全部改动共用一个 revision 栅栏（snap.revision 是本次读到的那个）。
+      // 被拒（false）时**保留草稿**并出错误条——旧实现只看 reject、把 false 当成功、
+      // 无条件清 touched，于是"没写进去"被呈现成"已保存"。
+      const accepted = await props.mutate(saveOpsOf(touched, keys), snap.revision);
       setBusy(false);
+      if (!accepted) {
+        setSaveError(t("saveRejected"));
+        void reloadStats({ t, setStats, setStatsError });
+        return;
+      }
       setTouched({});
       void reloadStats({ t, setStats, setStatsError });
     } catch (error) {
@@ -1166,6 +1309,8 @@ function LlcCard(props: LlcCardProps): ReactNode {
     ruleBusy,
     showAll,
     groups: groupRules(stats?.rules ?? []),
+    shownOf: (key) => shownCounts[key],
+    onShowMore,
     lessonsCount: stats?.lessonsCount,
     eff,
     setField,
@@ -1180,7 +1325,7 @@ function LlcCard(props: LlcCardProps): ReactNode {
     onToggle: toggleOpen,
   };
   return createElement(
-    "li",
+    "div",
     { className: `llc-card${open ? " llc-card-open" : ""}` },
     renderCardHeader(view),
     open ? renderCardBody(view) : null,
@@ -1233,7 +1378,7 @@ function LlcCard(props: LlcCardProps): ReactNode {
 export interface ClientCtx {
   effect: Context["effect"];
   slots: Pick<SlotRegistry, "inject" | "register">;
-  /** 0.1.7 的配置表单服务（installed
+  /** 0.2.1-alpha.2 的配置表单服务（installed
    *  `dsh-client-ui-settings/lib/types/client/config-form.d.ts:94-98` 交出
    *  `Context.configForms`，`get:142` 按 profile 条目 id 取那张共享表单）：取代已随宿主
    *  移除的 `settingsScope`（installed 全树零命中，继续注入它 = 整条 client 入口挂不上）。
@@ -1245,6 +1390,9 @@ export interface ClientCtx {
      *  类，TS 名义比较下测试桩件无法满足。返回类型绑官方 `ConfigForm<...>`，快照字段
      *  改名/换类型即在本地编译失败。 */
     get: (entryId: string) => ConfigForm<Record<string, unknown>>;
+    /** 卡片声明跟着"宿主是否 served 本命名空间"走的那一位（官方 `ConfigForms.whileServed`，
+     *  installed config-form.d.ts:154-160）：整条签名绑官方成员，本卡不自造。 */
+    whileServed: ConfigFormsService["whileServed"];
   };
   locale: {
     register: (ns: typeof NS, dicts: LocaleCatalog) => () => void;
@@ -1260,7 +1408,12 @@ function cardStore(scope: EntryForm): {
   // 冲 memo，导致 useSyncExternalStore 每次拿到新引用 → 无限重渲染。
   let cachedSnap: ConfigFormSnapshot<Record<string, unknown>> | null = null;
   let cachedView: CardSnapshot | null = null;
-  const EMPTY_SNAPSHOT: CardSnapshot = { status: "loading", writable: false, value: {} };
+  const EMPTY_SNAPSHOT: CardSnapshot = {
+    status: "loading",
+    writable: false,
+    value: {},
+    revision: undefined,
+  };
   return {
     getSnapshot() {
       const snap = scope.getSnapshot();
@@ -1271,6 +1424,7 @@ function cardStore(scope: EntryForm): {
           writable: snap.writable,
           // 官方 value 在首个快照受理前是 undefined，这里落到空对象供渲染。
           value: snap.value ?? {},
+          revision: snap.revision,
         };
       }
       return cachedView ?? EMPTY_SNAPSHOT;
@@ -1283,7 +1437,26 @@ function cardStore(scope: EntryForm): {
 
 const inject = ["slots", "configForms", "locale"];
 
+/** 本 ctx 是否已经装过卡片：`apply` 幂等（同一条 loader 条目被重复 apply 时，第二次直接
+ *  返回）。用 per-ctx 的 WeakSet 而不是 shared/lib/card-apply 的 `claimApply`——那一枚把
+ *  旗标放在 globalThis 上，而卡片可能在同一页面里被多个 ctx 装载（测试夹具、多 profile
+ *  预览），单旗会互相阻挡；WeakSet 不阻止 GC，disposer 里删掉即可再次声明。
+ *  要防的形状：重复 apply 会让 `locale.register` 抛 "already has locale"（官方
+ *  `LocaleRuntime.register` 对重复 (ns, locale) 直接 throw），整条 client fiber 变 FAILED、
+ *  卡片完全不注册。 */
+const APPLIED = new WeakSet<ClientCtx>();
+
 function apply(ctx: ClientCtx): void {
+  if (APPLIED.has(ctx)) {
+    return;
+  }
+  APPLIED.add(ctx);
+  ctx.effect(
+    () => () => {
+      APPLIED.delete(ctx);
+    },
+    "lesson-loop-card: apply guard",
+  );
   ctx.effect(() => {
     const tag = document.createElement("style");
     tag.id = "lesson-loop-card-css";
@@ -1293,7 +1466,7 @@ function apply(ctx: ClientCtx): void {
       tag.remove();
     };
   }, "lesson-loop-card: styles");
-  // 本包的共享表单：条目 id == cordis.patch.yml 里的裸 id `lesson-loop`（0.1.7 起
+  // 本包的共享表单：条目 id == cordis.patch.yml 里的裸 id `lesson-loop`（0.2.1-alpha.2 里
   // settings 命名空间即条目 id，注册是隐式的，插件侧不再有 register 那一步），与 host
   // 半 `Config` 投影出的那段同源，故直接复用 NS。
   const scope = ctx.configForms.get(NS);
@@ -1309,34 +1482,43 @@ function apply(ctx: ClientCtx): void {
   // 数与回收范围都不变，只是一枚效应承载（旧写法要自己拼两个 disposer）。
   ctx.effect(() => ctx.locale.register(NS, UI_MESSAGES), "lesson-loop-card: locale dictionaries");
   const t = ctx.locale.bind(NS);
-  ctx.slots.inject("plugins.bundle.config", () => {
-    const unregister = ctx.slots.register(
-      {
-        // 0.1.6：settings.plugin.item 已删除；plugins.bundle.config 按 bundle 包名 keyed
-        // （key 用 BUNDLE_PKG，**不是** NS——NS 只喂 configForms.get()，见文件头）。
-        name: "plugins.bundle.config",
-        key: BUNDLE_PKG,
-        inject: () => ({
-          t,
-          hooks: { card: store },
-          // 直通表单的写口：卡片 save() 自己 await + catch（传输失败才 reject，见 LlcCardProps）。
-          set: (field: string, value: unknown) => scope.set(field, value),
-          unset: (field: string) => scope.unset(field),
+  // 卡片只在宿主**真的 served 本命名空间**时才声明（官方 `ConfigForms.whileServed`，
+  // installed config-form.d.ts:154-160）：本卡编辑的就是 `NS` 这一段，宿主没投影它
+  // （本包没装 / 该条目没启用）时页面不该出现这张全只读、stats 也拉不到的空卡。
+  // 首方口径同一句：ui-settings-agent-loop 的 `configForms.whileServed([NS], …)`。
+  ctx.effect(
+    () =>
+      ctx.configForms.whileServed([NS], () =>
+        ctx.slots.inject("plugins.bundle.config", () => {
+          const unregister = ctx.slots.register(
+            {
+              // 0.1.6：settings.plugin.item 已删除；plugins.bundle.config 按 bundle 包名 keyed
+              // （key 用 BUNDLE_PKG，**不是** NS——NS 只喂 configForms.get()，见文件头）。
+              name: "plugins.bundle.config",
+              key: BUNDLE_PKG,
+              inject: () => ({
+                t,
+                hooks: { card: store },
+                // 原子写口（直通共享表单的 mutate；受理位由卡片消费，见 LlcCardProps）。
+                mutate: (ops, revision) => scope.mutate(ops, revision),
+              }),
+            },
+            LlcCard,
+          );
+          // disposer 只 unregister()，**不 dispose 表单**：0.2.1-alpha.2 的 `configForms.get(entryId)`
+          // 交回的是 provider 自己持有的那张共享表单（installed config-form.d.ts:138-142
+          // "The entry's form, owned by this provider"），消费契约 `ConfigForm`
+          // （config-form-types.d.ts:36-74）里根本没有 dispose。slot collapse 会调用本 disposer
+          // 并在再次声明时**重跑工厂**（installed dsh-client-ui-renderer/lib/types/client/
+          // registry.d.ts:100 "Collapse disposes the effect and a later declaration runs it
+          // again"）——表单共享且长活，所以重跑后写入依然落盘；旧 `settingsScope` 那种「离开
+          // 插件页一次之后 scope 永久 disposed、每次保存被静默丢弃」的坑（0.1.6 的 fiber 级
+          // dispose）随该服务一起消失。
+          return unregister;
         }),
-      },
-      LlcCard,
-    );
-    // disposer 只 unregister()，**不 dispose 表单**：0.1.7 的 `configForms.get(entryId)`
-    // 交回的是 provider 自己持有的那张共享表单（installed config-form.d.ts:138-142
-    // "The entry's form, owned by this provider"），消费契约 `ConfigForm`
-    // （config-form-types.d.ts:36-74）里根本没有 dispose。slot collapse 会调用本 disposer
-    // 并在再次声明时**重跑工厂**（installed dsh-client-ui-renderer/lib/types/client/
-    // registry.d.ts:100 "Collapse disposes the effect and a later declaration runs it
-    // again"）——表单共享且长活，所以重跑后写入依然落盘；旧 `settingsScope` 那种「离开
-    // 插件页一次之后 scope 永久 disposed、每次保存被静默丢弃」的坑（0.1.6 的 fiber 级
-    // dispose）随该服务一起消失。
-    return unregister;
-  });
+      ),
+    "lesson-loop-card: slot registration",
+  );
 }
 
 export {

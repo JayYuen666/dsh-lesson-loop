@@ -60,7 +60,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 ### 设置项
 
-设置命名空间 = profile 条目 id `lesson-loop`（运行时可改）。0.1.7 的注册是隐式的（宿主按条目导出的 `Config` 反推命名空间与可编辑字段），一个条目只有这一段：规则库就是它的第 12 个 volatile 字段 `rules`（用户可直接编辑），开关与阈值是同段的另外 11 项。旧版「开关与规则分属两段（`lesson-loop-rules`）」的隔离改由三处补回：`rules` 标了 `.loose()`（人把它改成非数组不会让整条条目装载失败）、读侧另看 `describe().user` 的原文形状（读不懂即拒写，绝不拿空库去覆写等人修的数据）、以及整段共用一枚 revision 的 CAS 重读重放。坏一条规则不会打死开关，反之亦然。四个布尔默认全为 `true`：`enabled`（总开关，关掉后不上报、不注入、不做退出清算）、`reportEnabled`（落盘与归并）、`injectEnabled`（会话开始注入）、`sectionEnabled`（常驻段）。
+设置命名空间 = profile 条目 id `lesson-loop`（运行时可改）。0.2.1-alpha.2 的注册是隐式的（宿主按条目导出的 `Config` 反推命名空间与可编辑字段），一个条目只有这一段：规则库就是它的第 12 个 volatile 字段 `rules`（用户可直接编辑），开关与阈值是同段的另外 11 项。旧版「开关与规则分属两段（`lesson-loop-rules`）」的隔离改由三处补回：`rules` 标了 `.loose()`（人把它改成非数组不会让整条条目装载失败）、读侧另看 `describe().user` 的原文形状（读不懂即拒写，绝不拿空库去覆写等人修的数据）、以及整段共用一枚 revision 的 CAS 重读重放。坏一条规则不会打死开关，反之亦然。四个布尔默认全为 `true`：`enabled`（总开关，关掉后不上报、不注入、不做退出清算）、`reportEnabled`（落盘与归并）、`injectEnabled`（会话开始注入）、`sectionEnabled`（常驻段）。
 
 | 字段               | 默认       | 取值                    | 作用                                                    |
 | ------------------ | ---------- | ----------------------- | ------------------------------------------------------- |
@@ -68,7 +68,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 | `demoteThreshold`  | `3`        | 1–50                    | 降级所需的 armed 后复发次数                             |
 | `demoteMinSamples` | `5`        | 1–100                   | 降级所需真实证据 `violation+suppressed` 下限            |
 | `demoteRatio`      | `0.5`      | 0.05–1（步长 0.05）     | 复发率 `violation/(violation+suppressed)` 红线          |
-| `decayDays`        | `30`       | 1–365                   | armed 超此天数且双零 → 标记「不可判定」                 |
+| `decayDays`        | `30`       | 1–365                   | armed 超此天数仍无一次干净命中 → 「不可判定」（锚点是最近一次活动） |
 | `reviveThreshold`  | `3`        | 1–20                    | rejected 后再现此次数 → 自动转回候选待人重审            |
 | `maxLessonsBytes`  | `0`        | ≤ 1 GiB（0 = 不设上限） | 事件流水的磁盘保险丝，不为省上下文而截断内容            |
 | `digestTimeoutMs`  | `120000`   | ≥ 1000                  | 一次蒸馏的墙钟（ms），无卡片行、只在注册行 `config:` 给 |
@@ -114,5 +114,5 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
   - `/lessons-digest` 同样拒绝执行；读端点与设置卡照常可用。
 - 卡片上点 arm 提示失败？`rules-not-persisted` 意味着这一次没进库（端口拒写或 CAS 冲突用满），库里仍是旧状态，重试即可。
   - 若段里的 `rules` 被手改成非数组，规则面降级为「读空、写拒」（坏内容原样留着等人修，本进程一次都不写这段），同段的开关照改照生效，修好那段设置即恢复。
-- 规则一直显示「不可判定」？说明这条 armed 规则至今零复发、零 `pass` 命中（场景没被触发，或该类教训的上报方不发 `pass`）：既不降级也不归档，保持 `armed` 由你停用或归档。
+- 规则一直显示「不可判定」？说明机器**没有干净命中可作分母**：`suppressed` 仍为 0，且要么这条规则已静置超过 `decayDays`（锚点是它最近一次活动：arm / 最后一次复发 / 最后一次遵守），要么复发已达 `demoteThreshold` 却始终没有一次被遵守的会话。两种情况下 `violation/(violation+suppressed)` 结构上恒为 1.0，机器既不降级也不归档——保持 `armed` 由你停用或归档；出现一次 `pass` 命中即自动退出该态。
 - 别的插件收不到总线？未装本包或 `ctx.provide` 不可用（后者会打一条 error 日志点破）时，上报方只丢报告，自身功能不受影响。

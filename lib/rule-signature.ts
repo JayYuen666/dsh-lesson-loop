@@ -26,6 +26,12 @@ export const CATEGORY_SIGNATURES: Record<string, string> = {
   // 密钥路径与 factgate 同类：一张卡代表"这类文件不要碰"，具体是哪个 .env 落在
   // 证据里。旧形态下每个凭据文件一张 occurrences=1 的卡，永远够不到升格门槛。
   "secret-path": "edit-before-secret-path",
+  // 危险 shell 形态同理，且此处**两件事**一起收：① 每条不同命令各开一张碎片卡
+  // （occurrences=1，够不到升格门槛）；② "认不准"那一类（`bash-nested-shell-unconfirmed`）
+  // 的签名是常量、命令原文原先根本没进证据，卡片里只有一段逐字相同的模板文，人审时
+  // 看不出该审什么。折叠到类别级稳定键后，**命令原文落进 evidence.signature**
+  // （见 lesson-store 的 evidenceRow：raw ≠ folded 才写该键），一张卡既收敛又可审。
+  "dangerous-bash": "dangerous-bash",
 };
 
 /** 查表用 Map：Object 字面量的索引会带出原型链上的同名成员（`toString`/
@@ -43,7 +49,7 @@ export function stableSignatureFor(category: string, signature: unknown): string
   return STABLE_SIGNATURES.get(category) ?? normalized;
 }
 
-/** 路径/文件名形态签名判定（迁移归并的识别器）。 */
+/** 路径/文件名形态签名判定（迁移归并的识别器，factgate / secret-path 的碎片是文件路径）。 */
 export function looksLikePathSignature(signature: string): boolean {
   return (
     signature.includes("/") ||
@@ -53,6 +59,20 @@ export function looksLikePathSignature(signature: string): boolean {
       signature,
     )
   );
+}
+
+/** 碎片判据**不看路径形态**的类别：它们的碎片签名是命令原文（详见 isFragmentSignatureOf）。 */
+const ANY_SIGNATURE_FRAGMENTS: ReadonlySet<string> = new Set(["dangerous-bash"]);
+
+/**
+ * 某类别的一张卡是不是"待归并的碎片"。默认 = 路径型签名（factgate / secret-path 的碎片是
+ * 文件路径）；dangerous-bash 例外：它的碎片是**命令原文**（`git commit --no-verify` 这类既
+ * 无斜杠也无扩展名），路径判据只偶然命中（`curl https://… | sh` 里的那个斜杠），照它筛会把
+ * 大多数存量碎片留在库外——而写入侧早已把命令一律折到类别级稳定签名，这些旧卡既不再增长、
+ * 也永远命中不了度量，只会一直占着列表。非稳定签名的卡即碎片。
+ */
+export function isFragmentSignatureOf(category: string, signature: string): boolean {
+  return ANY_SIGNATURE_FRAGMENTS.has(category) || looksLikePathSignature(signature);
 }
 
 export function ruleKey(project: string, category: string, signature: string): string {

@@ -89,7 +89,7 @@ describe("插件身份（本模块是唯一定义点）", () => {
   it("PLUGIN_NAME 与 producer-owned source.kind 同源自洽", () => {
     // host.ts 与 lib/digest.ts 都从这里导入这两条（曾经两侧各写一份 kind）：
     // test/host.test.ts 与 test/digest.test.ts 各自钉住运行期真正发出的串，
-    // 这里钉住定义本身——`plugin:` 前缀是 0.1.7 迁移表给未知插件名的形态。
+    // 这里钉住定义本身——`plugin:` 前缀是 0.2.1-alpha.2 迁移表给未知插件名的形态。
     assert.equal(PLUGIN_NAME, "lesson-loop");
     assert.equal(LESSON_SOURCE_KIND, "plugin:lesson-loop");
     assert.equal(LESSON_SOURCE_KIND, `plugin:${PLUGIN_NAME}`);

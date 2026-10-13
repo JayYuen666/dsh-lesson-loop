@@ -112,7 +112,7 @@ export type ModelSelection = Partial<ReturnType<AgentDefaultModelConfig["current
 // 本插件的消息身份（PLUGIN_NAME / LESSON_SOURCE_KIND）只在 lib/prompt.ts 定义一份：
 // 蒸馏请求帧与 host 的 armed 规则摘要注入是同一个生产者，不得有两个身份
 // （蒸馏请求本身是 request-only 输入、不落持久消息位，但读回历史行时比的就是这个串）。
-// 见 lib/prompt.ts 的注释：0.1.7 的 V4 准入（session-format-v3-to-v4/src/
+// 见 lib/prompt.ts 的注释：0.2.1-alpha.2 的 V4 准入（session-format-v3-to-v4/src/
 // message-sources.ts）在**每个**声明的持久消息位上拒收退役包装
 // `{ kind: 'plugin', plugin }`，迁移表又给未知插件名统一加 `plugin:` 前缀
 // （sources.ts producerKind），故 `plugin:lesson-loop` 既是注入身份也是读回身份。
@@ -208,10 +208,21 @@ async function drainStreamToText(
   return text.trim();
 }
 
+/** 蒸馏产出的一条候选（命令回显逐条列出；created 与 dropped 同一形状）。 */
+export interface DigestCreatedRule {
+  category: string;
+  signature: string;
+  statement: string;
+}
+
 export interface DigestResult {
   project: string;
   feedbackCount: number;
-  created: { category: string; signature: string; statement: string }[];
+  /** 真的落进规则库的候选。 */
+  created: DigestCreatedRule[];
+  /** 模型提出了、但这一次没写进规则库的候选（规则库拒写 / CAS 重放耗尽）。
+   *  命令回显必须把它与 created 分开讲：库里的那张卡并不存在。 */
+  dropped: DigestCreatedRule[];
   raw: string;
 }
 
@@ -289,12 +300,18 @@ export async function runDigest(
     // 建卡是 provider 写（异步）：一条条**串行**跑，避免同一命名空间上 N 条并发 CAS
     // 互相撞车。写成递归而不是 for + await：循环里的 await 会被 lint 判成"该并发"，
     // 这里恰恰并发不了（并发只会撞 revision，见 lib/lesson-store.ts 的 commit 注释）。
-    const addInOrder = async (index: number): Promise<DigestResult["created"]> => {
+    // 落库失败（CAS 耗尽 / 端口拒写）**不计进 created**：卡片列表里没有的规则不能回显成
+    // "已蒸馏"，那是让人去卡片上找一张不存在的卡（见 CandidateReceipt 的注释）。
+    const acc: { created: DigestCreatedRule[]; dropped: DigestCreatedRule[] } = {
+      created: [],
+      dropped: [],
+    };
+    const addInOrder = async (index: number): Promise<void> => {
       const entry = parsed[index];
       if (entry === undefined) {
-        return [];
+        return;
       }
-      const card = await store.addCandidate({
+      const { card, persisted } = await store.addCandidate({
         project,
         category: entry.category,
         signature: entry.signature,
@@ -302,14 +319,22 @@ export async function runDigest(
         detail: prompt,
         source: "lessons-digest",
       });
-      const rest = await addInOrder(index + 1);
-      return [
-        { category: card.category, signature: card.signature, statement: card.statement },
-        ...rest,
-      ];
+      const line = {
+        category: card.category,
+        signature: card.signature,
+        statement: card.statement,
+      };
+      (persisted ? acc.created : acc.dropped).push(line);
+      await addInOrder(index + 1);
     };
-    const created = await addInOrder(0);
-    return { project, feedbackCount: feedbacks.length, created, raw };
+    await addInOrder(0);
+    return {
+      project,
+      feedbackCount: feedbacks.length,
+      created: acc.created,
+      dropped: acc.dropped,
+      raw,
+    };
   } finally {
     clearTimeout(timer);
   }

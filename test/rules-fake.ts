@@ -1,4 +1,4 @@
-// 规则库设置面的测试替身：复刻 0.1.7 dsh settings 服务对本插件要紧的三件事。
+// 规则库设置面的测试替身：复刻 0.2.1-alpha.2 dsh settings 服务对本插件要紧的三件事。
 //
 //   1. **注册是隐式的**：0.1.6 的 `settings.register(ns, schema, { base })` 已被宿主移除，
 //      命名空间 = profile 条目 id、可编辑字段 = 条目 Config 里标了 `.volatile()` 的那几项。
@@ -18,7 +18,7 @@
 //
 // 本文件另附两个 LessonStore 用的规则库端口构造器（持久化边界已从"自管 JSON 文件"
 // 换成 RulesRepository，测试侧的装配因此也走这里）：
-//   * attachRulesRepository —— 生产同款端口装配（0.1.7 无注册步骤，就一句 createRulesRepository）；
+//   * attachRulesRepository —— 生产同款端口装配（0.2.1-alpha.2 无注册步骤，就一句 createRulesRepository）；
 //   * scriptedRulesRepository —— 手工排布读面与写回执，并逐次记账（断言"根本没
 //     调用过 save"这类不变式时不需要真 provider）。
 
@@ -150,7 +150,7 @@ export interface SettingsProviderFake {
   loadsOf: (ns: string) => number;
 }
 
-/** 文档里那一层的形状校验（0.1.7 的条目 config 必须是键值对象）。 */
+/** 文档里那一层的形状校验（0.2.1-alpha.2 的条目 config 必须是键值对象）。 */
 function sectionOf(document: Record<string, unknown>, ns: string): Record<string, unknown> {
   const raw = document[ns];
   if (raw === undefined) {
@@ -230,7 +230,7 @@ export function makeSettingsProvider(
 
   return {
     describe() {
-      // 0.1.7 的 describe() 只投影"条目存在且至少一个 volatile 字段"的那些行；本假件
+      // 0.2.1-alpha.2 的 describe() 只投影"条目存在且至少一个 volatile 字段"的那些行；本假件
       // 只服务本包条目，故恒给这一条（跨命名空间读 locale 因此落空 = 未装 client-locale）。
       // 行形状就此是官方 `SettingsDescriptor`（installed dsh-settings/lib/types/index.d.ts:8-19，
       // 必填 ns/autoGenerate/schema/value/revision/applies）：`ns` 是品牌
@@ -284,7 +284,7 @@ export function makeSettingsProvider(
 // ── LessonStore 的规则库端口装配 ────────────────────────────────────────
 
 /**
- * 生产同款的端口装配（镜像 host.ts 的 createRulesFacet）。0.1.7 起这里没有注册步骤可
+ * 生产同款的端口装配（镜像 host.ts 的 createRulesFacet）。0.2.1-alpha.2 里这里没有注册步骤可
  * 被打回：坏存量由条目 Config 的 `.loose()` 在解析期吸收，端口在 load() 里报 usable:false
  * ——"读不懂不等于没有"这条纪律因此换了个落点，而不再换了有无。
  */

@@ -23,7 +23,7 @@ import { MESSAGES, fill } from "../lib/messages.ts";
 import type { LessonLoopMessages } from "../lib/messages.ts";
 import { fenceUntrusted } from "../lib/prompt.ts";
 import { LessonStore } from "../lib/lesson-store.ts";
-import { makeRulesFacet } from "./rules-fake.ts";
+import { makeRulesFacet, scriptedRulesRepository } from "./rules-fake.ts";
 import type { RulesFacet } from "./rules-fake.ts";
 
 /** 本文件默认语言（zh = host 未读到 locale 偏好时的取值）；runDigest 走 options 入参。 */
@@ -64,9 +64,12 @@ let scratch: string;
 /** 规则库面：每条测试一份（旧写法是每测试一个临时 rules.json，同测试内共享）。 */
 let facet: RulesFacet;
 
+/** 本文件里三处 LessonStore 装配共用的台账文件名。 */
+const LESSONS_FILE = "lessons.jsonl";
+
 function makeStore(): LessonStore {
   return new LessonStore({
-    lessonsFile: path.join(scratch, "lessons.jsonl"),
+    lessonsFile: path.join(scratch, LESSONS_FILE),
     rules: facet.repo,
     // 起草模板表按 zh 喂：蒸馏条目本身是数据，本文件的断言全部钉住既有中文形态。
     messages: () => MESSAGES.zh,
@@ -326,6 +329,27 @@ describe("digest 蒸馏管线", () => {
       );
       assert.equal(r2.created.length, 0);
       assert.equal(r2.feedbackCount, 0);
+    });
+
+    it("候选没写进规则库 → 落进 dropped 而不是 created（库里没有的卡不许算已蒸馏）", async () => {
+      const scripted = scriptedRulesRepository({ outcomes: ["rejected"] });
+      const store = new LessonStore({
+        lessonsFile: path.join(scratch, LESSONS_FILE),
+        rules: scripted.repo,
+        messages: () => MESSAGES.zh,
+        now: () => 1_700_000_000_000,
+      });
+      const result = await runDigest(
+        store,
+        fakeSession(),
+        fakeLlm('[{"category":"gate-failure","signature":"pnpm check","statement":"先自检"}]'),
+        { provider: "prov", model: "m1" },
+        { ...runZh, events: [negativePut("m1", "门禁又没过")] },
+      );
+      assert.equal(result.created.length, 0, "没落盘的候选不许算 created");
+      assert.equal(result.dropped.length, 1, "它必须出现在 dropped 里，由命令回显如实报告");
+      assert.equal(result.dropped[0]?.signature, "pnpm check");
+      assert.equal(store.rules().length, 0, "库里确实没有这张卡");
     });
 
     it("缺模型选择抛错；finish 非 stop 抛错", async () => {

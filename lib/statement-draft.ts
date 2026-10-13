@@ -41,6 +41,11 @@ export function draftStatement(
       return fill(messages.statementFactgatePath, { signature });
     }
     case "dangerous-bash": {
+      // 稳定签名 → 通用正文：具体是哪条命令在 evidence.signature 里，正文不嵌占位
+      // （同 secret-path 的形态；碎片化与"人审看不出该审什么"是同一处修复的两面）。
+      if (signature === CATEGORY_SIGNATURES["dangerous-bash"]) {
+        return messages.statementDangerousBashStable;
+      }
       return fill(messages.statementDangerousBash, { signature });
     }
     case "secret-path": {

@@ -35,6 +35,8 @@ export interface UiMessages {
   readonly revert: string;
   /** 保存失败前缀（后接错误摘要）。 */
   readonly saveFailed: string;
+  /** 保存被规则库拒绝（CAS 冲突/拒写）时的提示：一次原子提交，改动一个字都没落盘。 */
+  readonly saveRejected: string;
   /** stats 端点回非 ok 且没带 error 时的兜底。 */
   readonly statsUnavailable: string;
   /** 规则动作失败且端点没带 error 时的兜底。 */
@@ -73,6 +75,8 @@ export interface UiMessages {
   readonly sectionRetired: string;
   /** 展开「已拒绝/归档」的按钮。 */
   readonly showRetired: string;
+  /** 分组懒渲染的「加载更多」（{count} = 本组仍折叠着的条数）。 */
+  readonly loadMore: string;
   /** 分组为空时的占位。 */
   readonly emptyGroup: string;
   /** 观察次数 + 建卡日期（{count} {day}）。 */
@@ -83,6 +87,8 @@ export interface UiMessages {
   readonly metaUndeterminable: string;
   /** rejected 后又出现的计数（{count}）。 */
   readonly metaRevive: string;
+  /** 服务端发来的状态本卡不认识（{status}）：保留原值显形，不给动作按钮。 */
+  readonly metaStatusUnknown: string;
   /** 该卡由 /lessons-digest 蒸馏而来。 */
   readonly metaFromDigest: string;
 
@@ -162,6 +168,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     saving: "保存中…",
     revert: "撤销",
     saveFailed: "保存失败：",
+    saveRejected: "规则库拒绝了这次保存（可能被别处改过），改动未生效，请重试。",
     statsUnavailable: "stats 不可用",
     actionFailed: "操作失败",
 
@@ -199,11 +206,13 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     sectionArmed: "生效中的规则（复发/遵守/暴露 实时度量；不可判定者请人工处理）",
     sectionRetired: "已拒绝/归档",
     showRetired: "收起已拒绝/归档",
+    loadMore: "加载更多（还有 {count} 条）",
     emptyGroup: "暂无",
     metaObservations: "观察 {count} 次 · {day}",
     metaArmed: "复发 {violation} / 遵守 {suppressed} / 暴露 {samples}",
     metaUndeterminable: "不可判定：armed 至今既无复发也无一次遵守，机器无从裁定，请人工停用或归档",
     metaRevive: "拒绝后又出现 {count} 次（达阈值自动回候选）",
+    metaStatusUnknown: "状态：{status}（本卡未识别，暂不提供动作）",
     metaFromDigest: "来自 /lessons-digest",
 
     btnDemote: "停用待审",
@@ -227,6 +236,8 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     saving: "Saving…",
     revert: "Revert",
     saveFailed: "save failed: ",
+    saveRejected:
+      "The rule library refused this save (it may have changed elsewhere) — nothing was applied, retry.",
     statsUnavailable: "stats unavailable",
     actionFailed: "action failed",
 
@@ -271,6 +282,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       "Armed rules (live violation/followed/exposure metrics; handle undeterminable ones by hand)",
     sectionRetired: "Rejected / archived",
     showRetired: "Hide rejected / archived",
+    loadMore: "Load more ({count} remaining)",
     emptyGroup: "none",
     metaObservations: "{count} observations · {day}",
     metaArmed: "{violation} violations / {suppressed} followed / {samples} exposed",
@@ -278,6 +290,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       "Undeterminable: armed this long with neither a violation nor a single follow-through — no way for the machine to judge, please disable or archive it",
     metaRevive:
       "Reappeared {count} time(s) after rejection (returns to candidates at the threshold)",
+    metaStatusUnknown: "status: {status} (not recognised by this card — no actions offered)",
     metaFromDigest: "from /lessons-digest",
 
     btnDemote: "Demote for review",

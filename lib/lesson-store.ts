@@ -39,7 +39,7 @@ import { appendJsonl, readJsonl } from "./lesson-jsonl.ts";
 // 与 lib/statement-draft.ts 必须算出同一个串，一处漏调就长成"写得进、查不到"的键漂移。
 import {
   CATEGORY_SIGNATURES,
-  looksLikePathSignature,
+  isFragmentSignatureOf,
   normalizeSignature,
   ruleKey,
   stableSignatureFor,
@@ -323,6 +323,15 @@ export interface RulesRepository {
   readonly save: (cards: readonly RuleCard[], revision: number) => Promise<RulesWriteOutcome>;
 }
 
+/** 蒸馏补录（addCandidate）的回执：卡（计划态）+ **它是否真的落库**。
+ *  落库失败时卡仍带着本次改动返回（并回已有卡时也一样），但库里那一行原样不动——
+ *  调用方必须按 `persisted` 决定回显，不许把"计划"当"已生效"报：/lessons-digest 曾因此
+ *  回显"已蒸馏 N 条候选规则"，而卡片列表里一张都没有。 */
+export interface CandidateReceipt {
+  readonly card: RuleCard;
+  readonly persisted: boolean;
+}
+
 /**
  * CAS 冲突后的"重读 + 重放"上限。
  *
@@ -420,8 +429,9 @@ const STATUS_AUTHORITY: Record<RuleStatus, number> = {
 /**
  * 挑主卡：返回 [主卡, 被并卡]。人工状态优先（armed > rejected > archived > 候选/
  * 降级），同级取 occurrences 多者（保持入参顺序优先，结果与卡片在列表里的位置无关）。
- * 因为 armed 一定胜出，被丢掉的那张不可能带着未迁移的 violation/suppressed ——
- * 不需要 migrateProjectFragments 里那步 inheritArmed。
+ * ⚠ 只有**状态不同级**时"被并的那张不可能带 live 计数"才成立；两张 armed 撞键时按
+ * occurrences 取舍，被并的那张正是 armed 且带着自己的 violation/suppressed/samples，
+ * 故 mergeProjectKeyCollisions 必须在合并前把它们累加进主卡（foldMetrics）。
  */
 function pickMergePair(left: RuleCard, right: RuleCard): [RuleCard, RuleCard] {
   const leftAuthority = STATUS_AUTHORITY[left.status];
@@ -433,6 +443,17 @@ function pickMergePair(left: RuleCard, right: RuleCard): [RuleCard, RuleCard] {
     return [right, left];
   }
   return left.occurrences >= right.occurrences ? [left, right] : [right, left];
+}
+
+/** 两个可选时间戳取较晚者（撞键合并后的锚点：不能因为并卡把衰减锚点拉早）。 */
+function laterOf(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) {
+    return right;
+  }
+  if (right === undefined) {
+    return left;
+  }
+  return Math.max(left, right);
 }
 
 /** 证据行归一：逐字段补默认（非对象的证据元素在 unknownArray 之后仍可能为 null）。 */
@@ -989,7 +1010,10 @@ export class LessonStore {
       return false;
     }
     rule.status = "candidate";
-    rule.occurrences = rule.recurrences;
+    // 累计观察数只增不减：rejected 期的复发同样是"这条教训又出现了"的观测，转回候选时
+    // 并进 occurrences（旧实现写 `occurrences = recurrences`，把此前的累计数直接覆盖成
+    // 复发段的那几个数——卡片上的"观察 N 次"会凭空变小）。
+    rule.occurrences += rule.recurrences;
     rule.recurrences = 0;
     rule.updatedAt = now;
     return true;
@@ -1055,6 +1079,14 @@ export class LessonStore {
       }
       return { value: dirty, write: dirty };
     });
+    // 汇报"已清算"只在**真的写进库**之后：没存住（CAS 耗尽/端口拒写/读不懂）时
+    // samples/suppressed 在盘上一格没动，回显成 settled 就是把计划当事实报。
+    if (outcome.value && !outcome.ok) {
+      console.error(
+        `[lesson-loop] ${sessionId ?? "unknown session"}: session settle for project ${project} was NOT persisted (retry on the next session end)`,
+      );
+      return;
+    }
     if (outcome.value && sessionId !== undefined) {
       console.info(
         `[lesson-loop] ${sessionId}: session settled for project ${project} (${String(passedRuleIds.size)} passed rule(s))`,
@@ -1105,7 +1137,7 @@ export class LessonStore {
     statement: string;
     detail: string;
     source?: string;
-  }): Promise<RuleCard> {
+  }): Promise<CandidateReceipt> {
     const now = this.now();
     const rawSignature = normalizeSignature(input.signature);
     const signature = stableSignatureFor(input.category, rawSignature);
@@ -1140,8 +1172,9 @@ export class LessonStore {
       cards.push(card);
       return { value: card, write: true };
     });
-    // 回执只有卡片本身（与旧签名一致）：没存住由 ok 通道外的日志/下一次读取暴露。
-    return outcome.value;
+    // 回执带 `persisted`：没存住时库里的那一行原样不动（outcome.ok=false），调用方据此
+    // 决定回显，不许把计划态当已生效报——见 CandidateReceipt 的注释。
+    return { card: outcome.value, persisted: outcome.ok };
   }
 
   /** 把 source 碎片并入 primary（occurrences/evidence/sources/lastSeenAt 累加；
@@ -1194,14 +1227,14 @@ export class LessonStore {
     let merged = 0;
     let dirty = false;
     for (const [category, stableSig] of Object.entries(CATEGORY_SIGNATURES)) {
-      // 快照全部潜在碎片（候选/armed/rejected 且路径型签名），再按 project 分组处理——
-      // 跨项目绝不合并（规则卡按 project 隔离，混并会污染桶内度量与注入）。
+      // 快照全部潜在碎片（候选/armed/rejected 且**按类别**算碎片签名），再按 project
+      // 分组处理——跨项目绝不合并（规则卡按 project 隔离，混并会污染桶内度量与注入）。
       const candidates = cards.filter(
         (card) =>
           card.category === category &&
           card.signature !== stableSig &&
           (card.status === "candidate" || card.status === "armed" || card.status === "rejected") &&
-          looksLikePathSignature(card.signature),
+          isFragmentSignatureOf(category, card.signature),
       );
       const projects = [...new Set(candidates.map((card) => card.project))];
       for (const project of projects) {
@@ -1401,6 +1434,7 @@ export class LessonStore {
         survivors.set(key, card);
       } else {
         const [primary, extra]: [RuleCard, RuleCard] = pickMergePair(kept, card);
+        LessonStore.foldMetrics(primary, extra);
         LessonStore.mergeFragment(primary, extra);
         primary.updatedAt = now;
         survivors.set(key, primary);
@@ -1412,16 +1446,38 @@ export class LessonStore {
     return merged;
   }
 
-  /** 该规则当前是否"不可判定"（armed 够久却 violation+suppressed 双零）。派生态，
-   *  每次按当前 policy/now 现算，不落库——规则重新被触发（violation 或 pass 计数）
-   *  即自然退出该态。 */
-  public isUndeterminable(rule: RuleCard): boolean {
-    return decayVerdict(rule, this.policy(), this.now()) === "undeterminable";
+  /** 撞键合并前把被并卡的**生命周期度量**累加进主卡：两张 armed 撞同键时被并的那张
+   *  带着自己的 violation/suppressed/samples，而 mergeFragment 只折叠观察类字段
+   *  （occurrences/evidence/sources/lastSeenAt/statement/armedAt）——不累加就等于把
+   *  一条规则真实被测到的证据抹掉，复发率分母随之变小。三个时间戳取较晚者（锚点不拉早，
+   *  免得刚并完就判"不可判定"）；源卡缺值时才删键（undefined 与删键在 JSON 往返后语义
+   *  不同，decayVerdict 的锚点回退链会被 undefined 干扰，同 inheritArmed 的口径）。 */
+  private static foldMetrics(primary: RuleCard, extra: RuleCard): void {
+    primary.violation += extra.violation;
+    primary.suppressed += extra.suppressed;
+    primary.samples += extra.samples;
+    const armedAt = laterOf(primary.armedAt, extra.armedAt);
+    const lastViolationAt = laterOf(primary.lastViolationAt, extra.lastViolationAt);
+    const lastSuppressedAt = laterOf(primary.lastSuppressedAt, extra.lastSuppressedAt);
+    for (const [key, value] of [
+      ["armedAt", armedAt],
+      ["lastViolationAt", lastViolationAt],
+      ["lastSuppressedAt", lastSuppressedAt],
+    ] as const) {
+      if (value === undefined) {
+        Reflect.deleteProperty(primary, key);
+      } else {
+        primary[key] = value;
+      }
+    }
   }
 
-  /** 全部"不可判定"的 armed 规则（供 /stats 汇总与卡片提示；人工可停用/归档）。 */
-  public undeterminableRules(): RuleCard[] {
-    return this.rules().filter((rule) => this.isUndeterminable(rule));
+  /** 该规则当前是否"不可判定"（armed 够久却 violation+suppressed 双零）。派生态，
+   *  每次按当前 policy/now 现算，不落库——规则重新被触发（violation 或 pass 计数）
+   *  即自然退出该态。计数由调用方在**已经读到的那份**规则数组上算
+   *  （/stats 每条轮询：一次读取既是投影也是计数，见 host.ts 的 statsSnapshot）。 */
+  public isUndeterminable(rule: RuleCard): boolean {
+    return decayVerdict(rule, this.policy(), this.now()) === "undeterminable";
   }
 
   /** 周期衰减：对全部 armed 规则执行裁决。降级会改状态并落盘；"不可判定"只是派生
@@ -1444,11 +1500,19 @@ export class LessonStore {
       }
       return { value: { demoted, undeterminable }, write: demoted > 0 };
     });
-    const { demoted, undeterminable } = outcome.value;
+    const { undeterminable } = outcome.value;
+    // demoted 只在**真的写进库**之后才作数：写失败时库里的状态还是 armed，
+    // 报出 demoted 会让调用点以为降级已生效（/stats 与「N demoted」日志同一条口径）。
+    const demoted = outcome.ok ? outcome.value.demoted : 0;
+    if (outcome.value.demoted > 0 && !outcome.ok) {
+      console.error(
+        `[lesson-loop] decay: ${String(outcome.value.demoted)} demote(s) were NOT persisted — rules stay armed`,
+      );
+    }
     if (demoted + undeterminable > 0) {
       console.info(`[lesson-loop] decay: ${demoted} demoted, ${undeterminable} undeterminable`);
     }
-    return outcome.value;
+    return { demoted, undeterminable };
   }
 
   /** 近期教训（project 过滤可选；limit ≤ 0 = 全量——内容零截断）。 */

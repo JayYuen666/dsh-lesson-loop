@@ -17,7 +17,7 @@ import { fieldOf } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 /**
  * 规则库存身的设置命名空间 = 本包 profile **条目 id**（`lesson-loop`，见 cordis.patch.yml
- * 的裸 `- id:`）。0.1.7 的注册是隐式的：宿主按条目导出的 `Config` 反推命名空间与可编辑
+ * 的裸 `- id:`）。0.2.1-alpha.2 的注册是隐式的：宿主按条目导出的 `Config` 反推命名空间与可编辑
  * 字段，插件侧不再登记任何段。与 lib/prompt.ts 的 PLUGIN_NAME 同源，防"卡片绑的段 /
  * 端点前缀 / 这里读的段"三处字面量漂移。
  * 类型标注不是装饰：它把"段名就是插件名那一枚字面量"钉成类型，PLUGIN_NAME 若从

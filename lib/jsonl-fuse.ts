@@ -1,18 +1,73 @@
-// jsonl-fuse：JSONL 的**磁盘保险丝**——文件超过 maxBytes 就按行裁尾，只保最新那一段。
+// jsonl-fuse：JSONL 的**磁盘保险丝**——文件超过 maxBytes 就按行裁尾，只保最新那一段；
+// 裁剪与追加共用同一把跨进程排他锁，两条写路径在同一临界区里串行。
 //
 // 为什么与 lib/lesson-jsonl.ts 分家：那一份管"流水怎么写进去、怎么读回来"，这一份管"磁盘
 // 快撑不住时砍掉多少"。两件事的判据来源不同——裁尾算法本体在 shared/lib/jsonl.ts（与
-// ctx-observe 同源、穷举 413 组磁盘内容分歧 0），而**触发策略**（只在 maxBytes > 0 时收缩，
-// 出厂默认 0 = 永不截断，那是写进本包 README 的承诺）与**错误出口**（内部 catch 并打日志，
-// 绝不把异常抛给守卫热路径）是本包自己的事，统一进 shared 就等于改行为。
-// 分家之后这枚裁尾入口有了真实生产消费者（appendJsonl 每次追加前问它一次），不再只是测试面。
+// ctx-observe 同源、穷举 413 组磁盘内容分歧 0），本文件只另外负责**触发策略**（只在
+// maxBytes > 0 时收缩，出厂默认 0 = 永不截断，那是写进本包 README 的承诺）、**错误出口**
+// （裁剪失败只吞不抛，绝不误伤紧接着的这次追加）与**并发纪律**（锁）。
+//
+// 为什么追加也要进临界区：追加是 O_APPEND 写、裁剪是"读整份 → 写临时文件 → rename 覆盖"。
+// 两进程各写各的时，另一进程在「裁剪读完、rename 之前」追加的那一行会被新内容整体覆盖掉
+// （事件静默消失，而 report 仍回 ok）。锁把两条路串起来之后只剩两种顺序：追加落在裁剪前
+// （裁的是含它的内容）或后（它落在新文件尾）。**拿不到锁时仍然追加、只跳过裁剪**——宁可
+// 这轮不裁，绝不丢事件；为此锁的覆盖面包含 maxBytes = 0 的纯追加（那时没有读改写，但别的
+// 进程可能正举着 maxBytes > 0 的裁剪）。
+//
+// 原子替换的取舍：`.tmp` + rename 让读者（readJsonl）要么见旧全文、要么见新全文，不会读到
+// 写了一半的中间态；代价是崩溃时可能留下 `.lock` / `.tmp` 两个兄弟文件——锁文件 mtime 超过
+// {@link LOCK_STALE_MS} 即视为持有者已死、可被接管；`.tmp` 是整份覆盖写，下一轮裁剪自然复用。
 
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { shrinkJsonlTail } from "@jayyuen66/dsh-plugin-shared/lib/jsonl";
 
-/** 超限时按行对半收缩（判据在 shared/lib/jsonl.ts，与 ctx-observe 同源；单行超限保末行兜底）。
- *  错误出口留在这里吞掉：本包的承诺是"落库失败只日志、不抛穿宿主热路径"。 */
-export function trimJsonl(file: string, maxBytes: number): void {
+/** 锁文件视为陈旧的门槛：临界区全是同步调用（微秒级），10s 没释放只可能是持有者死了
+ *  （进程崩溃/被 SIGKILL）。没有这一层，一次崩溃会让该文件的裁剪永久停摆。 */
+const LOCK_STALE_MS = 10_000;
+
+/** 陈旧锁接管：新锁让位（false）；超龄则 rm 掉重抢（抢输/失败仍 false）。 */
+function takeOverStaleLock(lock: string): boolean {
+  try {
+    if (Date.now() - statSync(lock).mtimeMs <= LOCK_STALE_MS) {
+      return false;
+    }
+    rmSync(lock, { force: true });
+    writeFileSync(lock, "", { flag: "wx" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 尝试取锁：先以 `wx`（O_CREAT|O_EXCL）原子占位；占不到时只有**陈旧**锁才允许接管。
+ *  任何一步 fs 失败都按"拿不到"处理——热路径只许降级，不许抛。 */
+function tryAcquireLock(lock: string): boolean {
+  try {
+    writeFileSync(lock, "", { flag: "wx" });
+    return true;
+  } catch {
+    return takeOverStaleLock(lock);
+  }
+}
+
+/** 在排他锁下执行临界区；拿不到锁返回 false（什么都不执行）。临界区无论成败都释放锁
+ *  （finally）——失败路径也把锁还回去，别让后来者等到"陈旧"。 */
+function withLock(file: string, action: () => void): boolean {
+  const lock = `${file}.lock`;
+  if (!tryAcquireLock(lock)) {
+    return false;
+  }
+  try {
+    action();
+  } finally {
+    rmSync(lock, { force: true });
+  }
+  return true;
+}
+
+/** 裁剪本体（**只允许在锁内调用**）：读整份 → 按行裁尾 → 临时文件 + 原子 rename。
+ *  错误出口在这里吞掉：裁剪是尽力而为，失败绝不误伤调用方紧接着的这次追加。 */
+function shrinkLocked(file: string, maxBytes: number): void {
   try {
     if (statSync(file).size <= maxBytes) {
       return;
@@ -20,9 +75,29 @@ export function trimJsonl(file: string, maxBytes: number): void {
     const text = readFileSync(file, "utf8");
     const shrunk = shrinkJsonlTail(text, maxBytes);
     if (shrunk !== text) {
-      writeFileSync(file, shrunk);
+      const tmp = `${file}.tmp`;
+      writeFileSync(tmp, shrunk);
+      renameSync(tmp, file);
     }
   } catch {
     /* 截断尽力而为 */
+  }
+}
+
+/**
+ * 保险丝下的 JSONL 追加：`payload` 是要原样写进去的字节（行边界由调用方自己保证）。
+ * 同一把锁内「先裁后写」，与别的进程（以及本进程的其它临界区）串行；拿不到锁则跳过裁剪、
+ * 照常追加。**追加本身的失败不吞**：由调用方按各自的失败纪律记日志（本包的出口在
+ * lib/lesson-jsonl.ts 的 catch）。
+ */
+export function appendUnderFuse(file: string, payload: string, maxBytes: number): void {
+  const locked = withLock(file, () => {
+    if (maxBytes > 0) {
+      shrinkLocked(file, maxBytes);
+    }
+    appendFileSync(file, payload);
+  });
+  if (!locked) {
+    appendFileSync(file, payload);
   }
 }

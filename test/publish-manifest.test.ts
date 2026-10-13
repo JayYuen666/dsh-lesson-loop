@@ -17,6 +17,7 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { listDeclarations } from "../build-types.mjs";
+import { SETTINGS_NAMESPACE } from "../lib/rules-layout.ts";
 
 const pkgDir = path.join(import.meta.dirname, "..");
 
@@ -52,6 +53,7 @@ const SKIP_DIRS = new Set([
 
 /** package.json 里与入口面有关的形状；其余字段本门禁不关心。 */
 interface Manifest {
+  readonly name?: string;
   readonly main?: string;
   readonly types?: string;
   readonly exports?: Record<string, unknown>;
@@ -421,5 +423,118 @@ describe("注释与文档没有内部指涉", () => {
         }
       }
     }
+  });
+});
+
+/** `dsh` 声明面的形状（宿主按它决定装什么、加载什么）。 */
+interface DshDeclaration {
+  manifestVersion?: number;
+  bundle?: { patch?: string | string[] };
+  client?: { platform?: string; immediately?: boolean; external?: readonly string[] };
+}
+
+/** `dsh` 声明的类型收窄（不做断言：谓词函数即可）。 */
+function isDshDeclaration(value: unknown): value is DshDeclaration {
+  return typeof value === "object" && value !== null;
+}
+
+/** 读取 `dsh` 声明（缺席时给空对象，由各条断言自己点名）。 */
+function dshOf(manifest: Manifest): DshDeclaration {
+  const declared: unknown = (manifest as Manifest & { dsh?: unknown }).dsh;
+  return isDshDeclaration(declared) ? declared : {};
+}
+
+/** patch 列表（字符串与数组两种声明形态都吃）。 */
+function patchFiles(bundle: DshDeclaration["bundle"]): string[] {
+  const declared = bundle?.patch;
+  if (typeof declared === "string") {
+    return [declared];
+  }
+  return Array.isArray(declared) ? [...declared] : [];
+}
+
+/** 一段源码里出现的 `/_dsh/lesson-loop/<段>` 路径（去重排序）。 */
+function pathsIn(text: string): string[] {
+  return [...new Set(text.match(/\/_dsh\/lesson-loop\/[a-z-]+/gu))].toSorted();
+}
+
+/** 产物里的 require 说明符清单（去重排序；跨半门禁用它钉"只允许平台模块"）。 */
+function requiresIn(text: string): string[] {
+  return [...new Set(text.match(/require\("(?<specifier>[^"]+)"\)/gu))].toSorted();
+}
+
+describe("dsh 声明面（宿主按这些字段决定装什么、加载什么）", () => {
+  it("dsh.client 声明 web 平台时必须同时交出 ./client export（缺了宿主扫描直接抛错）", async () => {
+    const { manifest, shipped } = await readSurface();
+    const { client } = dshOf(manifest);
+    if (client === undefined) {
+      return;
+    }
+    // client-modules 的判据（packages/client/modules/src/index.ts:836-857）：platform 必须是
+    // "web" 才当 client 行；声明了 dsh.client 却 export 不出 ./client 时**抛错**，整条装载失败。
+    expect(client.platform).toBe("web");
+    const target = filesOf(manifest.exports?.["./client"] ?? undefined);
+    expect(target.length, "dsh.client 声明了，但 exports 里没有 ./client 目标").toBeGreaterThan(0);
+    for (const file of target) {
+      expect(shipped.has(asRelative(file)), `./client 指向 ${file}，但它不在发布面`).toBe(true);
+    }
+  });
+
+  it("dsh.bundle.patch 指向存在的文件且在发布面里（读不到 patch 的 bundle 会被宿主静默跳过）", async () => {
+    const { manifest, shipped } = await readSurface();
+    const patches = patchFiles(dshOf(manifest).bundle);
+    expect(patches.length, "dsh.bundle.patch 缺失：这条 bundle 在宿主侧等于不存在").toBeGreaterThan(
+      0,
+    );
+    for (const file of patches) {
+      expect(existsSync(path.join(pkgDir, file)), `${file} 不存在`).toBe(true);
+      // app-boot 对读不出 patch 的 bundle 走 skippedBundles（只跳过、不报错）：漏进 files
+      // 就等于装机后插件永不加载，而本地一切照绿。
+      expect(shipped.has(asRelative(file)), `${file} 不在 files 覆盖面里`).toBe(true);
+    }
+  });
+
+  it("patch 的裸条目 id 与 name 必须与包名、代码里的 settings 命名空间同源", async () => {
+    const { manifest } = await readSurface();
+    const patches = patchFiles(dshOf(manifest).bundle);
+    expect(patches.length).toBeGreaterThan(0);
+    const texts = await Promise.all(
+      patches.map((file) => readFile(path.join(pkgDir, file), "utf8")),
+    );
+    const yml = texts.join("\n");
+    // 条目 id 是设置命名空间的真源（宿主读 entry.options.id）：代码侧读同一枚常量的导出口。
+    const entryId = SETTINGS_NAMESPACE;
+    expect(yml, `patch 里没有 - id: ${entryId}，规则库的命名空间就会对不上`).toContain(
+      `id: ${entryId}`,
+    );
+    // 行按裸包名引用本包：client-modules 只扫裸包名条目的 dsh.client 声明。
+    expect(yml, "patch 的 name 必须是本包包名（裸名，不带版本/路径）").toContain(
+      `name: "${manifest.name}"`,
+    );
+  });
+
+  it("client 半与 host 半的端点/请求头常量一致（跨半漂移 = 卡片 404 或被拒）", async () => {
+    const [hostText, clientText] = await Promise.all([
+      readFile(path.join(pkgDir, "host.ts"), "utf8"),
+      readFile(path.join(pkgDir, "src", "client-entry.ts"), "utf8"),
+    ]);
+    const hostPaths = pathsIn(hostText);
+    expect(hostPaths.length, "host 侧至少要有一条端点").toBeGreaterThan(0);
+    // 客户端只消费其中两条（stats / rule-action），但两条路径必须逐字出现在 host 侧。
+    for (const used of pathsIn(clientText)) {
+      expect(hostPaths, `client 打的 ${used} 在 host 侧不存在`).toContain(used);
+    }
+    // csrf 头名：host 的 LESSON_CSRF_HEADER 与客户端写端点回填的名字必须同源。
+    const header = "x-lesson-csrf";
+    expect(hostText, "host 侧没有 csrf 头名").toContain(header);
+    expect(clientText, "client 侧没有回填 csrf 头名").toContain(header);
+  });
+
+  it("client.js 只 require 平台模块（其余依赖一律内联，避免第二份实例）", async () => {
+    const out = await readFile(path.join(pkgDir, "client.js"), "utf8");
+    const required = requiresIn(out);
+    // 平台模块由宿主 shell 提供（react 是 harness PLATFORM_MODULES 的一员）；再出现别的裸
+    // 说明符就等于把一份依赖整包内联/外置进浏览器，符号身份与版本都不再由宿主决定。
+    expect(required, "client.js 的 require 清单只允许平台模块").toStrictEqual(['require("react")']);
   });
 });

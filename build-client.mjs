@@ -34,11 +34,61 @@ const nameKey = "name";
 const nameRaw = asRecord(pkgJson)[nameKey];
 const pkgName = typeof nameRaw === "string" ? nameRaw : "unknown";
 
+/**
+ * 官方 client bundle 的**隐式 external 基座**：外壳预置的冻结模块表（`PLATFORM_MODULES`）
+ * 加 parser 预载行（`PRELOADED_CLIENT_EXTERNALS`，当前为空）。两份真源都在
+ * @deepseek-ai/dsh-client-web 的 `src/platform.ts`，而官方 client 构建器
+ * `packages/client/tsdown.client.ts` 的 `clientExternals()` 算的就是「基座 ∪ 本包
+ * dsh.client.external」——同文件注释明写 "The shell baseline is implicit for every
+ * dynamic bundle"。基座里每一枚都必须 external：内联一份 react / cordis / UI 库的副本
+ * 就是同一个模块两份身份（宿主只认模块表那一条），而这份清单此前只写了 react。
+ * test/build-client.test.ts 把清单逐条钉住，改这里之前先看官方那两份真源动没动。
+ * @type {readonly string[]}
+ */
+const CLIENT_BASELINE = [
+  "react",
+  "react/jsx-runtime",
+  "react-dom",
+  "react-dom/client",
+  "@deepseek-ai/cordis",
+  "@deepseek-ai/dsh-client-store",
+  "@deepseek-ai/dsh-client-ui-slots",
+  "@deepseek-ai/dsh-client-ui-primitives",
+  "@deepseek-ai/dsh-client-ui-dockkit",
+];
+
+/** 本包 `dsh.client.external` 声明的基座之外请求（缺省 = 只有基座，本包当前如此）。
+ *  官方口径是"精确串匹配、不归一"（tsdown.client.ts 的 requestedExternals 注释），
+ *  故这里原样收：不裁剪、不排序、不合并重复。 */
+function declaredClientExternals() {
+  const { dsh } = asRecord(pkgJson);
+  const { client } = asRecord(dsh);
+  const { external } = asRecord(client);
+  if (!Array.isArray(external)) {
+    return [];
+  }
+  const declared = [];
+  for (const item of external) {
+    if (typeof item === "string") {
+      declared.push(item);
+    }
+  }
+  return declared;
+}
+
+/**
+ * 本包 client bundle 的 external 清单（构建与测试同源）：官方基座 + 本包声明。
+ * @returns 需要保持外部的模块说明符。
+ */
+export function clientExternals() {
+  return [...CLIENT_BASELINE, ...declaredClientExternals()];
+}
+
 /** 生成 client.js 的完整文本（含 ModuleLoader 外壳）。 */
 export async function buildClient() {
   const bundle = await rolldown({
     input: path.join(root, "src", "client-entry.ts"),
-    external: ["react"],
+    external: clientExternals(),
     platform: "browser",
     resolve: {
       extensions: [".ts", ".mjs", ".js", ".json"],

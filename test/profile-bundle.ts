@@ -19,7 +19,7 @@
 //   - 槽位 key = bundle 包名，真源是本包自己的 package.json（宿主派发 entryKey 用的就是
 //     被装 bundle 的包名，与装法无关）；profile 只在这台开发机上存在，装了才顺手钉一道
 //     「清单里确有这一条」的机器侧漂移针；
-//   - configForms.get(entryId) 的入参（= 0.1.7 隐式 settings 命名空间）= 裸条目 id，
+//   - configForms.get(entryId) 的入参（= 0.2.1-alpha.2 隐式 settings 命名空间）= 裸条目 id，
 //     真源本包 cordis.patch.yml（installed dsh-client-ui-settings/lib/client.js:1309-1315
 //     把 entryId 原样当命名空间用）。
 // 所以这里**不写任何包名/条目 id 字面量**：测试里抄一份常量，正是本缺陷当初漏网的原因。
@@ -90,7 +90,7 @@ export function profileBundleName(): string {
 }
 
 /**
- * cordis.patch.yml 里的裸条目 id —— 0.1.7 的隐式 settings 命名空间与
+ * cordis.patch.yml 里的裸条目 id —— 0.2.1-alpha.2 的隐式 settings 命名空间与
  * `configForms.get(entryId)` 的入参都取它，与 bundle 包名是两回事。
  */
 function patchEntryId(): string {
@@ -141,7 +141,7 @@ function configFormsEntryId(text: string): string {
 export interface BundleSlotKeyFacts {
   /** profile 的 bundle 包名（= 宿主派发 entryKey，槽位 key 必须是它）。 */
   bundle: string;
-  /** cordis.patch.yml 的裸条目 id（= 0.1.7 的 settings 命名空间）。 */
+  /** cordis.patch.yml 的裸条目 id（= 0.2.1-alpha.2 的 settings 命名空间）。 */
   entryId: string;
   /** 产物里 `plugins.bundle.config` 那次 register 实际用的 key。 */
   slotKey: string;

@@ -59,7 +59,7 @@ vi.mock("react", async (importOriginal) => {
 
 const NS = "lesson-loop";
 
-/** cordis.patch.yml 里的裸条目 id —— 0.1.7 的 settings 命名空间就是它（宿主读的是
+/** cordis.patch.yml 里的裸条目 id —— 0.2.1-alpha.2 的 settings 命名空间就是它（宿主读的是
  *  `entry.options.id`，见 installed dsh-settings/lib/index.js 的 `ns: entry.options.id`）。
  *  client 半向 `configForms.get(entryId)` 要的就是这个 id：读文件而不是抄常量，抄两处
  *  就会漂移（host.test.ts 的 patchEntryId 同款读法，那里钉 host 侧，这里钉卡片侧）。 */
@@ -140,6 +140,8 @@ function rule(over: Partial<RuleCardView> = {}): RuleCardView {
     // statement 是规则库里的用户数据：两语下都必须逐字出现。
     statement: "结束回合前先本地运行 pnpm check 自检",
     status: "candidate",
+    // 服务端原样状态串（未知状态时显形用；白名单内等于 status）。
+    statusText: "candidate",
     createdAt: 1_700_000_000_000,
     occurrences: 3,
     violation: 1,
@@ -357,16 +359,16 @@ function textOf(node: unknown): string {
   return textOf(pickFrom(props, "children"));
 }
 
-/** 写入回调的哑目的（本测试不驱动保存）。0.1.7 的 `ConfigForm.set/unset` 回**受理位**
- *  （true=宿主接受；installed config-form-types.d.ts:62/:70），卡片目前不消费它
- *  （只有 reject 才算失败，见 src/client-entry.ts 的 LlcCardProps），故假件回 true。 */
+/** 写入回调的哑目的（本测试不驱动保存）。0.2.1-alpha.2 的 `ConfigForm.mutate` 回**受理位**
+ *  （true=宿主接受；installed config-form-types.d.ts:55），卡片消费它：false 时报错并
+ *  保留草稿（见 src/client-entry.ts 的 LlcCardProps / save），故假件回 true。 */
 const noWrite = async (): Promise<boolean> => true;
 const noOp = (): void => {
   void 0;
 };
-/** useCard 假件：ready + writable 的快照原样递进 selector。 */
+/** useCard 假件：ready + writable 的快照原样递进 selector（revision 是 save 的 CAS 栅栏）。 */
 const useReadyCard = ((selector: (snap: unknown) => unknown): unknown =>
-  selector({ status: "ready", writable: true, value: {} })) as never;
+  selector({ status: "ready", writable: true, value: {}, revision: 7 })) as never;
 
 /** 整张设置卡（展开态）的文本面：标题 + 11 条配置行 + 保存条 + 四个评审分节。 */
 function cardText(translator: Translate): string {
@@ -374,8 +376,7 @@ function cardText(translator: Translate): string {
     createElement(LlcCard, {
       t: translator,
       useCard: useReadyCard,
-      set: noWrite,
-      unset: noWrite,
+      mutate: noWrite,
       initialOpen: true,
     }),
   );
@@ -495,10 +496,10 @@ describe("整卡渲染（两语，直读 createElement 产物）", () => {
 interface CardPayload {
   t: Translate;
   hooks: { card: { getSnapshot: () => unknown; subscribe: () => () => void } };
-  /** 直通 0.1.7 `ConfigForm` 的写口：`Promise<boolean>` = 受理位（installed
-   *  config-form-types.d.ts:65 / :73），只有传输失败才 reject。 */
-  set: (field: string, value: unknown) => Promise<boolean>;
-  unset: (field: string) => Promise<boolean>;
+  /** 直通 0.2.1-alpha.2 `ConfigForm` 的原子写口：`mutate(ops, revision) => Promise<boolean>`
+   *  （installed config-form-types.d.ts:55），`true` = 宿主受理、false = 拒绝/跳过，
+   *  只有传输失败才 reject。 */
+  mutate: (ops: readonly unknown[], revision?: number) => Promise<boolean>;
 }
 
 interface FakeStyleTag {
@@ -542,8 +543,10 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
     }[] = [];
     const localeRows: [string, string][] = [];
     const boundNs: string[] = [];
-    /** apply 向 `configForms.get()` 要过哪些条目 id（0.1.7：条目 id == 命名空间）。 */
+    /** apply 向 `configForms.get()` 要过哪些条目 id（0.2.1-alpha.2：条目 id == 命名空间）。 */
     const formEntryIds: string[] = [];
+    /** apply 经 `configForms.whileServed()` 盯过哪些命名空间（卡片声明跟着 served 走）。 */
+    const servedNamespaces: string[][] = [];
     const slotNames: string[] = [];
     const disposed: string[] = [];
     let payload: CardPayload | null = null;
@@ -565,7 +568,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
       unset: async (): Promise<boolean> => true,
       // 官方 ConfigForm 的第五位（路径级原子写入）：本卡不走它，但类型面要求在位。
       mutate: async (): Promise<boolean> => true,
-      // 假件**留着** dispose 这根绊线：0.1.7 的消费契约 `ConfigForm`
+      // 假件**留着** dispose 这根绊线：0.2.1-alpha.2 的消费契约 `ConfigForm`
       // （installed config-form-types.d.ts:36-74）里没有 dispose，卡片一旦去销毁
       // provider 持有的那张共享表单，下面 disposed 的精确全等清单就会多出 "scope"。
       dispose: (): void => {
@@ -627,6 +630,14 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
           formEntryIds.push(entryId);
           return scope;
         },
+        // 官方 `ConfigForms.whileServed`（installed config-form.d.ts:154-160）：宿主 served
+        // 本命名空间时才跑 register，返回一枚收尾 disposer（本假件同步跑、同步收）。
+        whileServed: (namespaces, register) => {
+          servedNamespaces.push([...namespaces]);
+          const teardown = register(new Set(namespaces));
+          teardown();
+          return (): void => void 0;
+        },
       },
       locale: {
         // 官方**类型化**那条 register：两语一次交齐、回**一枚** disposer。旧写法是逐语
@@ -652,10 +663,15 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
     };
     apply(ctx);
 
-    // 卡片要的是**本条目那张**共享表单，且只取一次（0.1.7 没有 register 声明 ns 这一步：
+    // 卡片要的是**本条目那张**共享表单，且只取一次（0.2.1-alpha.2 没有 register 声明 ns 这一步：
     // 命名空间 = profile 条目 id）。取错 id 的形状是「卡片能打开、保存却写进别的条目」，
     // 故两侧都钉：卡片侧的常量 NS 与包体里的条目 id 必须同源。
     assert.deepEqual(formEntryIds, [NS], "设置卡仍绑自己那一段（条目 id == 命名空间）");
+    assert.deepEqual(
+      servedNamespaces,
+      [[NS]],
+      "卡片声明挂在 whileServed 上：宿主没 served 本命名空间时页面不该出现这张空卡",
+    );
     assert.equal(NS, patchEntryId(), "卡片绑的段与 cordis.patch.yml 的条目 id 不一致");
     assert.deepEqual(
       localeRows,
@@ -673,12 +689,15 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
     const injected = payload as unknown as CardPayload;
     assert.equal(injected.t, tZh, "translator 经 slots.register 的 payload 下发");
     assert.equal(typeof injected.hooks.card.getSnapshot, "function", "卡片 store 随 payload 下发");
-    assert.equal(typeof injected.set, "function");
-    assert.equal(typeof injected.unset, "function");
+    assert.equal(
+      typeof injected.mutate,
+      "function",
+      "原子写口（ConfigForm.mutate）随 payload 下发",
+    );
     // 下发的 translator 直接吃官方字典：同一渲染点换成 tEn 就是整卡换语言
     assert.equal(injected.t("cardTitle"), UI_MESSAGES.zh.cardTitle);
     // 回收顺序即 apply 的注册顺序：样式 → locale 两语 → 槽位。槽位的 disposer 只注销，
-    // **不再** dispose 表单——0.1.7 的 `configForms.get(entryId)` 交回的是 provider 持有的
+    // **不再** dispose 表单——0.2.1-alpha.2 的 `configForms.get(entryId)` 交回的是 provider 持有的
     // 共享表单（installed config-form.d.ts:138-142，实例按 entryId 缓存在 provider 的
     // forms 表里），消费契约 `ConfigForm`（config-form-types.d.ts:36-74）里根本没有
     // dispose；slot collapse 会跑本 disposer 再重跑工厂（installed
@@ -697,7 +716,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
   it("inject 声明含 locale 与 configForms（宿主据此把官方能力注进 client 半）", () => {
     assert.ok(inject.includes("locale"), "缺了 locale 宿主就不会注入该能力");
     assert.ok(inject.includes("slots"));
-    // configForms 取代 0.1.6 的 settingsScope（该服务在 installed 0.1.7 全树零命中，
+    // configForms 取代 0.1.6 的 settingsScope（该服务在 installed 0.2.1-alpha.2 全树零命中，
     // 继续注入它 = 整条 client 入口挂不上）：契约源 installed
     // dsh-client-ui-settings/lib/types/client/config-form.d.ts:94-98（Context 增强）
     // 与 :142（get(entryId)）。

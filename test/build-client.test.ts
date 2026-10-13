@@ -2,7 +2,7 @@
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildClient } from "../build-client.mjs";
+import { buildClient, clientExternals } from "../build-client.mjs";
 import { clientFreshnessEvidence } from "./client-freshness.ts";
 import { bundleSlotKeyFacts } from "./profile-bundle.ts";
 import { schemaCoverageProblems } from "./schema-coverage.ts";
@@ -43,7 +43,7 @@ describe("buildClient", () => {
     assert.equal(
       formsEntryId,
       entryId,
-      `configForms.get() 的入参必须仍是裸条目 id ${entryId}（0.1.7 里它就是 settings 命名空间），不得顺手换成 bundle 包名`,
+      `configForms.get() 的入参必须仍是裸条目 id ${entryId}（0.2.1-alpha.2 里它就是 settings 命名空间），不得顺手换成 bundle 包名`,
     );
   });
 
@@ -55,6 +55,42 @@ describe("buildClient", () => {
     // 卡片代码被打进去（React createElement 与端点路径）
     assert.match(out, /plugins\.bundle\.config/u);
     assert.match(out, /_dsh\/lesson-loop\/stats/u);
+  });
+
+  // external 清单 = 官方 client bundle 的**隐式基座**（外壳预置的冻结模块表）。真源两份：
+  // @deepseek-ai/dsh-client-web 的 `src/platform.ts`（`PLATFORM_MODULES` 九枚 +
+  // `PRELOADED_CLIENT_EXTERNALS` 空表），与官方 client 构建器
+  // `packages/client/tsdown.client.ts` 的 `clientExternals()`——算的是「基座 ∪ 本包
+  // dsh.client.external」，注释明写 "The shell baseline is implicit for every dynamic bundle"。
+  // 这枚针是**抄写核对**：官方基座加一枚，或本包开始声明 external 时，这里先红，逼人回去看真源。
+  it("external = 官方 PLATFORM_MODULES 基座（不再只写 react）", () => {
+    assert.deepEqual(clientExternals(), [
+      "react",
+      "react/jsx-runtime",
+      "react-dom",
+      "react-dom/client",
+      "@deepseek-ai/cordis",
+      "@deepseek-ai/dsh-client-store",
+      "@deepseek-ai/dsh-client-ui-slots",
+      "@deepseek-ai/dsh-client-ui-primitives",
+      "@deepseek-ai/dsh-client-ui-dockkit",
+    ]);
+  });
+
+  it("本包 manifest 未声明 dsh.client.external（官方口径：缺省 = 只有基座）", () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { dsh?: { client?: { external?: unknown } } };
+    assert.equal(
+      manifest.dsh?.client?.external,
+      undefined,
+      "一旦声明，构建器会把它并进 external——届时上一条针与本断言都要按新清单改",
+    );
+  });
+
+  it("基座里的 react 仍走模块表：bundle 只 require，不内联一份 React 副本", async () => {
+    const out = await buildClient();
+    assert.match(out, /require\(["']react["']\)/u, "react 必须保持外部引用（身份唯一）");
   });
 });
 

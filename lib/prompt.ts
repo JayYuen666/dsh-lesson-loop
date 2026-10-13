@@ -33,7 +33,7 @@ export const PLUGIN_NAME = "lesson-loop";
  * 各写一遍同值常量（同一生产者两份身份声明），改一处漏一处就会让"注入时写的 kind"
  * 与"读回时比的 kind"分家。
  *
- * 0.1.7 的 V4 准入拒收退役包装 `{ kind: 'plugin', plugin }`（session-format-v3-to-v4
+ * 0.2.1-alpha.2 的 V4 准入拒收退役包装 `{ kind: 'plugin', plugin }`（session-format-v3-to-v4
  * 的 message-sources.ts 对每个声明的持久消息位抛 "format v4 message requires a
  * producer-owned source kind"；agent.inject 经 inbox 落 `agent/inbox/spliced`，正是
  * 被拒的持久位），而迁移表给未知插件名统一加 `plugin:` 前缀（sources.ts

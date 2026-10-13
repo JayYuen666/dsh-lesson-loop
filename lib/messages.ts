@@ -17,7 +17,7 @@
 // 新起草的规则卡正文没有理由是中文。模板里的 signature 与 category 取值域仍是**数据**
 // （同 digest.ts 的处理：键名与枚举面留在原文件，只把说明文字进字典）。
 // console.* 的日志文案也不在此列——那是给排障的人看的，不随界面语言切换。
-import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
+import type { Locale, MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
 /** 字典模板的插值参数（数值由调用点现算，字典只收整行模板）。 */
 export type MessageParams = Readonly<Record<string, string | number>>;
@@ -60,6 +60,8 @@ export interface LessonLoopMessages {
   readonly statementFactgatePath: string;
   /** dangerous-bash 正文（{signature} 是危险 shell 形态）。 */
   readonly statementDangerousBash: string;
+  /** dangerous-bash 折叠到类别级稳定签名后的通用正文（无占位；**具体是哪条命令**在证据里）。 */
+  readonly statementDangerousBashStable: string;
   /** secret-path 折叠到类别级稳定签名后的通用正文（无占位）。 */
   readonly statementSecretPathStable: string;
   /** secret-path 未折叠签名的正文（{signature} 是具体凭据路径）。 */
@@ -116,6 +118,9 @@ export interface LessonLoopMessages {
   readonly digestCreated: string;
   /** 回执里的单条候选规则行（{index} {category} {statement}）。 */
   readonly digestCreatedLine: string;
+  /** 部分候选没写进规则库（{count} 已落盘条数、{failed} 未落盘条数）——库里的卡并不存在，
+   *  必须与"已蒸馏"分开讲，否则让人去卡片上找一张不存在的卡。 */
+  readonly digestPartialFailure: string;
   /** 蒸馏抛错回显（{reason} = 错误摘要）。 */
   readonly digestFailed: string;
 
@@ -182,6 +187,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
       "编辑 {signature} 之前，必须先成功 read 该文件，并做项目级引用检索（grep/glob/zg_search 覆盖引用面），按证据档位补齐 test/e2e/docs 层探查后再动手。",
     statementDangerousBash:
       "避免使用危险 shell 形态（{signature}）。需要同类操作时先向用户说明风险或改用安全替代（如去掉 --no-verify、先确认再删除、用包管理器替代 curl|sh）。",
+    statementDangerousBashStable:
+      "避免使用危险 shell 形态。每次命中的**具体命令**在证据里（signature），据此判断该换成哪种写法：去掉 --no-verify、先确认再删除、用包管理器替代 curl|sh；或先向用户说明风险再执行。",
     statementSecretPathStable:
       "不要编辑密钥/凭据类文件（.env、*.key、token 配置等）；确需变更时先征得用户明确同意，并最小化接触面。",
     statementSecretPathTarget:
@@ -219,6 +226,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     digestNoNewRules: "差评 {count} 条已分析，未归纳出新规则（可能已存在或信号不足）。",
     digestCreated: "已蒸馏 {count} 条候选规则（待你在设置卡确认后生效）：\n{lines}",
     digestCreatedLine: "{index}. [{category}] {statement}",
+    digestPartialFailure:
+      "蒸馏部分失败：{count} 条候选规则已写入规则库，{failed} 条没写进去（规则库被拒写或 CAS 冲突耗尽）——那些卡不在库里，请重试。",
     digestFailed: "蒸馏失败：{reason}",
 
     errNoModelSelection: "当前无可用模型选择（agentDefaultModel）",
@@ -266,6 +275,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
       "Before editing {signature}, read that file successfully first and run a project-wide reference search (grep/glob/zg_search over the referencing surface); close the test/e2e/docs evidence tiers before making the change.",
     statementDangerousBash:
       "Avoid dangerous shell shapes ({signature}). When the same operation is really needed, explain the risk to the user first or switch to a safe alternative (drop --no-verify, confirm before deleting, use a package manager instead of curl|sh).",
+    statementDangerousBashStable:
+      "Avoid dangerous shell shapes. The concrete command of each hit is in the evidence (signature) — use it to pick the safe rewrite (drop --no-verify, confirm before deleting, use a package manager instead of curl|sh), or explain the risk to the user before running it.",
     statementSecretPathStable:
       "Do not edit secret/credential files (.env, *.key, token configs and the like); when a change is genuinely required, get the user's explicit consent first and keep the touched surface minimal.",
     statementSecretPathTarget:
@@ -312,6 +323,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     digestCreated:
       "{count} candidate rule(s) distilled (they take effect once you confirm them in the settings card):\n{lines}",
     digestCreatedLine: "{index}. [{category}] {statement}",
+    digestPartialFailure:
+      "Distillation partially failed: {count} candidate rule(s) reached the library and {failed} did not (the library refused the write or CAS retries ran out) — those cards are not in the library, retry.",
     digestFailed: "Distillation failed: {reason}",
 
     errNoModelSelection: "No model selection is available (agentDefaultModel)",
@@ -326,3 +339,52 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     errRuleActionFailed: "rule action failed",
   },
 };
+
+/** 一枚标签的 `;q=` 质量值：缺省 1；坏值/`≤0`/`>1` 一律按 0（该标签作废，不参与协商）。
+ *  分几段写而不是一条 `&&` 链：覆盖门禁按分支算，短路掉的第二个操作数算没执行。 */
+function qualityOf(parameters: readonly string[]): number {
+  for (const parameter of parameters) {
+    const [key = "", value] = parameter.split("=");
+    if (key.trim().toLowerCase() === "q") {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) {
+        return 0;
+      }
+      if (parsed <= 0 || parsed > 1) {
+        return 0;
+      }
+      return parsed;
+    }
+  }
+  return 1;
+}
+
+/**
+ * `Accept-Language` 请求头 → 本包支持的 locale（q 值协商 + 主语言子标签）。
+ *
+ * 只在官方 locale 偏好**未注册**时启用（见 host.ts 的 localeMessages）：卡片由浏览器发起，
+ * 浏览器自动带这枚头，于是没装 client-locale 的宿主也能给出用户语言的回显文案。判不出
+ * （头缺席/不是字符串/表外语言/`*`/q=0）返回 undefined——缺省口径留给调用方（本包是中文），
+ * 这里不替它决定。不复用 shared 的 `resolveLocale` 判命中：那只管归一，"不认识"会被它说成
+ * zh，拿它当"匹配上了"用会把任何语言都读成中文。
+ * @param header - `req.headers['accept-language']` 原值（跨进程来的，类型不可信）。
+ * @returns 命中的 `zh` / `en`；判不出 undefined。
+ */
+export function localeFromAcceptLanguage(header: unknown): Locale | undefined {
+  let best: Locale | undefined;
+  if (typeof header === "string") {
+    let bestQuality = 0;
+    for (const part of header.split(",")) {
+      const [tag = "", ...parameters] = part.split(";");
+      const quality = qualityOf(parameters);
+      const [primary = ""] = tag.trim().toLowerCase().split("-");
+      const locale = primary === "en" || primary === "zh" ? primary : undefined;
+      // 严格大于：同权重多枚命中时先到的那枚胜出（HTTP 惯例，也让结果与头里的顺序可预期）
+      if (locale !== undefined && quality > bestQuality) {
+        best = locale;
+        bestQuality = quality;
+      }
+    }
+  }
+  return best;
+}

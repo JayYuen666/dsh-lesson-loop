@@ -33,7 +33,7 @@ describe("buildHost()", () => {
     );
     // 值导入的包必须列在 dependencies 或 peerDependencies（build-host.mjs 取两表并集外部化），
     // 否则被内联。宿主包一律走 peer 那一边，不进 dependencies——理由见 publish-manifest 的门禁。
-    // 0.1.7 起这份值是**宿主 fork** `@deepseek-ai/schemastery`：只有它的 resolve 会把
+    // 0.2.1-alpha.2 里这份值是**宿主 fork** `@deepseek-ai/schemastery`：只有它的 resolve 会把
     // `.volatile()` 字段包成 Volatile 引用（host.ts 的十二项设置、lib/rules-namespace.ts
     // 的 rules 数组都靠它），公共 schemastery 连 `.volatile()` 方法都没有。
     assert.ok(
@@ -41,7 +41,7 @@ describe("buildHost()", () => {
       "@deepseek-ai/schemastery 必须以裸说明符留在产物里",
     );
     // 反向锁：不得退回公共 schemastery——它没有 .volatile()，解析出的仍是普通值，
-    // 设置卡写进去的开关与规则卡因此永远读不到（0.1.7 迁移的根因）。
+    // 设置卡写进去的开关与规则卡因此永远读不到（0.2.1-alpha.2 迁移的根因）。
     assert.ok(
       !/from\s+["']schemastery["']/u.test(out),
       "产物不得再值导入公共 schemastery（volatile 解析只在宿主 fork 里）",

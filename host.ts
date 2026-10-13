@@ -24,7 +24,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-// 0.1.7 设置面要求宿主 fork：只有 @deepseek-ai/schemastery 的 resolve 会把 volatile
+// 0.2.1-alpha.2 设置面要求宿主 fork：只有 @deepseek-ai/schemastery 的 resolve 会把 volatile
 // 字段包成 Volatile 引用（vendor/schemastery/src/index.ts:521-533），公共
 // schemastery@3.18.0 既没有 `.volatile()`、解析出来的也仍是普通值（设置卡写进去的值读不到）。
 // 本包的 lib/rules-namespace.ts 同步换 fork：规则库那枚数组字段是在那里构造、在这里并入
@@ -80,13 +80,14 @@ import {
 } from "./lib/prompt.ts";
 import { runDigest, digestCreatedLine, DEFAULT_DIGEST_TIMEOUT_MS } from "./lib/digest.ts";
 import type { LlmService, AgentDefaultModel, SessionLike } from "./lib/digest.ts";
-import { MESSAGES, fill } from "./lib/messages.ts";
+import { MESSAGES, fill, localeFromAcceptLanguage } from "./lib/messages.ts";
 import type { LessonLoopMessages } from "./lib/messages.ts";
 // host 侧文案语言跟官方 locale 插件的偏好同源：读它拥有的 settings 命名空间（未注册即中文）。
 // 这条链覆盖 lesson-loop 自己产出的全部文案，**含起草新规则卡时那份 statement 正文**
 // （模板在 lib/messages.ts，经 store 的 messages 注入口取用）。已经落库的规则正文不在
 // 这条链上——那是本条目设置段 `rules` 里的用户数据，界面语言切换绝不改写已生效的规则。
 import {
+  DEFAULT_LOCALE,
   LOCALE_SETTINGS_NAMESPACE,
   messagesFor,
   resolveLocalePreference,
@@ -253,9 +254,10 @@ function isSessionLike(value: unknown): value is SessionLike {
 
 /**
  * 宿主 ctx 结构契约守卫（apply 把 Context 收窄为 HostCtx，不写断言）。
- * 核验的是 0.1.7 的实际调用面：`effect`/`on` 接线、`inject` + `fiber` 挂页面策略、
- * `settings.describe` 做跨命名空间读与规则库读。缺任一项一律急停——带着半截服务面
- * 在首个回合才崩，会被折叠成 turn kind:error 直接甩给用户。
+ * 核验的是 0.2.1-alpha.2 的实际调用面：`effect`/`on` 接线、`inject` + `fiber` 挂页面策略、
+ * `settings.describe` 做跨命名空间读与规则库读，以及 `fiber.await()`（装载期迁移必须
+ * 等本条目 ACTIVE 才能读到规则库，见 startBootMigrations）。缺任一项一律急停——带着
+ * 半截服务面在首个回合才崩，会被折叠成 turn kind:error 直接甩给用户。
  */
 function isHostCtx(value: unknown): value is HostCtx {
   if (!isRecord(value)) {
@@ -266,7 +268,7 @@ function isHostCtx(value: unknown): value is HostCtx {
     typeof effect === "function" &&
     typeof on === "function" &&
     typeof inject === "function" &&
-    fiber !== undefined &&
+    typeof fieldOf(fiber, "await") === "function" &&
     typeof fieldOf(settings, "describe") === "function"
   );
 }
@@ -283,7 +285,7 @@ const RULE_ACTION_PATH = "/_dsh/lesson-loop/rule-action";
 // ── 结构类型（与宿主交互面的运行时形状；避免值导入 @deepseek-ai/*）────────
 
 /**
- * settings 服务面对本包剩下的三件事（`register`/`get`/`installSection` 已被 0.1.7 移除）：
+ * settings 服务面对本包剩下的三件事（`register`/`get`/`installSection` 已被 0.2.1-alpha.2 移除）：
  *   - `describe()`：唯一的读口——跨命名空间读 locale 走它，规则库读 value/user/revision 也走它
  *     （返回官方 `SettingsDescriptor`，`user`/`revision` 即规则库判"读不懂 vs 真的没有"的两位）；
  *   - `update(ns, patch, expectedRevision)`：规则库的 CAS 写，ns 现在必须是本包的条目 id；
@@ -311,7 +313,7 @@ interface InjectedCtx {
 
 /**
  * provider 是否具备规则库需要的 CAS 面（describe + update）；缺位即规则面不可用。
- * ⚠ 不能再探 `register`：0.1.7 已把它连同 get/installSection 一起移除，拿它当硬前置会让
+ * ⚠ 不能再探 `register`：0.2.1-alpha.2 已把它连同 get/installSection 一起移除，拿它当硬前置会让
  * 每一条真宿主都判成"没有 CAS 面"，规则库于是结构性失效。
  * 导出仅供单测：非记录对象这条分支在 apply 里到不了（更早就用了 svc.settings.describe），
  * 但守卫本身要对它负责，故直验而不是伪造一条走不到的装载路径。
@@ -460,7 +462,7 @@ interface HostCtx {
 
 /**
  * 行级配置（组合包层/用户层行的 `config:`），由 cordis 按导出的 `Config` schema 校验并
- * 逐字段填 `.default()` 后传入 apply。0.1.7 起注册是**隐式**的：命名空间 = profile 条目 id
+ * 逐字段填 `.default()` 后传入 apply。0.2.1-alpha.2 里注册是**隐式**的：命名空间 = profile 条目 id
  * （`lesson-loop`，见 cordis.patch.yml），可编辑字段由 schema 上的 `.volatile()` 声明，
  * 插件侧不再有 `settings.register`，也没有它那一层 `base` 底座——原 BUILTIN_BASE 逐字段
  * 落成下面的 `.default(...)`，单一来源。volatile 字段以 Volatile 引用形态交进来，
@@ -535,7 +537,7 @@ const configSchema = Schema.object({
     .max(1024 * 1024 * 1024)
     .default(0)
     .volatile(),
-  // 0.1.7 只有"一个条目一份 Config"，规则库因此与开关同段（旧的第二段 `lesson-loop-rules`
+  // 0.2.1-alpha.2 只有"一个条目一份 Config"，规则库因此与开关同段（旧的第二段 `lesson-loop-rules`
   // 无处安放）。`.loose()` / `.default([])` / 读侧"user 层坏形状即不可用"三段闸门各自的
   // 理由见 lib/rules-namespace.ts 的 RulesFieldSchema——同段最贵的那件事（坏存量打死整条
   // 总线）就是靠它们补回来的。
@@ -569,7 +571,7 @@ export function cacheFile(name: string): string {
 }
 
 /**
- * 建规则库端口（交给 LessonStore）。0.1.7 起这里**不注册任何东西**：命名空间与 `rules`
+ * 建规则库端口（交给 LessonStore）。0.2.1-alpha.2 里这里**不注册任何东西**：命名空间与 `rules`
  * 字段都是宿主从条目导出的 Config 反推的（`settings.register` 已移除）。
  *
  * 两条降级路径：
@@ -633,8 +635,12 @@ function ruleViewOf(store: LessonStore, rule: RuleCard): RuleView {
 /**
  * 消息表的取用口：每次现取，用户在「设置 → 常规」改语言偏好后，下一条回显/注入
  * 就是新文案（不重启、也不给本包加一个自己的 locale 设置项）。
+ * 带 `req` 的调用点（HTTP 回显）多一层兜底：官方 locale 条目**未注册**时按请求的
+ * Accept-Language 协商（见 localeMessages）。四条路由里只有 rule-action 产人读文案，
+ * GET 三路是纯数据与字面量回执（"GET only" 这类协议串刻意不翻译），故只有它把 req 带下来；
+ * 不带 req 的调用点（注入段、起草正文）没有头可依，语言只由设置偏好决定。
  */
-type MessagesOf = () => LessonLoopMessages;
+type MessagesOf = (req?: IncomingMessage) => LessonLoopMessages;
 
 /**
  * 四条端点在**同一次装载**里共享的依赖：`csrf` 与非回环判据随 effect 实例走（依赖换实例
@@ -643,7 +649,8 @@ type MessagesOf = () => LessonLoopMessages;
  */
 interface RouteRuntime {
   store: LessonStore;
-  stats: () => Record<string, unknown>;
+  /** 管理面快照；/stats 把刚读到的规则卡交回来复用（同一次轮询不读两遍规则库）。 */
+  stats: (rules: RuleCard[]) => Record<string, unknown>;
   messagesOf: MessagesOf;
   csrf: string;
   servingNonLoopback: boolean;
@@ -664,11 +671,12 @@ function handleStatsRoute(
     sendJson(res, 405, { ok: false, error: "GET only" });
     return;
   }
+  const rules = store.rules();
   sendJson(res, 200, {
     ok: true,
     csrf,
-    ...stats(),
-    rules: store.rules().map((rule) => ruleViewOf(store, rule)),
+    ...stats(rules),
+    rules: rules.map((rule) => ruleViewOf(store, rule)),
   });
 }
 
@@ -736,8 +744,9 @@ async function applyRuleAction(
   if (raw === null) {
     return;
   }
-  // 语言在每次请求现取：改偏好不必重启、也不影响已经在盘上的规则数据。
-  const messages = messagesOf();
+  // 语言在每次请求现取：改偏好不必重启、也不影响已经在盘上的规则数据。带请求的调用点
+  // 走 Accept-Language 兜底（偏好未注册时），见 MessagesOf 的注记。
+  const messages = messagesOf(req);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -791,7 +800,7 @@ async function handleRuleActionRoute(
     await applyRuleAction(req, res, routes);
   } catch (error) {
     console.error(`[lesson-loop] rule-action handler failed: ${errorText(error)}`);
-    sendJson(res, 500, { ok: false, error: routes.messagesOf().errRuleActionFailed });
+    sendJson(res, 500, { ok: false, error: routes.messagesOf(req).errRuleActionFailed });
   }
 }
 
@@ -800,7 +809,7 @@ async function handleRuleActionRoute(
 function installLessonRoutes(
   svc: HostCtx,
   store: LessonStore,
-  stats: () => Record<string, unknown>,
+  stats: (rules: RuleCard[]) => Record<string, unknown>,
   messagesOf: MessagesOf,
 ): () => void {
   const webServerRaw = svc.get?.("webServer");
@@ -862,7 +871,7 @@ function registerRoutes(
   svc: HostCtx,
   owner: Pick<InjectedCtx, "effect">,
   store: LessonStore,
-  stats: () => Record<string, unknown>,
+  stats: (rules: RuleCard[]) => Record<string, unknown>,
   messagesOf: MessagesOf,
 ): void {
   owner.effect(
@@ -989,10 +998,21 @@ function registerDigestCommand(
             timeoutMs: settingsOf().digestTimeoutMs,
             ...(extra === undefined ? {} : { extra }),
           });
-          if (result.created.length === 0) {
+          if (result.created.length === 0 && result.dropped.length === 0) {
             return {
               kind: "success" as const,
               text: fill(messages.digestNoNewRules, { count: result.feedbackCount }),
+            };
+          }
+          // 没落盘的那批**不能**并进"已蒸馏"：库里没有那些卡，回显成成功会让人去卡片上找
+          // 一张不存在的卡（落盘失败与成功因此是两条回显，见 lib/digest.ts 的 acc）。
+          if (result.dropped.length > 0) {
+            return {
+              kind: "error" as const,
+              text: fill(messages.digestPartialFailure, {
+                count: result.created.length,
+                failed: result.dropped.length,
+              }),
             };
           }
           const lines = result.created.map((rule, index) =>
@@ -1233,7 +1253,7 @@ interface ApplyRuntime {
 }
 
 /** 页面策略声明：本包自带卡片，别让宿主再生成一份自动表单页。
- *  0.1.7 起注册是**隐式**的（命名空间 = profile 条目 id，见 cordis.patch.yml），可编辑
+ *  0.2.1-alpha.2 里注册是**隐式**的（命名空间 = profile 条目 id，见 cordis.patch.yml），可编辑
  *  字段由 schema 的 `.volatile()` 交出，插件侧不再有 `settings.register`；只剩这一位要
  *  声明。owner 必须显式传本插件 fiber（缺省是 settings 服务自己的 fiber，传错等于给别人的
  *  页面定策略），且经 child.effect 挂载以便随注入子上下文回收——宿主 dsh-client-locale
@@ -1292,9 +1312,25 @@ function buildLessonStore(
 }
 
 /** 装载期一次性迁移：provider 写是异步的，apply 是同步契约 → 起一条链按旧顺序跑
- *  （先收签名碎片、再重算 project 键），两个 helper 各自 catch，故链上不会 reject。 */
-function startBootMigrations(store: LessonStore): void {
+ *  （先收签名碎片、再重算 project 键），两个 helper 各自 catch，故链上不会 reject。
+ *
+ *  ⚠ 必须先 `fiber.await()` 等本条目 settle 再读规则库：真实 `settings.describe()` 只投影
+ *  `entry.fiber.state === ACTIVE` 的条目（packages/settings/settings/src/index.ts:305-306），
+ *  而 apply 跑在自己那条 fiber 变 ACTIVE **之前**（同文件 :665-672 的状态机：`_execute`
+ *  结算后才 `_updateState`）。在 apply 里同步读的后果不是报错而是**静默空转**：describe()
+ *  投不出本条目 → 端口判 unusable（lib/rules-namespace.ts:198-212）→ commit 不写
+ *  （lib/lesson-store.ts:830-842）→ 存量碎片永不归并、project 键永不归一，而日志一声不响。
+ *  `fiber.await()` 等的正是这条边界（vendor/cordis/src/fiber.ts:698-710，装载错误会在这
+ *  里重抛，故失败装载直接收手——那种情况下本条目根本没有规则库可迁）。 */
+function startBootMigrations(svc: HostCtx, store: LessonStore): void {
   void (async (): Promise<void> => {
+    try {
+      await svc.fiber.await();
+    } catch {
+      // 装载失败（config 校验错/启动错）：本条目不会 ACTIVE，也没有规则库可迁。
+      // 错误本身已由 cordis 记进日志，这里只收手，不重复报一遍。
+      return;
+    }
     await runFragmentMigration(store);
     await runProjectKeyMigration(store);
   })();
@@ -1425,15 +1461,19 @@ function recordPass(runtime: ApplyRuntime, input: LessonPassInput): { ok: boolea
   }
 }
 
-/** 管理面快照（/stats 的原样载荷 + 卡片副标题用的计数）。 */
-function statsSnapshot(runtime: ApplyRuntime): Record<string, unknown> {
+/** 管理面快照（/stats 的原样载荷 + 卡片副标题用的计数）。
+ *  `rules` 可由调用方交进来复用：/stats 既要投影规则卡、又要这份计数，一次读取
+ *  （provider describe + 逐行归一）在这条轮询路径上不该做两遍。 */
+function statsSnapshot(
+  runtime: ApplyRuntime,
+  rules: RuleCard[] = runtime.store.rules(),
+): Record<string, unknown> {
   const { store, settingsOf } = runtime;
   const cfg = settingsOf();
-  const rules = store.rules();
   return {
     rules,
     lessonsCount: store.lessonsCount(),
-    undeterminableCount: store.undeterminableRules().length,
+    undeterminableCount: rules.filter((rule) => store.isUndeterminable(rule)).length,
     config: {
       enabled: cfg.enabled,
       reportEnabled: cfg.reportEnabled,
@@ -1625,7 +1665,7 @@ export function apply(ctx: Context, config: Config): void {
   // host 侧一切文案随官方 locale 偏好走：用户在「设置 → 常规」改语言后，下一条回显/注入
   // 就是新语言（不重启、不另开本包自己的 locale 设置项）。起草新规则卡的 statement 正文
   // 也在这条链上；条目 `rules` 里**已落库**的正文是用户数据，永不因语言切换被改写。
-  // 跨命名空间读在 0.1.7 只有 describe() 一条路（未装 client-locale / 那条没有 volatile
+  // 跨命名空间读在 0.2.1-alpha.2 只有 describe() 一条路（未装 client-locale / 那条没有 volatile
   // 字段 → 宿主不投影它 → undefined → 中文默认）。返回值域按 `readonly unknown[]` 收，
   // 故字段一律经 `fieldOf` 从 unknown 读——与规则库那条链同一口径：「读到了东西」不等于
   // 「读得懂」，读不懂就退中文默认，绝不按声明猜。
@@ -1641,7 +1681,7 @@ export function apply(ctx: Context, config: Config): void {
       hasCachedPreference = false;
     }
   });
-  const localeMessages: MessagesOf = (): LessonLoopMessages => {
+  const localeMessages: MessagesOf = (req) => {
     // **缺席不缓存**：locale 条目可能晚于本条目才到位，缓存一次缺席就把语言跟随永久钉死。
     if (!hasCachedPreference) {
       const row = svc.settings
@@ -1652,15 +1692,22 @@ export function apply(ctx: Context, config: Config): void {
         hasCachedPreference = true;
       }
     }
+    // 偏好已注册（装且投影出了 client-locale 那条）→ 设置优先，请求头不参与。
+    if (hasCachedPreference) {
+      return messagesFor(MESSAGES, resolveLocalePreference(cachedPreference));
+    }
+    // 偏好未注册 → 带请求的调用点按 Accept-Language 协商（卡片由浏览器发起，头是浏览器
+    // 自动带的；没装 client-locale 的宿主因此也能给对语言）；判不出、或本来就没有请求
+    // （注入段/起草正文）→ 中文默认。
     return messagesFor(
       MESSAGES,
-      resolveLocalePreference(hasCachedPreference ? cachedPreference : undefined),
+      localeFromAcceptLanguage(req?.headers["accept-language"]) ?? DEFAULT_LOCALE,
     );
   };
 
   const store = buildLessonStore(svc, settingsOf, localeMessages);
 
-  startBootMigrations(store);
+  startBootMigrations(svc, store);
 
   // sessionId → 台账：会话内复发记账，session/disposed 时清算 suppressed。
   const { sessionWatch, pruneWatch } = createSessionWatch();
@@ -1714,7 +1761,7 @@ export function apply(ctx: Context, config: Config): void {
   // 「后到即注册、重启即重注册」。不写进插件级 inject：那会让没有 webServer 的宿主（TUI）
   // 连沉淀与注入一并失活——那些能力只需要 settings。
   svc.inject(["webServer"], (child) => {
-    registerRoutes(svc, child, store, () => service.stats(), localeMessages);
+    registerRoutes(svc, child, store, (rules) => statsSnapshot(runtime, rules), localeMessages);
   });
 }
 

@@ -1,4 +1,4 @@
-// host 全链测试：mock ctx 驱动 lesson-loop 的注册面（0.1.7 隐式设置投影 + 页面策略）
+// host 全链测试：mock ctx 驱动 lesson-loop 的注册面（0.2.1-alpha.2 隐式设置投影 + 页面策略）
 // 与服务供给 / 上报 / 收尾清算 / 会话开始注入 / webServer 端点（csrf）/ /lessons-digest
 // 命令 / 衰减定时器。
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
@@ -17,7 +17,7 @@ import type {
   RuleCard,
 } from "../lib/lesson-store.ts";
 import { RULES_FIELD, SETTINGS_NAMESPACE, cardsOfValue } from "../lib/rules-layout.ts";
-import { MESSAGES, fill } from "../lib/messages.ts";
+import { MESSAGES, fill, localeFromAcceptLanguage } from "../lib/messages.ts";
 import { makeSettingsProvider } from "./rules-fake.ts";
 import type { SettingsProviderFake } from "./rules-fake.ts";
 import type { LlmService } from "../lib/digest.ts";
@@ -46,7 +46,7 @@ interface FakeRes {
 }
 
 /**
- * 0.1.7 的 settings 服务面（`register`/`get`/`installSection` 已被宿主移除）：
+ * 0.2.1-alpha.2 的 settings 服务面（`register`/`get`/`installSection` 已被宿主移除）：
  * describe（读，含跨命名空间的 locale）+ update（规则库 CAS 写）+ configure（页面策略）。
  * 对照 installed `@deepseek-ai/dsh-settings/lib/types/index.d.ts`：SettingsForms 残面是
  * `configure`(:80) / `prepareDocument`(:91) / `describe`(:96) / `update`(:102) /
@@ -54,7 +54,7 @@ interface FakeRes {
  * expectedRevision)`（merge 写，数组键整片覆盖，正是规则库要的语义），不用 `mutate`
  * （那是给脱敏视图做路径级编辑、避免覆掉 secret 的路子，本包一段里没有 secret）。
  * ⚠ 这份清单**不许**再补回 register/get：假件一旦有它们，host.ts 里"没有注册可被打回"
- * 那几条降级分支就只能在假绿里躺着（真宿主 0.1.7 根本没有那两个方法）。
+ * 那几条降级分支就只能在假绿里躺着（真宿主 0.2.1-alpha.2 根本没有那两个方法）。
  */
 interface SettingsSurface {
   describe: () => unknown[];
@@ -93,13 +93,18 @@ interface FakeCtx {
   timerCallbacks: (() => void)[];
   /** 与 timerCallbacks 同序登记的毫秒数（decayIntervalMs 走配置就得在这里看得见）。 */
   timerMs: number[];
-  /** 本插件 fiber 的替身：configure 的 owner 必须原样带回它（身份断言用）。 */
-  fiber: unknown;
+  /** 本插件 fiber 的替身：`configure` 的 owner 必须原样带回它（身份断言用）；
+   *  `await()` 按 cordis 的生命周期语义建模——apply 跑在 fiber 变 ACTIVE **之前**，
+   *  而真实宿主里 `settings.describe()` 只投影 ACTIVE 条目（harness
+   *  packages/settings/settings/src/index.ts:305-306），所以装载期读规则库只有等
+   *  `fiber.await()` 结算这一条路（host.ts 的 startBootMigrations）。假件里"结算"就是一个
+   *  微任务边界：apply 期间同步读仍看不到行，await 之后的读取才落到 ACTIVE 语义上。 */
+  fiber: { id: string; await: () => Promise<void> };
   /** settings.configure 的调用记录（页面策略断言用）。 */
   configureCalls: ConfigureCall[];
   /** ctx.inject 收到的依赖清单（页面策略挂在哪个子上下文上，靠它核对）。 */
   injectDeps: string[][];
-  /** 官方 locale 命名空间那一行的 value（0.1.7 唯一的读口是 `describe()`：宿主已无
+  /** 官方 locale 命名空间那一行的 value（0.2.1-alpha.2 唯一的读口是 `describe()`：宿主已无
    *  `settings.get`。可装载后翻动，模拟换语言即时生效；undefined = 未注册 → 中文）。 */
   localeValue: Record<string, unknown> | undefined;
   settings: SettingsSurface;
@@ -162,7 +167,7 @@ function makeCtx(
   } = {},
 ): FakeCtx {
   const initialRules = over.rules ?? [];
-  // 0.1.7：一个条目一段——开关与 rules 数组同处 `lesson-loop` 段（假件按真实导出的
+  // 0.2.1-alpha.2：一个条目一段——开关与 rules 数组同处 `lesson-loop` 段（假件按真实导出的
   // Config 解析，默认值与 .loose() 因此都与宿主同源）。
   const rulesProvider = makeSettingsProvider({
     [SETTINGS_NAMESPACE]: { [RULES_FIELD]: [...initialRules], ...over.value },
@@ -175,7 +180,7 @@ function makeCtx(
     // 蒸馏事件流的默认交付：空表（个别用例往里塞 feedback 事件）。
     sessionEvents: [],
     // 这四个假件字段不写 `{} as …` 断言：`const ctx: FakeCtx` 已给出上下文类型，
-    // 断言在 oxlint 的类型感知规则下就是冗余（0.1.7 迁移把 describe() 的返回收成
+    // 断言在 oxlint 的类型感知规则下就是冗余（0.2.1-alpha.2 迁移把 describe() 的返回收成
     // unknown[]、给 ctx 补上 FakeCtx 标注之后，它们成了迁移漏下的四条 lint 错）。
     handlers: {},
     provided: {},
@@ -194,7 +199,11 @@ function makeCtx(
     },
     timerCallbacks: [] as (() => void)[],
     timerMs: [] as number[],
-    fiber: { id: "lesson-loop-fiber" },
+    fiber: {
+      id: "lesson-loop-fiber",
+      // 一微任务即"结算"：apply 内的同步读仍落在未 ACTIVE 的语义上（与真宿主一致）。
+      await: () => Promise.resolve(),
+    },
     configureCalls: [],
     injectDeps: [],
     localeValue: over.locale as Record<string, unknown> | undefined,
@@ -593,7 +602,7 @@ function configDict(): Record<string, SchemaNode> {
 }
 
 /** 逐字段 schema 默认 —— 等价于 0.1.6 交给 `settings.register(ns, schema, { base })`
- *  的那份 BUILTIN_BASE，0.1.7 把它搬到了 schema 的 `.default()` 上（少一层「底座」）。 */
+ *  的那份 BUILTIN_BASE，0.2.1-alpha.2 把它搬到了 schema 的 `.default()` 上（少一层「底座」）。 */
 function schemaDefaults(): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(configDict()).map(([key, field]) => [key, field.meta?.["default"]]),
@@ -622,7 +631,7 @@ function volatileFormOf(node: SchemaNode): string[] | null {
   return kept.length === 0 ? null : kept;
 }
 
-/** cordis.patch.yml 里的裸条目 id —— 0.1.7 的 settings 命名空间就是它。
+/** cordis.patch.yml 里的裸条目 id —— 0.2.1-alpha.2 的 settings 命名空间就是它。
  *  读文件而不是抄常量：卡片绑的段 / 端点前缀 / 规则库读的段都按它对齐，写死会让测试与包体漂移。 */
 function patchEntryId(): string {
   const yml = readFileSync(fileURLToPath(new URL("../cordis.patch.yml", import.meta.url)), "utf8");
@@ -986,7 +995,7 @@ describe("host：lesson-loop 的宿主半", () => {
     });
 
     it("注入 source 必须是 producer-owned kind（不得回退到 'plugin'）", async () => {
-      // 0.1.7 的 V4 准入（session-format-v3-to-v4/src/message-sources.ts）对每个
+      // 0.2.1-alpha.2 的 V4 准入（session-format-v3-to-v4/src/message-sources.ts）对每个
       // 声明的持久消息位拒收退役包装 `{ kind: 'plugin', plugin }`，抛
       // "format v4 message requires a producer-owned source kind"：agent.inject 的
       // 消息经 inbox 落 `agent/inbox/spliced`（agent-loop/src/inbox.ts 的 inserted
@@ -1594,7 +1603,7 @@ describe("host：lesson-loop 的宿主半", () => {
 
   describe("ctx 契约与行 config 底座", () => {
     it("ctx 不满足 HostCtx 结构 → 急停抛错（不用断言糊过去）", () => {
-      // 核验的是 0.1.7 的实际调用面：effect/on 接线、inject+fiber 挂页面策略、
+      // 核验的是 0.2.1-alpha.2 的实际调用面：effect/on 接线、inject+fiber 挂页面策略、
       // settings.describe 做 locale 跨命名空间读与规则库读。缺任一项都是集成错误。
       assert.throws(() => {
         plugin.apply(null as never, {} as never);
@@ -1612,7 +1621,7 @@ describe("host：lesson-loop 的宿主半", () => {
         "缺 inject 就没法挂页面策略，不许半截装载",
       );
       const noFiber = makeCtx();
-      noFiber.fiber = undefined;
+      Reflect.deleteProperty(noFiber, "fiber");
       assert.throws(
         () => {
           plugin.apply(noFiber as never, noFiber.config as never);
@@ -1624,7 +1633,7 @@ describe("host：lesson-loop 的宿主半", () => {
 
     it("行 config 经条目 Config 解析后交进 apply：覆盖项生效、未写项退 schema 默认", async () => {
       // 旧断言盯的是「插件把行 config 合进 BUILTIN_BASE 后交给 settings.register 的 base」。
-      // 0.1.7 把合并与填默认都收进了 cordis 装载期（fiber._resolveConfig → resolveConfig），
+      // 0.2.1-alpha.2 把合并与填默认都收进了 cordis 装载期（fiber._resolveConfig → resolveConfig），
       // 插件侧不再有 base 层，于是这里改盯**仍然由本包负责**的两件事：读的是引用（不是
       // apply 期快照），且引用背后的值就是按 schema 解析出来的那一份。
       const ctx = makeCtx({ value: { promoteThreshold: 7 } });
@@ -1677,7 +1686,7 @@ describe("host：lesson-loop 的宿主半", () => {
   });
 
   it("isSettingsProvider 三态：非记录 / 记录但缺 CAS 方法 / 齐全", () => {
-    // 0.1.7 的 CAS 面只有 describe + update；`register` 已随宿主移除，绝不能再当判据
+    // 0.2.1-alpha.2 的 CAS 面只有 describe + update；`register` 已随宿主移除，绝不能再当判据
     // （探它 = 每一条真宿主都被判成"没有 CAS 面"，规则库结构性失效）。
     assert.equal(isSettingsProvider("not-a-provider"), false);
     assert.equal(isSettingsProvider(null), false);
@@ -1719,7 +1728,7 @@ describe("host：lesson-loop 的宿主半", () => {
     });
 
     it("条目段的 rules 被存量坏数据改成非数组 ⇒ 记日志并降级为读空/拒写，装载不抛", async () => {
-      // 0.1.6 这条路的入口是"register 被 schema 打回"；0.1.7 没有 register 可打回，坏值
+      // 0.1.6 这条路的入口是"register 被 schema 打回"；0.2.1-alpha.2 没有 register 可打回，坏值
       // 由 Config 的 .loose() 在解析期吸收成 []。降级因此改挂在 describe().user 那层原文
       // 上（value 已被修成看起来合法），并且比旧版更严：坏内容留在文档里等人修，
       // 本进程一次都不写。
@@ -1762,9 +1771,9 @@ describe("host：lesson-loop 的宿主半", () => {
     });
   });
 
-  // ── 0.1.7 隐式注册验收：命名空间与可编辑字段都是"从 Config 反推"出来的 ──────
+  // ── 0.2.1-alpha.2 隐式注册验收：命名空间与可编辑字段都是"从 Config 反推"出来的 ──────
   //
-  // 为什么单独要这一组：0.1.7 没有 `settings.register` 了，可编辑字段全靠 schema 上的
+  // 为什么单独要这一组：0.2.1-alpha.2 没有 `settings.register` 了，可编辑字段全靠 schema 上的
   // `.volatile()` 标记。漏标一个不会报错，只会让那一项从设置卡上**静默消失**（宿主
   // 的 describe() 只投影 volatileForm 的结果）；全漏则整条被跳过
   // （packages/settings/settings/src/index.ts:308-309），写入抛 `has no volatile fields`
@@ -1774,29 +1783,29 @@ describe("host：lesson-loop 的宿主半", () => {
   // `entry.options.id`，本包 cordis.patch.yml 只是它的来源），以及"cordis 真把 Config 挂上
   // fiber.runtime"这一步（test/integration/bus-boot.test.ts 用真实 Loader 覆盖前者的一半）。
 
-  describe("0.1.7 隐式注册验收（volatileForm(Config) 的字段集 = 设置面可编辑集）", () => {
+  describe("0.2.1-alpha.2 隐式注册验收（volatileForm(Config) 的字段集 = 设置面可编辑集）", () => {
     it("命名空间 = cordis.patch.yml 的条目 id，且就是规则库读写的那一段", () => {
       assert.equal(patchEntryId(), PLUGIN_ID_FIXTURE);
       assert.equal(SETTINGS_NAMESPACE, patchEntryId(), "代码里的段名与 profile 条目 id 同源");
     });
 
-    it("假件的 settings 面就是 0.1.7 的残面：三项在、被移除的三项绝不在", () => {
+    it("假件的 settings 面就是 0.2.1-alpha.2 的残面：三项在、被移除的三项绝不在", () => {
       // 0.1.6 的假件里有 register（两段各注册一次）与 get（读 locale）。迁移时若只把调用
       // 点改掉、假件却留着这两扇门，host.ts 那些"没有注册可被打回""describe 是唯一读口"的
-      // 分支就会在假绿里静默失真——真宿主 0.1.7 上它们不存在，插件会当场 TypeError。
+      // 分支就会在假绿里静默失真——真宿主 0.2.1-alpha.2 上它们不存在，插件会当场 TypeError。
       // 故这里直接钉假件自己的形状：本包用到的就是 describe/update/configure 三件。
       const ctx = makeCtx();
       const surface = ctx.settings as unknown as Record<string, unknown>;
       assert.deepEqual(
         Object.keys(surface).toSorted(),
         ["configure", "describe", "update"],
-        "假件面与本包实际用到的 0.1.7 残面一一对应（多一项即有人偷偷补回旧 API）",
+        "假件面与本包实际用到的 0.2.1-alpha.2 残面一一对应（多一项即有人偷偷补回旧 API）",
       );
       for (const removed of ["register", "get", "installSection"]) {
         assert.equal(
           surface[removed],
           undefined,
-          `settings.${removed}() 已被 0.1.7 移除，假件不许提供`,
+          `settings.${removed}() 已被 0.2.1-alpha.2 移除，假件不许提供`,
         );
       }
     });
@@ -1804,7 +1813,7 @@ describe("host：lesson-loop 的宿主半", () => {
     it("规则库与开关同段：整条链只碰 `lesson-loop` 一段，0.1.6 的第二段不再被创建", async () => {
       // 0.1.6 这里有**两段**：`lesson-loop`（开关，settings.register(PLUGIN_NAME, …)）与
       // `lesson-loop-rules`（规则库，register(RULES_NAMESPACE, RulesSchema, {base})）。
-      // 0.1.7 的命名空间就是 profile 条目 id 且一条目一份 Config，第二段因此无处安放——
+      // 0.2.1-alpha.2 的命名空间就是 profile 条目 id 且一条目一份 Config，第二段因此无处安放——
       // 迁移的落点是把规则数组并成同一 Config 的第 12 个 volatile 字段（rules）。
       // 这条断言钉的是拓扑本身：卡片必须落在开关那一段里，而旧段名一次都不许被写出来
       // （写进孤儿段 = 宿主 describe() 永远看不见，规则库静默失联）。
@@ -1815,13 +1824,13 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.ok(Array.isArray(section?.[RULES_FIELD]), "armed 卡片要落在开关同段的 rules 数组里");
       assert.equal(rulesOf(ctx).length, 1);
       // 同一段里两样东西各有各的形态：规则是文档原文写进去的（用户可直接编辑），
-      // 开关没写进文档、由 schema 的 .default() 解析出来（0.1.7 无 base 层）。
+      // 开关没写进文档、由 schema 的 .default() 解析出来（0.2.1-alpha.2 无 base 层）。
       assert.equal(ctx.rulesProvider.resolvedOf(SETTINGS_NAMESPACE)["enabled"], true);
       assert.ok(ctx.rulesProvider.writesOf(SETTINGS_NAMESPACE) > 0, "写的就是条目 id 那一段");
       assert.equal(
         ctx.rulesProvider.peek("lesson-loop-rules"),
         undefined,
-        "退役的第二段不得再被创建（0.1.7 一条目一段）",
+        "退役的第二段不得再被创建（0.2.1-alpha.2 一条目一段）",
       );
     });
 
@@ -2052,6 +2061,26 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(result.text, fill(MESSAGES.zh.digestNoNewRules, { count: 0 }));
       // capture.prompt 只有在 handler 把附加说明拼进提示词后才有值
       assert.match(String(capture.prompt), /重点看门禁/u);
+    });
+
+    it("候选没写进规则库 → 回执是「部分失败」而不是「已蒸馏」（库里没有那张卡）", async () => {
+      const ctx = makeCtx({
+        services: {
+          llm: fakeLlm(
+            '[{"category":"gate-failure","signature":"pnpm check","statement":"先自检"}]',
+          ),
+          agentDefaultModel: { currentSelection: () => ({ provider: "p", model: "m" }) },
+        },
+      });
+      apply(ctx);
+      // 端口从这一刻起拒写：模型提出了候选、但一条都落不进库。
+      ctx.rulesProvider.failWrites(5);
+      const handler = ctx.command?.handler;
+      assert.ok(handler !== undefined, "命令已注册");
+      const result = await handler(digestInvocation());
+      assert.equal(result.kind, "error", "没落盘不许报成功");
+      assert.equal(result.text, fill(MESSAGES.zh.digestPartialFailure, { count: 0, failed: 1 }));
+      assert.equal(ctx.rulesProvider.writesOf(PLUGIN_ID_FIXTURE), 0, "库里确实没有这张卡");
     });
   });
 
@@ -2299,6 +2328,20 @@ describe("host：lesson-loop 的宿主半", () => {
       await flushAsync();
       assert.match(String(error.mock.calls[0]?.[0]), /fragment migration failed: 迁移炸了/u);
       assert.notEqual(ctx.provided["lessonLoop"], undefined, "迁移失败不该影响服务供给");
+    });
+
+    it("条目装载失败（fiber.await 重抛）→ 迁移整条收手，不再去读规则库", async () => {
+      const ctx = makeCtx({ rules: [fragmentRow("f1", "/repo/src/a.ts")] });
+      // cordis 的 Fiber.await() 在装载失败时重抛（vendor/cordis/src/fiber.ts:698-710）：
+      // 那种情况下本条目根本不会 ACTIVE，规则库也读不出来，迁移必须直接收手而不是
+      // 拿着"读不懂"的读面继续跑（否则每次失败装载都多刷一条日志）。
+      ctx.fiber.await = () => Promise.reject(new Error("装载失败"));
+      const migrate = vi.spyOn(LessonStore.prototype, "migrateFragmentRules");
+      apply(ctx);
+      await flushAsync();
+      await flushAsync();
+      assert.equal(migrate.mock.calls.length, 0, "装载失败时一条迁移都不该起");
+      assert.notEqual(ctx.provided["lessonLoop"], undefined, "服务面照常供给");
     });
 
     it("存量 project 键重算且撞车 → info 日志带出归并数，两键收敛成一张卡", async () => {
@@ -2620,10 +2663,81 @@ describe("host：lesson-loop 的宿主半", () => {
       const after = await ctx.command?.handler(digestInvocation());
       assert.equal(after?.text, MESSAGES.en.digestRejectedDisabled);
     });
+
+    it("q 值协商 Accept-Language：降序取胜、同权重先到先得、表外/坏值判不出", () => {
+      // 主语言子标签匹配（与设置偏好那条链同一口径）
+      assert.equal(localeFromAcceptLanguage("en-US,en;q=0.9,zh-CN;q=0.8"), "en");
+      assert.equal(localeFromAcceptLanguage("en;q=0.3, zh-Hans-CN;q=0.9"), "zh");
+      // 同权重按出现顺序先到的那枚（严格大于：后面的不再顶掉）
+      assert.equal(localeFromAcceptLanguage("en;q=0.5, zh;q=0.5"), "en");
+      // 大小写不敏感；非 q 参数（level）不干扰，缺省权重按 1
+      assert.equal(localeFromAcceptLanguage("EN-us;level=1"), "en");
+      // 判不出的六种：表外语言、通配、坏 q、q 超 1、q=0（显式拒绝）、空串/非字符串头
+      assert.equal(localeFromAcceptLanguage("fr-FR,de;q=0.8"), undefined);
+      assert.equal(localeFromAcceptLanguage("*"), undefined);
+      assert.equal(localeFromAcceptLanguage("en;q=abc"), undefined);
+      assert.equal(localeFromAcceptLanguage("en;q=1.5"), undefined);
+      assert.equal(localeFromAcceptLanguage("en;q=0, zh;q=0"), undefined);
+      assert.equal(localeFromAcceptLanguage(""), undefined);
+      assert.equal(
+        localeFromAcceptLanguage(["en-US", "en"]),
+        undefined,
+        "重复头在 Node 里是数组：判不出就好，不猜",
+      );
+    });
+
+    it("locale 未注册时，rule-action 回显跟请求的 Accept-Language 走", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const csrf = csrfOf(ctx);
+      const notFound = { id: "rule-nope", action: "arm" };
+      const en = await postJson(ctx, RULE_ACTION_ROUTE, notFound, {
+        "x-lesson-csrf": csrf,
+        "accept-language": "en-US,en;q=0.9",
+      });
+      assert.equal(en.code, 404);
+      assert.ok(String(en.body).includes(MESSAGES.en.errRuleNotFound), "en 头 → 英文回显");
+      const zh = await postJson(ctx, RULE_ACTION_ROUTE, notFound, {
+        "x-lesson-csrf": csrf,
+        "accept-language": "en;q=0.1, zh-CN;q=0.9",
+      });
+      assert.ok(String(zh.body).includes(MESSAGES.zh.errRuleNotFound), "q 值高的 zh 胜出");
+      const neither = await postJson(ctx, RULE_ACTION_ROUTE, notFound, {
+        "x-lesson-csrf": csrf,
+        "accept-language": "fr-FR",
+      });
+      assert.ok(String(neither.body).includes(MESSAGES.zh.errRuleNotFound), "表外语言回落中文");
+    });
+
+    it("locale 已注册 → 设置偏好优先，请求头不参与（含偏好值不认识的情形）", async () => {
+      const enCtx = makeCtx({ locale: { preference: "en" } });
+      apply(enCtx);
+      const zhHeader = await postJson(
+        enCtx,
+        RULE_ACTION_ROUTE,
+        { id: "rule-nope", action: "arm" },
+        { "x-lesson-csrf": csrfOf(enCtx), "accept-language": "zh-CN,zh;q=0.9" },
+      );
+      assert.ok(
+        String(zhHeader.body).includes(MESSAGES.en.errRuleNotFound),
+        "设置里明确选了 en，请求头不得改写它",
+      );
+      // 偏好值不认识（fr-FR）→ 按设置那条链归中文默认；此时请求头**不**兜底——
+      // 兜底只在"未注册"（describe 里没有 locale 那条）时启用。
+      const bogusCtx = makeCtx({ locale: { preference: "fr-FR" } });
+      apply(bogusCtx);
+      const enHeader = await postJson(
+        bogusCtx,
+        RULE_ACTION_ROUTE,
+        { id: "rule-nope", action: "arm" },
+        { "x-lesson-csrf": csrfOf(bogusCtx), "accept-language": "en-US" },
+      );
+      assert.ok(String(enHeader.body).includes(MESSAGES.zh.errRuleNotFound));
+    });
   });
 
   // ── 开机那一刻"本条目还没被投影"：不出声 ────────────────────────────────────
-  // 真实宿主隔离实测：插件 apply 早于自己那条 fiber 变 ACTIVE，而 0.1.7 的 describe()
+  // 真实宿主隔离实测：插件 apply 早于自己那条 fiber 变 ACTIVE，而 0.2.1-alpha.2 的 describe()
   // 只收 ACTIVE 条目（apply 那一刻只投出别的行，不含 lesson-loop）。这种"读不出形状"是
   // 装载次序的既定事实，不是数据坏了：把它报成 rejected，人就会去修根本没坏的数据；报成
   // 一行 warn，则是每次正常开机都多一条与故障无关的噪声（用户报的日志噪点正是这条）。
