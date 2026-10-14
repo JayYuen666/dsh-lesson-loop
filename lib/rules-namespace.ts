@@ -30,7 +30,7 @@ import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 import type { RuleCard, RulesRead, RulesRepository, RulesWriteOutcome } from "./lesson-store.ts";
 // 段名与 `rules` 字段名（以及"解析值 → 卡数组"那一步投影）在 lib/rules-layout.ts：本文件是
 // 端口实现，坐标是另一端，两边各改各的就会长成"卡片绑的段 ≠ 这里读的段"。
-import { RULES_FIELD, SETTINGS_NAMESPACE, cardsOfValue } from "./rules-layout.ts";
+import { RULES_FIELD, SETTINGS_NAMESPACE, cardsOfValue, capEvidence } from "./rules-layout.ts";
 import { fieldOf } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 /**
@@ -215,7 +215,8 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
       try {
         // 整段替换 rules 键（mergeLayers 对数组是整体覆盖），故传入的数组必须
         // 来自"写这一刻"的读取——见 LessonStore.commit 的 CAS 纪律。
-        await surface.update(SETTINGS_NAMESPACE, { [RULES_FIELD]: [...cards] }, revision);
+        // 证据在落盘前收敛（细节截断 + 只留最近 N 条）：否则 patch 文档随失败次数无界增长。
+        await surface.update(SETTINGS_NAMESPACE, { [RULES_FIELD]: capEvidence(cards) }, revision);
         return "persisted";
       } catch (error) {
         if (isSettingsConflict(error)) {

@@ -1,6 +1,6 @@
 {
   "name": "@jayyuen66/dsh-lesson-loop",
-  "version": "0.1.2",
+  "version": "0.1.3-rc",
   "description": "Self-evolution lesson loop for dsh: unified lesson bus (danger-guard / quality-gate / session-rescue reporters) + rule cards with human-confirmed promotion, violation/suppressed measurement, and decay. Host half provides the 'lessonLoop' service; client half renders the review card.",
   "license": "MIT",
   "author": "JayYuen",

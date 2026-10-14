@@ -11,7 +11,7 @@
 // 这里读的段"三处字面量漂移。
 
 import { normalizeRuleCardRow, unknownArray } from "./lesson-store.ts";
-import type { RuleCard } from "./lesson-store.ts";
+import type { RuleCard, RuleEvidence } from "./lesson-store.ts";
 import { PLUGIN_NAME } from "./prompt.ts";
 import { fieldOf } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
@@ -36,6 +36,44 @@ export function cardsOfValue(value: unknown): RuleCard[] {
     if (card !== null) {
       out.push(card);
     }
+  }
+  return out;
+}
+/** 单条证据 detail 的字符上限。 */
+export const MAX_EVIDENCE_DETAIL_CHARS = 400;
+/** 每规则保留的证据条数上限（只留最近这几条）。 */
+export const MAX_EVIDENCE_ENTRIES = 5;
+
+/**
+ * 持久化前的证据收敛：detail 截断 + 只留最近 N 条。
+ *
+ * 为什么在写这一侧：规则库整份落在 profile 的 patch 文档里，`evidence` 是其中唯一会无界
+ * 增长的部分（实测：一份 940 行的 patch 里绝大部分是 gate 失败与 lint 的逐字转储）。读侧
+ * 照旧全量解析、不做二次改写——收敛只发生在落盘那一刻。
+ * @param cards 本次要写的规则卡
+ * @returns 证据已收敛的新数组（不改入参）
+ */
+export function capEvidence(cards: readonly RuleCard[]): RuleCard[] {
+  const out: RuleCard[] = [];
+  for (const card of cards) {
+    const kept = card.evidence.slice(-MAX_EVIDENCE_ENTRIES);
+    const evidence: RuleEvidence[] = [];
+    for (const row of kept) {
+      const cappedRow: RuleEvidence = {
+        ts: row.ts,
+        source: row.source,
+        detail:
+          row.detail.length > MAX_EVIDENCE_DETAIL_CHARS
+            ? `${row.detail.slice(0, MAX_EVIDENCE_DETAIL_CHARS)}…`
+            : row.detail,
+      };
+      if (row.signature !== undefined) {
+        cappedRow.signature = row.signature;
+      }
+      evidence.push(cappedRow);
+    }
+    // 卡本身：新对象（不改入参），其余字段原样。
+    out.push({ ...card, evidence });
   }
   return out;
 }

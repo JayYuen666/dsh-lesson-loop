@@ -95,7 +95,7 @@ The endpoints:
 - Write-endpoint guards: `x-lesson-csrf` must echo the token handed out by a GET (missing or wrong -> 403 `invalid csrf token`), body ≤ 1 MiB (oversized 413, unreadable stream 400).
 - Status codes: wrong method 405, oversized body 413, invalid JSON / missing `id` or `action` / non-whitelisted action 400, unknown card 404, unpersisted change 500 with the error echoed as `rules-not-persisted`.
   - 405 is no longer an empty body: it carries `Allow` plus `{ ok: false, error: "GET only" }` (the three GET routes) or `"POST only"` (rule-action).
-- The HTTP projection deliberately drops `evidence[]` bodies (evidence is full text and cards poll) and adds the derived `undeterminable` flag.
+- The HTTP projection deliberately drops `evidence[]` bodies (each detail is up to 400 characters and cards poll) and adds the derived `undeterminable` flag.
 - The `/lessons-digest [additional note]` command sends this session's human negative feedback plus the project's recent lessons to the model and distils candidate cards (`origin` `lessons-digest`).
 - It only runs when a human triggers it, and refuses loudly when a switch is off, outside a session, without the `llm` service, or without a model selection.
 
@@ -106,7 +106,8 @@ The endpoints:
   - With `$DSH_HOME` unset the official home-paths package falls back to `.dsh` in the user's home directory.
   - The `rules` array inside the `lesson-loop` section of the settings document, which the user may edit directly.
 - Everything stays on this machine: the package sends data to no external service, and the distillation call goes through the host `llm` service with the current default model selection.
-- Lesson `detail` and rule statements are stored in full with zero truncation and may contain paths, command lines and raw tool output — treat them as sensitive when backing up or cleaning.
+- Event-stream lesson `detail` and rule statements are stored in full with zero truncation and may contain paths, command lines and raw tool output — treat them as sensitive when backing up or cleaning.
+  - Rule-card `evidence` is the only exception, and it converges at the moment of writing: a `detail` longer than 400 characters (`MAX_EVIDENCE_DETAIL_CHARS` in `lib/rules-layout.ts`) is truncated with an ellipsis, and only the 5 most recent rows per card are kept (`MAX_EVIDENCE_ENTRIES`). The `signature` (the concrete path or command that hit), `occurrences` and the `violation`/`suppressed`/`samples` counters are never trimmed, so a card still shows which command it guards. Reads (`cardsOfValue`) parse what is on disk without rewriting it, so truncation happens exactly once; an existing library needs no migration and converges on its next write.
 - Rule-library reads and writes carry cross-process CAS (provider write lock plus re-read/replay against the revision, at most 3 attempts), so a long-running web instance and a short-lived CLI cannot wipe each other's cards.
 - Host-side wording follows the official locale preference (Chinese / English, Chinese when unregistered); stored rule statements are user data and are never rewritten by a language switch.
 

@@ -92,7 +92,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 - 写端点守卫：`x-lesson-csrf` 头须回灌 GET 下发的 token（缺或错 → 403 `invalid csrf token`），body ≤ 1 MiB（超限 413、坏流 400）。
 - 状态码：方法不符 405、超限 413、JSON 不合法或缺 `id`/`action` 或动作不在白名单 400、无此卡 404、没存住 500 且 error 原样回 `rules-not-persisted`。
   - 405 不再是空体：带 `Allow` 头与 `{ ok: false, error: "GET only" }`（三条 GET 路由）或 `"POST only"`（rule-action）。
-- HTTP 投影刻意去掉 `evidence[]` 正文（证据是全文，卡片按轮询取数），并补上派生态 `undeterminable`。
+- HTTP 投影刻意去掉 `evidence[]` 正文（单条 detail 最长 400 字符，卡片按轮询取数），并补上派生态 `undeterminable`。
 - 命令 `/lessons-digest [附加说明]` 把本会话人工差评与该项目近期教训交给模型蒸馏成候选卡（`origin` 为 `lessons-digest`），只能人工触发。
 - 闸门关着、不在会话内、无 `llm` 服务或无模型选择都会明确拒绝。
 
@@ -103,7 +103,8 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
   - 未设 `$DSH_HOME` 时由官方 home-paths 退到用户主目录下的 `.dsh`。
   - 设置文档里 `lesson-loop` 段的 `rules` 数组（与开关同段，用户可直接编辑）。
 - 一切留在本机：本包不向任何外部服务发数据，蒸馏的模型调用走宿主 `llm` 服务与当前默认模型选择。
-- 教训 `detail` 与规则正文全量存储、零截断，可能含路径、命令行与工具输出原文，备份或清理时按敏感数据对待。
+- 事件流水里的教训 `detail` 与规则正文全量存储、零截断，可能含路径、命令行与工具输出原文，备份或清理时按敏感数据对待。
+  - 规则卡的 `evidence` 是唯一例外，收敛发生在落盘那一刻：单条 `detail` 超过 400 字符（`lib/rules-layout.ts` 的 `MAX_EVIDENCE_DETAIL_CHARS`）截断并补省略号，每卡只留最近 5 条（`MAX_EVIDENCE_ENTRIES`）。`signature`（命中的具体路径或命令）、`occurrences` 与 `violation`/`suppressed`/`samples` 计数一律不动，卡片照样看得出管的是哪条命令。读侧 `cardsOfValue` 照旧全量解析、不做二次改写，所以截断一生只发生一次；存量库无需迁移，下一次写盘自然收敛。
 - 规则库读写带跨进程 CAS（provider 写锁 + revision 重读重放，最多 3 次），常驻 web 实例与短命 CLI 交替写同一份不会互相抹卡。
 - host 侧文案随官方 locale 偏好走（中/英，未注册即中文），已落库的规则正文是用户数据、切语言不改写。
 

@@ -2,6 +2,15 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.3-rc
+
+本版只出库一处修复：规则库落盘前的证据收敛。总线接口、规则卡动作、判定阈值与十二项设置的默认值一律未改。
+
+### Fixed
+
+- **证据逐字落盘把 patch 文档撑到上千行**。规则库整份存在 profile 的 patch 文档里，`evidence` 是其中唯一会无界增长的部分：每次命中追加一条逐字 `detail`，而 gate 失败与 lint 报错本身就是整段输出（实测一份 940 行的 patch 里绝大部分是这些转储）。现在 `lib/rules-layout.ts` 的 `capEvidence` 在**写这一刻**收敛——单条 `detail` 超过 `MAX_EVIDENCE_DETAIL_CHARS`（400）截断并补省略号，每卡只留最近 `MAX_EVIDENCE_ENTRIES`（5）条；`signature`（命中的原始路径/命令）与 `occurrences`、`violation`/`suppressed`/`samples` 度量原样保留，人审判"这张卡管的是哪条命令"不受影响。收敛只放在写侧、读侧 `cardsOfValue` 照旧全量解析不做二次改写，于是"盘上存的"与"读出来的"仍是同一份事实，截断一生只发生一次；存量库不需要迁移，下一次写盘自然收敛。`test/lesson-store.test.ts` 新增用例钉住保留条数、丢的是最旧几条、截断后长度（上限 + 一枚省略号）与不改入参。
+- **两份 README 的「全量存储、零截断」口径收窄**：那句此前对规则库同样成立，现在只描述事件流水的 `detail` 与规则正文；规则卡的 `evidence` 另起一条写明落盘收敛（上限、保留条数、`signature` 与度量不受影响）。HTTP 投影那句的「证据是全文」也按上限重述。
+
 ## 0.1.2
 
 ### Fixed

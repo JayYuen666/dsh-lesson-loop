@@ -41,7 +41,13 @@ import { appendJsonl, readJsonl } from "../lib/lesson-jsonl.ts";
 // 这里保留两条断言（逐字搬自被删的那份）不是重复劳动，而是**消费方针**：shared 的
 // errors 子路径若改名/掉出 dependencies，本包 12 个 catch 站点会在运行期才炸。
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
-import { RULES_FIELD, SETTINGS_NAMESPACE } from "../lib/rules-layout.ts";
+import {
+  MAX_EVIDENCE_DETAIL_CHARS,
+  MAX_EVIDENCE_ENTRIES,
+  RULES_FIELD,
+  SETTINGS_NAMESPACE,
+  capEvidence,
+} from "../lib/rules-layout.ts";
 import { createRulesRepository } from "../lib/rules-namespace.ts";
 import type { SettingsCasSurface } from "../lib/rules-namespace.ts";
 import { MESSAGES, fill } from "../lib/messages.ts";
@@ -1191,6 +1197,32 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(createRulesRepository(boxed.cas).load().usable, false);
       assert.match(String(error.mock.calls[0]?.[0]), /rules read failed: 宿主读不动/u);
       error.mockRestore();
+    });
+  });
+
+  describe("capEvidence（落盘前的证据收敛）", () => {
+    it("detail 截断到上限并加省略号；每卡只留最近 N 条；不改入参", () => {
+      const long = "d".repeat(MAX_EVIDENCE_DETAIL_CHARS + 120);
+      const rows: RuleCard["evidence"] = [];
+      for (let index = 0; index < MAX_EVIDENCE_ENTRIES + 3; index += 1) {
+        rows.push({
+          ts: index + 1,
+          source: "danger-guard",
+          detail: index === MAX_EVIDENCE_ENTRIES + 2 ? long : `short-${index}`,
+        });
+      }
+      const card: RuleCard = { ...cardOf({ id: "cap", signature: "sig" }), evidence: rows };
+      const [capped] = capEvidence([card]);
+      assert.ok(capped, "capEvidence 必须返回一张卡");
+      assert.equal(capped.evidence.length, MAX_EVIDENCE_ENTRIES, "只留最近 N 条");
+      const [oldest] = capped.evidence;
+      assert.ok(oldest, "保留的第一条存在");
+      assert.equal(oldest.ts, 4, "丢的是最旧的那几条");
+      const last = capped.evidence.at(-1);
+      assert.ok(last, "最后一条存在");
+      assert.equal(last.detail.length, MAX_EVIDENCE_DETAIL_CHARS + 1, "超限截断并补一个省略号");
+      assert.equal(last.detail.endsWith("…"), true);
+      assert.equal(card.evidence.length, MAX_EVIDENCE_ENTRIES + 3, "不改入参");
     });
   });
 
