@@ -39,7 +39,7 @@ import type { DecayPolicy } from "../lib/decay-policy.ts";
 import { appendJsonl, readJsonl } from "../lib/lesson-jsonl.ts";
 // 本包不再有本地 `describeError`：catch 值转日志文本走 shared 的 errorText。
 // 这里保留两条断言（逐字搬自被删的那份）不是重复劳动，而是**消费方针**：shared 的
-// errors 子路径若改名/掉出 dependencies，本包 12 个 catch 站点会在运行期才炸。
+// errors 子路径若改名/掉出 dependencies，本包所有 catch 站点都会在运行期才炸。
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 import {
   MAX_EVIDENCE_DETAIL_CHARS,

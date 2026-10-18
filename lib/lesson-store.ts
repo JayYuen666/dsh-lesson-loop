@@ -79,7 +79,7 @@ export type KnownLessonSource =
 /**
  * `/lessons-digest` 蒸馏生产者的来源名——**同一个串在两处枚举面出现**：既是内置来源
  * `KnownLessonSource` 的一员（`digest.ts` 上报时带它），也是蒸馏建卡的 `RuleOrigin`
- * （`addCandidate` 的默认 source 与 origin）。字面量写四遍就改四处，故收成这一枚。
+ * （`addCandidate` 的默认 source 与 origin）。字面量散着写就要逐处同改，故收成这一枚。
  */
 const LESSONS_DIGEST_SOURCE = "lessons-digest" as const;
 

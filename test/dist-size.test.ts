@@ -18,7 +18,8 @@ const pkgDir = path.resolve(import.meta.dirname, "..");
 /** 产物文件名与预算的对照。 */
 const BUDGETS: readonly (readonly [string, number])[] = [
   ["host.js", 153_000],
-  ["client.js", 48_000],
+  // 规则读面迁到官方 Typert Remote 后，客户端多了一枚 descriptor/读取器（约 6 KB）。
+  ["client.js", 55_000],
 ];
 
 /** `types/` 整目录的字节预算：`files` 里写的是整目录，声明体积就是下载成本。 */

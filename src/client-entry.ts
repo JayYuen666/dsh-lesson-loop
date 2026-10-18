@@ -1,8 +1,9 @@
 // lesson-loop client 半：自进化环设置卡（配置开关 + 规则评审台）。
 // 参照 ctx-observe / session-rescue 的卡片模式：keyed plugins.bundle.config 槽，
 // React 由模块系统提供（rolldown external），只用 createElement。
-// 数据面：GET /_dsh/lesson-loop/stats 下发 csrf + 全量规则；POST rule-action
-// 回填 csrf（session-rescue 同款同源守卫）。
+// 数据面：官方 Typert Remote（宿主侧 lib/rules-remote.ts，客户端读取器见
+// src/rules-reader.ts）——全量规则 + 计数读 `stats()`，人工动作走 `ruleAction()`。
+// 来源校验与鉴权由官方网关承担，卡片不再持有 CSRF 令牌。
 //
 // 界面文案全部取自 src/ui-messages.ts（中英双语），经官方 @deepseek-ai/dsh-client-locale
 // 类型化那两条重载（`ctx.locale.register(ns, dicts)` 一次交齐两语 + `bind(ns)`）拿到
@@ -35,7 +36,10 @@ import type {
 import type { ConfigPageForm } from "@deepseek-ai/dsh-client-ui-plugin-manager/client";
 import { UI_MESSAGES } from "./ui-messages.ts";
 import type { LocaleNs, Translate } from "./ui-messages.ts";
+import { createRulesReader } from "./rules-reader.ts";
+import type { RulesReader } from "./rules-reader.ts";
 import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { diffTouched } from "@jayyuen66/dsh-plugin-shared/lib/card-diff";
 
 /** 本包 `NS` 的第三重身份：官方 locale 的命名空间（前两重 = loader 条目 id 与 settings
  *  命名空间 = `configForms.get(NS)` 的入参，见下面那段「两个不同的标识」）。这一重必须
@@ -50,10 +54,10 @@ const NS: LocaleNs = "lesson-loop";
 //  - 下面这个常量 = 本包在 profile 里那条 bundle 的**包名**，只当槽位 key 用。
 // `plugins.bundle.config` 是按 bundle 包名 keyed 的槽位：宿主把注册项的 key 与
 // bundle 包名精确相等匹配后才渲染（installed
-// dsh-client-ui-plugin-manager/lib/client.js:2762 的
+// dsh-client-ui-plugin-manager/lib/client.js:2907 的
 // `renderSlot("plugins.bundle.config", { view: "page" }, { entryKey: pkg.name })` →
-// dsh-client-ui-renderer/lib/client.js:1154 的 `e.options.key === opts?.entryKey`；
-// 同插件页 :3791 的 `configured: ledger.bundles.has(openPkg.name)` 读的就是这批 key），
+// dsh-client-ui-renderer/lib/client.js:1179 的 `e.options.key === opts?.entryKey`；
+// 同插件页 :3979 的 `configured: ledger.bundles.has(openPkg.name)` 读的就是这批 key），
 // 契约文本 installed dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts:111-115
 // （"keyed by the bundle's package name"），首方先例
 // dsh-experimental-client-ui-voice-input/lib/client.js:5659-5661。
@@ -62,8 +66,6 @@ const NS: LocaleNs = "lesson-loop";
 // test/profile-bundle.ts 把真源读进测试，test/build-client.test.ts 的漂移针据此钉。
 const BUNDLE_PKG = "@jayyuen66/dsh-lesson-loop";
 
-const STATS_PATH = "/_dsh/lesson-loop/stats";
-const RULE_ACTION_PATH = "/_dsh/lesson-loop/rule-action";
 // SVG path 的 `d` 属性是固定方法名，改用变量作计算键以绕过短名检查
 const PATH_KEY = "d";
 
@@ -176,33 +178,20 @@ function rulesField(value: unknown): RuleCardView[] | undefined {
   return result;
 }
 
-/** /stats 载荷投影：逐字段守卫，坏形状成员缺省。 */
+/** 规则评审读面的载荷投影：逐字段守卫，坏形状成员缺省。 */
 function parseStatsValue(parsed: unknown): StatsPayload {
   if (!isRecord(parsed)) {
     return {};
   }
-  const { ok, csrf, rules, lessonsCount, error } = parsed;
+  const { ok, rules, lessonsCount, error } = parsed;
   const ruleViews = rulesField(rules);
   // 与规则字段同一容忍度（数字或非空数字串）：口径一致，才不会出现"规则行的计数读得进、
   // 副标题的总数读不进"这种一半渲染一半空白的形状。
   const lessons = numericOf(lessonsCount);
   return {
     ...(ok === true ? { ok: true } : {}),
-    ...(typeof csrf === "string" ? { csrf } : {}),
     ...(ruleViews === undefined ? {} : { rules: ruleViews }),
     ...(lessons === undefined ? {} : { lessonsCount: lessons }),
-    ...(typeof error === "string" ? { error } : {}),
-  };
-}
-
-/** POST 回执投影：只需 ok/error。 */
-function parseActionResultValue(parsed: unknown): { ok?: boolean; error?: string } {
-  if (!isRecord(parsed)) {
-    return {};
-  }
-  const { ok, error } = parsed;
-  return {
-    ...(ok === true ? { ok: true } : {}),
     ...(typeof error === "string" ? { error } : {}),
   };
 }
@@ -281,7 +270,6 @@ export interface RuleCardView {
 
 interface StatsPayload {
   ok?: boolean;
-  csrf?: string;
   rules?: RuleCardView[];
   lessonsCount?: number;
   error?: string;
@@ -291,15 +279,15 @@ interface StatsPayload {
  * 0.2.1-alpha.2 的客户端配置面：一个条目（= profile 条目 id，本包 `lesson-loop`）的共享表单。
  * 契约源：installed
  * `dsh-client-ui-settings/lib/types/client/config-form-types.d.ts` 的 `ConfigForm<T>`
- * （`getSnapshot:38` / `subscribe:44` / `set:65` / `unset:73`；`mutate:55` 本卡不用），
- * 快照三面 `status:12` / `value:14` / `writable:29` 见同文件 `ConfigFormSnapshot:6-32`——
+ * （`getSnapshot:35` / `subscribe:41` / `set:62` / `unset:70`；`mutate:52` 本卡不用），
+ * 快照三面 `status:11` / `value:13` / `writable:28` 见同文件 `ConfigFormSnapshot:6-29`——
  * 与旧 `settingsScope` 的读面同名，故卡片侧的降级逻辑（cardStore 的逐字段守卫、
  * status/writable 双条件）原样可用。
  * ⚠ 旧 `ctx.settingsScope.bind({ namespace })` 连同 `settingsScope` 服务已被宿主移除
  * （installed 全树零命中），入口换成 `ctx.configForms.get(entryId)`（installed
- * `.../client/config-form.d.ts:142`，服务本身由同文件 :94-98 的 Context 增强交出）。
+ * `.../client/config-form.d.ts:137`，服务本身由同文件 :94-98 的 Context 增强交出）。
  * ⚠ 消费契约里**没有** `dispose`：`get()` 交回的是 provider 自己持有的那张共享表单
- * （同文件 :138-142 "The entry's form, owned by this provider"，实例按 entryId 缓存在
+ * （同文件 :133-136 "The entry's form, owned by this provider"，实例按 entryId 缓存在
  * provider 的 forms 表里，随 provider 的 fiber 一起回收），消费者无权销毁它。
  */
 export type EntryForm = ConfigForm<Record<string, unknown>>;
@@ -335,25 +323,33 @@ export interface CardSnapshot extends Pick<ConfigPageForm["state"], "status" | "
 
 // ── 请求工具 ─────────────────────────────────────────────────────────────
 
-async function fetchStats(): Promise<StatsPayload> {
-  const res = await fetch(STATS_PATH, { headers: { accept: "application/json" } });
-  const parsed: unknown = await res.json();
-  return parseStatsValue(parsed);
+/**
+ * 拉一次 stats 并落成卡片载荷。
+ *
+ * `reader` 缺席 = 当前部署没有远程面：抛一句可显示的话，由 reloadStats 落成本地化兜底；
+ * 载荷本身仍走 parseStatsValue 的逐字段守卫（宿主是另一个产物，形状漂移在卡片侧兜）。
+ */
+async function fetchStats(reader: RulesReader | undefined): Promise<StatsPayload> {
+  if (reader === undefined) {
+    throw new Error("rules remote unavailable");
+  }
+  return parseStatsValue(await reader.stats());
 }
 
+/**
+ * 提交一条人工动作。`reader` 缺席时同样抛；拒绝回执（ok:false）原样交回，卡片显示其
+ * `error` —— 那正是宿主 `messagesOf()` 产出的已翻译文案。
+ */
 async function postAction(
-  csrf: string,
+  reader: RulesReader | undefined,
   id: string,
   action: string,
   statement?: string,
 ): Promise<{ ok?: boolean; error?: string }> {
-  const res = await fetch(RULE_ACTION_PATH, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-lesson-csrf": csrf },
-    body: JSON.stringify({ id, action, ...(statement === undefined ? {} : { statement }) }),
-  });
-  const parsed: unknown = await res.json();
-  return parseActionResultValue(parsed);
+  if (reader === undefined) {
+    throw new Error("rules remote unavailable");
+  }
+  return reader.ruleAction(id, action, statement);
 }
 
 // ── 小组件 ───────────────────────────────────────────────────────────────
@@ -430,7 +426,8 @@ export function ruleMetaLines(t: Translate, rule: RuleCardView): string[] {
 export interface RuleItemProps {
   t: Translate;
   rule: RuleCardView;
-  csrf: string;
+  /** 宿主规则读面；`undefined` = 当前部署没有远程面（动作会落成可见错误）。 */
+  rulesRemote: RulesReader | undefined;
   busy: boolean;
   onDone: (ok: boolean, message?: string) => void;
   setBusy: (nextBusy: boolean) => void;
@@ -580,7 +577,7 @@ function RuleItem(props: RuleItemProps): ReactNode {
   const act = async (action: string, statement?: string): Promise<void> => {
     props.setBusy(true);
     try {
-      const result = await postAction(props.csrf, rule.id, action, statement);
+      const result = await postAction(props.rulesRemote, rule.id, action, statement);
       props.setBusy(false);
       props.onDone(
         result.ok === true,
@@ -637,7 +634,7 @@ export interface LlcCardProps {
   useCard: <State>(selector: (snap: CardSnapshot) => State) => State;
   /**
    * 原子提交：直通 0.2.1-alpha.2 的 `ConfigForm.mutate`（installed
-   * `dsh-client-ui-settings/lib/types/client/config-form-types.d.ts:55`）——**一次**
+   * `dsh-client-ui-settings/lib/types/client/config-form-types.d.ts:52`）——**一次**
    * 带上全部字段改动与读到的 revision，由宿主一次校验、一次 CAS、一次落盘。
    *
    * 为什么不是逐字段 `set`/`unset`（0.1.6 的写法，也是本卡此前的实现）：那是一串彼此
@@ -648,21 +645,10 @@ export interface LlcCardProps {
    * 传输失败才 reject；宿主拒绝/跳过写入回 `false`（同官方契约）。
    */
   mutate: EntryForm["mutate"];
+  /** 宿主规则读面（官方 Remote 的消费侧，见 src/rules-reader.ts）。
+   *  `undefined` = 当前部署没有远程面：卡片照常渲染，数据面显示读不到。 */
+  rulesRemote?: RulesReader;
   initialOpen?: boolean;
-}
-
-/** touched 层与快照的差异字段（值语义比较；undefined 与缺失等价）。 */
-export function diffTouched(
-  touched: Record<string, unknown>,
-  value: Record<string, unknown>,
-): string[] {
-  const out: string[] = [];
-  for (const key of Object.keys(touched)) {
-    if (JSON.stringify(touched[key] ?? null) !== JSON.stringify(value[key] ?? null)) {
-      out.push(key);
-    }
-  }
-  return out;
 }
 
 /** 保存条的状态文本（三态各一条；提成模块级函数以免嵌进 createElement）。 */
@@ -963,8 +949,8 @@ interface CardView {
   saveError: string | null;
   busy: boolean;
   dirty: boolean;
-  /** /stats 下发的写操作令牌；未到达时是空串（与拆出前同一兜底）。 */
-  csrf: string;
+  /** 宿主规则读面；未到达时是 undefined（与拆出前 csrf 空串同一兜底位）。 */
+  rulesRemote: RulesReader | undefined;
   ruleBusy: boolean;
   showAll: boolean;
   groups: RuleGroups;
@@ -1072,7 +1058,7 @@ function renderRuleSection(
               key: row.id,
               t,
               rule: row,
-              csrf: view.csrf,
+              rulesRemote: view.rulesRemote,
               busy: view.ruleBusy,
               onDone: view.onDone,
               setBusy: view.setRuleBusy,
@@ -1188,12 +1174,12 @@ function settleStats(result: StatsPayload, sink: StatsSink): void {
 }
 
 /** 拉取统计并落进 sink。模块层函数：effect 与 save/onDone 共用，组件里不为此引入任何 React hook。
- *  传输/解析失败（路由未注册时 SPA fallback 会回一页 HTML，`res.json()` 当场抛）一律落
- *  本地化兜底文案——把 `Unexpected token '<'` 这类解析异常原文贴到用户面前，既不是本卡
- *  该说的话，也指不到真实原因。原文只进 console 供排查。 */
-async function reloadStats(sink: StatsSink): Promise<void> {
+ *  网关/传输失败（远程面缺席、命名空间没挂上、调用被拒）一律落本地化兜底文案——把
+ *  `gateway/internal: …` 这类内部错误原文贴到用户面前，既不是本卡该说的话，也指不到
+ *  真实原因。原文只进 console 供排查。 */
+async function reloadStats(reader: RulesReader | undefined, sink: StatsSink): Promise<void> {
   try {
-    settleStats(await fetchStats(), sink);
+    settleStats(await fetchStats(reader), sink);
   } catch (error) {
     console.error("[lesson-loop] stats request failed:", error);
     sink.setStatsError(sink.t("statsUnavailable"));
@@ -1245,15 +1231,17 @@ function LlcCard(props: LlcCardProps): ReactNode {
   };
 
   // 展开即拉取。卡片组件保持「零直接 React hook」的形态（测试架直调组件函数读
-  // createElement 产物，不存在 dispatcher），拉取逻辑提为模块层 reloadStats(sink)，
+  // createElement 产物，不存在 dispatcher），拉取逻辑提为模块层 reloadStats(reader, sink)，
   // effect 与 save/onDone 直接调它——组件里既无 hook 也无不稳定闭包，exhaustive-deps
   // 的依赖全落在挂载期稳定位上，行为与旧实现一致：只在 open 翻转时拉一次。
+  // `reader` 来自 apply 期一次构造的读取器，跨渲染身份稳定。
+  const reader = props.rulesRemote;
   useEffect(() => {
     if (!open) {
       return;
     }
-    void reloadStats({ t, setStats, setStatsError });
-  }, [open, setStats, setStatsError, t]);
+    void reloadStats(reader, { t, setStats, setStatsError });
+  }, [open, reader, setStats, setStatsError, t]);
 
   const save = async (): Promise<void> => {
     const keys = diffTouched(touched, value);
@@ -1270,11 +1258,11 @@ function LlcCard(props: LlcCardProps): ReactNode {
       setBusy(false);
       if (!accepted) {
         setSaveError(t("saveRejected"));
-        void reloadStats({ t, setStats, setStatsError });
+        void reloadStats(reader, { t, setStats, setStatsError });
         return;
       }
       setTouched({});
-      void reloadStats({ t, setStats, setStatsError });
+      void reloadStats(reader, { t, setStats, setStatsError });
     } catch (error) {
       setBusy(false);
       setSaveError(`${t("saveFailed")}${String(error instanceof Error ? error.message : error)}`);
@@ -1288,7 +1276,7 @@ function LlcCard(props: LlcCardProps): ReactNode {
 
   const onDone = (ok: boolean, message?: string): void => {
     if (ok) {
-      void reloadStats({ t, setStats, setStatsError });
+      void reloadStats(reader, { t, setStats, setStatsError });
     } else {
       setStatsError(message ?? t("actionFailed"));
     }
@@ -1305,7 +1293,7 @@ function LlcCard(props: LlcCardProps): ReactNode {
     saveError,
     busy,
     dirty,
-    csrf: stats?.csrf ?? "",
+    rulesRemote: reader,
     ruleBusy,
     showAll,
     groups: groupRules(stats?.rules ?? []),
@@ -1357,7 +1345,7 @@ function LlcCard(props: LlcCardProps): ReactNode {
  *      对上 owner + inject + 标准席位合成出的 `ComposedProps`，dts 明写 "checked at this
  *      call site"），手抄版是 `view: unknown` = 什么都不查。
  * - `configForms`：只投影用到的 `get`。官方 `ConfigForms.get` 是泛型
- *   （`<T>(entryId) => ConfigForm<T>`，installed `config-form.d.ts:142`），且
+ *   （`<T>(entryId) => ConfigForm<T>`，installed `config-form.d.ts:137`），且
  *   `ConfigForms` 同样是 Service 类 → 既不能整类型用，也不能把 `Pick` 交给桩件；这里把
  *   `T` 钉在本卡唯一取的那张表单上，返回面仍是官方 `ConfigForm`。
  * - `locale`：官方 `@deepseek-ai/dsh-client-locale` 的 client 面（`LocaleRuntime`，
@@ -1377,13 +1365,17 @@ function LlcCard(props: LlcCardProps): ReactNode {
  */
 export interface ClientCtx {
   effect: Context["effect"];
+  /** 显式读一个**可选**客户端服务（`ctx.get`，不受 cordis 的 inject 门禁约束）。本卡只用它
+   *  取远程面：没装远程面的部署里卡片仍要照常渲染，把 `remote` 写进 inject 会让整条入口
+   *  不激活（见 src/rules-reader.ts 的文件头）。 */
+  get?: (name: string, strict?: boolean) => unknown;
   slots: Pick<SlotRegistry, "inject" | "register">;
   /** 0.2.1-alpha.2 的配置表单服务（installed
    *  `dsh-client-ui-settings/lib/types/client/config-form.d.ts:94-98` 交出
-   *  `Context.configForms`，`get:142` 按 profile 条目 id 取那张共享表单）：取代已随宿主
+   *  `Context.configForms`，`get:137` 按 profile 条目 id 取那张共享表单）：取代已随宿主
    *  移除的 `settingsScope`（installed 全树零命中，继续注入它 = 整条 client 入口挂不上）。
    *  注入只需 `configForms` 本身——写侧的 `remote.settings` 由 provider 自己的 fiber 承担
-   *  （同文件 :113-118 明写「letting a shared form write through the caller's context
+   *  （同文件 :111-113 明写「letting a shared form write through the caller's context
    *  would make every caller declare `remote.settings`」，故此处不必声明）。 */
   configForms: {
     /** 只用 get 这一位，按方法面投影：官方 `ConfigForms` 是带 private 字段的 Service
@@ -1391,7 +1383,7 @@ export interface ClientCtx {
      *  改名/换类型即在本地编译失败。 */
     get: (entryId: string) => ConfigForm<Record<string, unknown>>;
     /** 卡片声明跟着"宿主是否 served 本命名空间"走的那一位（官方 `ConfigForms.whileServed`，
-     *  installed config-form.d.ts:154-160）：整条签名绑官方成员，本卡不自造。 */
+     *  installed config-form.d.ts:138-151）：整条签名绑官方成员，本卡不自造。 */
     whileServed: ConfigFormsService["whileServed"];
   };
   locale: {
@@ -1476,14 +1468,17 @@ function apply(ctx: ClientCtx): void {
   // effect 回收），再 bind 出稳定的取文案函数交给卡片。语言切换由宿主驱动 slot 重渲染，
   // 无需重载页面。
   // ⚠ 这与旧的「zh / en 各调一次 register、闭包里收两个 disposer」是**同一条代码路径**：
-  // installed `dsh-client-locale/lib/client.js:1379-1406` 的 `register(ns, localeOrDicts,
+  // installed `dsh-client-locale/lib/client.js:1387-1413` 的 `register(ns, localeOrDicts,
   // dict)` 在第二参不是字符串时走 `Object.entries(localeOrDicts)`，逐语校验标签与重复后
   // 写进同一张 `dicts.get(ns)` 表，返回的**一枚** disposer 把这批 locale 全删掉。故注册项
   // 数与回收范围都不变，只是一枚效应承载（旧写法要自己拼两个 disposer）。
   ctx.effect(() => ctx.locale.register(NS, UI_MESSAGES), "lesson-loop-card: locale dictionaries");
   const t = ctx.locale.bind(NS);
+  // 远程读面在 apply 期造一次：`$mount` 幂等（随卡片卸载自动撤），反复拉取只挂一次；
+  // 没有远程面的部署交 undefined，卡片照常渲染、数据面显示读不到。
+  const rulesRemote = createRulesReader(ctx);
   // 卡片只在宿主**真的 served 本命名空间**时才声明（官方 `ConfigForms.whileServed`，
-  // installed config-form.d.ts:154-160）：本卡编辑的就是 `NS` 这一段，宿主没投影它
+  // installed config-form.d.ts:138-151）：本卡编辑的就是 `NS` 这一段，宿主没投影它
   // （本包没装 / 该条目没启用）时页面不该出现这张全只读、stats 也拉不到的空卡。
   // 首方口径同一句：ui-settings-agent-loop 的 `configForms.whileServed([NS], …)`。
   ctx.effect(
@@ -1501,14 +1496,16 @@ function apply(ctx: ClientCtx): void {
                 hooks: { card: store },
                 // 原子写口（直通共享表单的 mutate；受理位由卡片消费，见 LlcCardProps）。
                 mutate: (ops, revision) => scope.mutate(ops, revision),
+                // 规则读面（remote 的消费侧）：缺省不交这一位 = 当前部署没有远程面。
+                ...(rulesRemote === undefined ? {} : { rulesRemote }),
               }),
             },
             LlcCard,
           );
           // disposer 只 unregister()，**不 dispose 表单**：0.2.1-alpha.2 的 `configForms.get(entryId)`
-          // 交回的是 provider 自己持有的那张共享表单（installed config-form.d.ts:138-142
+          // 交回的是 provider 自己持有的那张共享表单（installed config-form.d.ts:133-137
           // "The entry's form, owned by this provider"），消费契约 `ConfigForm`
-          // （config-form-types.d.ts:36-74）里根本没有 dispose。slot collapse 会调用本 disposer
+          // （config-form-types.d.ts:33-71）里根本没有 dispose。slot collapse 会调用本 disposer
           // 并在再次声明时**重跑工厂**（installed dsh-client-ui-renderer/lib/types/client/
           // registry.d.ts:100 "Collapse disposes the effect and a later declaration runs it
           // again"）——表单共享且长活，所以重跑后写入依然落盘；旧 `settingsScope` 那种「离开

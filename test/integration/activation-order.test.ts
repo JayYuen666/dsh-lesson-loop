@@ -2,13 +2,13 @@
 //
 // 为什么值得一条独立集成测试：主机侧 `settings.describe()` 只投影 `entry.fiber.state === ACTIVE`
 // 的条目（harness packages/settings/settings/src/index.ts:305-306），而插件 `apply()` 跑在
-// 自己那条 fiber 变 ACTIVE **之前**（同一文件 :665-672 的状态机：`_execute` 结算后才
+// 自己那条 fiber 变 ACTIVE **之前**（harness vendor/cordis/src/fiber.ts 的状态机：`_execute` 结算后才
 // `_updateState`）。于是"在 apply 里同步读规则库"这条路径在真实宿主上拿到的是空投影 →
-// 端口判 unusable（lib/rules-namespace.ts:198-212）→ `commit` 不写（lib/lesson-store.ts:830-842）
+// 端口判 unusable（lib/rules-namespace.ts 的 load）→ `commit` 不写（lib/lesson-store.ts 的 commit）
 // → 迁移**静默空转**，用户的历史碎片卡永远不归并。
 //
 // 现有单测（host.test.ts）与 bus-boot.test.ts 都盖不住它：那份 settings 假件恒投影本条目
-// （test/rules-fake.ts:231-253），而这是真实宿主**不可能**出现的状态。所以本文件把假件的
+// （test/rules-fake.ts 的 describe 分支），而这是真实宿主**不可能**出现的状态。所以本文件把假件的
 // 投影面按 harness 的真实语义门控（只有 ACTIVE 才投），并把"装载期确实读到过空投影"
 // 钉成反向对照——门控若失效（例如宿主改成投影 PENDING 条目），对照组立刻红。
 //

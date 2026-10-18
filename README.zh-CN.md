@@ -29,18 +29,18 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 - 包内 `cordis.patch.yml`（由 `package.json` 的 `dsh.bundle.patch` 指向）里的注册行是 `- id: lesson-loop` + `name: "@jayyuen66/dsh-lesson-loop"`；必须按裸包名引用，client 半才会被装载。
   - `dsh plugin --profile web add/remove` 维护这一层，`dsh --profile web --dump-config` 可验证。
 - 部署默认可写在注册行的 `config:` 上，优先级为设置卡运行时值 > 行 `config` > 包内置默认，配置不合法时加载失败（响亮报错）。
-- `settings` 是唯一插件级硬依赖（`default.inject = ["settings"]`）；四条 `/_dsh/lesson-loop/*` 路由另挂在 `inject(["webServer"])` 的子 fiber 上（真实宿主上 webServer 比本条目晚到位约 1 秒，只在 apply 里 `ctx.get` 读一次就永不注册）。其余服务（`timer` / `commands` / `systemPrompt` / `llm`）可选读：缺位只让对应能力不注册，装载照跑。
+- `settings` 是唯一插件级硬依赖（`default.inject = ["settings"]`）；设置卡的数据面是 `lessonLoopRules` 这枚官方 Typert Remote 命名空间上的四个方法，随 apply 无条件注册（它们不依赖任何可选宿主服务，所以不需要像旧路由那样等 webServer 到位）。其余服务（`timer` / `commands` / `systemPrompt` / `llm`）可选读：缺位只让对应能力不注册，装载照跑。
 
 ### 装机验收口径
 
-四条判据，本机对 `dsh 0.2.1-alpha.2` 实测过（把 `DSH_HOME` 指到临时目录跑，别动日常那份）：
+四条判据，本机对 `dsh 0.2.1-rc.2` 实测过（把 `DSH_HOME` 指到临时目录跑，别动日常那份）：
 
 - 装完 `dsh plugin --profile web add <tarball>` 之后，profile 的 `node_modules/` 顶层只该有 `@jayyuen66/` 一枚，**不该有 `@deepseek-ai/` 目录**——那正是「宿主包被写进 `dependencies`、profile 里物化出第二份宿主类型面」的指纹，`test/publish-manifest.test.ts` 的门禁防的就是它。
 - `dsh --profile web --dump-config` 末尾出现 `# == @jayyuen66/dsh-lesson-loop` 与 `- id: lesson-loop`，说明组合包层认领了这条目。
-- 宿主在安装期**强制**比对 peer：`@deepseek-ai/dsh` 与每一枚 `@deepseek-ai/dsh-*` peer 都按 `semver.satisfies(运行版本, 需求, { includePrerelease: true })` 判（`dsh-app-boot/src/plugin-compatibility.ts:61-86`；`add` 的预检与装后复查在 `dsh-plugin-manager/src/operations.ts:344`、`:479`）。实测一枚把 peer 写成 `@deepseek-ai/dsh: 0.1.0` 的探针包会得到 `dsh: installation rejected: … is incompatible with dsh 0.2.1-alpha.2`，随后 `dsh: restored package.json, pnpm-lock.yaml, and node_modules.` 三项回滚。`engines.dsh` 写的也是同一个值，但宿主代码里**没有它的读取方**（`@deepseek-ai/dsh-package-manifest` 只给类型，其 README 明写安装器与载入器不执行它）。
+- 宿主在安装期**强制**比对 peer：`@deepseek-ai/dsh` 与每一枚 `@deepseek-ai/dsh-*` peer 都按 `semver.satisfies(运行版本, 需求, { includePrerelease: true })` 判（`dsh-app-boot/src/plugin-compatibility.ts:61-86`；`add` 的预检与装后复查在 `dsh-plugin-manager/src/operations.ts:344`、`:479`）。实测一枚把 peer 写成 `@deepseek-ai/dsh: 0.1.0` 的探针包会得到 `dsh: installation rejected: … is incompatible with dsh 0.2.1-rc.2`，随后 `dsh: restored package.json, pnpm-lock.yaml, and node_modules.` 三项回滚。`engines.dsh` 写的也是同一个值，但宿主代码里**没有它的读取方**（`@deepseek-ai/dsh-package-manifest` 只给类型，其 README 明写安装器与载入器不执行它）。
 - 本包把 `dsh-*` peer **精确钉**（与同门九包同一条纪律），因此高于本下限的宿主同样判为不兼容，出路是逐条授权、且按宿主版本生效：`dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<版本> --dsh-version <宿主精确版本> --accept-risk`；核对与撤销分别是 `version-exemptions` 与 `revoke-version`（三条命令均实测）。
 
-装载侧的同一批性质由 `test/integration/host-contract.test.ts` 在真实 cordis + loader 上钉住：服务经官方 reflect 交出、兄弟条目 `inject: ["lessonLoop"]` 解析得动、卸载时四条路由的 disposer 各自被采纳、本包条目 `Config` 非法只把自己那条 fiber 置为 FAILED 而不外溢，以及 `settings` 缺席时不进 ACTIVE。
+装载侧的同一批性质由 `test/integration/host-contract.test.ts` 在真实 cordis + loader 上钉住：服务经官方 reflect 交出、兄弟条目 `inject: ["lessonLoop"]` 解析得动、装载失败的那两条路径（`Config` 非法、`settings` 缺席）都在 webServer 探针上留下「一条路由也没注册」的读数、本包条目 `Config` 非法只把自己那条 fiber 置为 FAILED 而不外溢，以及 `settings` 缺席时不进 ACTIVE。
 
 ### 总线接口（其他插件怎么上报）
 
@@ -60,7 +60,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 ### 设置项
 
-设置命名空间 = profile 条目 id `lesson-loop`（运行时可改）。0.2.1-alpha.2 的注册是隐式的（宿主按条目导出的 `Config` 反推命名空间与可编辑字段），一个条目只有这一段：规则库就是它的第 12 个 volatile 字段 `rules`（用户可直接编辑），开关与阈值是同段的另外 11 项。旧版「开关与规则分属两段（`lesson-loop-rules`）」的隔离改由三处补回：`rules` 标了 `.loose()`（人把它改成非数组不会让整条条目装载失败）、读侧另看 `describe().user` 的原文形状（读不懂即拒写，绝不拿空库去覆写等人修的数据）、以及整段共用一枚 revision 的 CAS 重读重放。坏一条规则不会打死开关，反之亦然。四个布尔默认全为 `true`：`enabled`（总开关，关掉后不上报、不注入、不做退出清算）、`reportEnabled`（落盘与归并）、`injectEnabled`（会话开始注入）、`sectionEnabled`（常驻段）。
+设置命名空间 = profile 条目 id `lesson-loop`（运行时可改）。0.2.1-rc.2 的注册是隐式的（宿主按条目导出的 `Config` 反推命名空间与可编辑字段），一个条目只有这一段：`rules` 是它的一个 volatile 字段（用户可直接编辑），开关与阈值是同段的其余可编辑项，下面两枚部署值也落在这一段、只是不投影到卡片。旧版「开关与规则分属两段（`lesson-loop-rules`）」的隔离改由三处补回：`rules` 标了 `.loose()`（人把它改成非数组不会让整条条目装载失败）、读侧另看 `describe().user` 的原文形状（读不懂即拒写，绝不拿空库去覆写等人修的数据）、以及整段共用一枚 revision 的 CAS 重读重放。坏一条规则不会打死开关，反之亦然。四个布尔默认全为 `true`：`enabled`（总开关，关掉后不上报、不注入、不做退出清算）、`reportEnabled`（落盘与归并）、`injectEnabled`（会话开始注入）、`sectionEnabled`（常驻段）。
 
 | 字段               | 默认       | 取值                    | 作用                                                    |
 | ------------------ | ---------- | ----------------------- | ------------------------------------------------------- |
@@ -78,24 +78,20 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 ### 对外接口
 
-端点清单：
+设置卡的数据面是一枚**官方 Typert Remote 命名空间** `lessonLoopRules`（`lib/rules-shape.ts`）上的四个方法。没有 `/_dsh/*` 路由、没有 CSRF token、本包也不自带 body 上限：认证、Host / DNS 重绑定 / Origin 判据与请求体上限都由宿主 `/api` 网关承担，而它只把这枚命名空间暴露给同一 profile 的客户端。
 
-| 路由                                 | 说明                                                   |
-| ------------------------------------ | ------------------------------------------------------ |
-| `GET /_dsh/lesson-loop/stats`        | 下发 csrf + 配置摘要 + 计数 + 全量规则投影             |
-| `GET /_dsh/lesson-loop/rules`        | 可按 `project` 过滤                                    |
-| `GET /_dsh/lesson-loop/lessons`      | `project` 过滤 + `limit`，≤ 0 或缺省为全量             |
-| `POST /_dsh/lesson-loop/rule-action` | `{ id, action, statement? }`，动作限于上面六个白名单值 |
+| 方法 | 入参 | 回执 |
+| --- | --- | --- |
+| `stats()` | — | `{ ok: true, …计数, …配置摘要, rules }`；规则投影里带着派生态 `undeterminable`，且**不带** `evidence[]` 正文 |
+| `rules(request)` | `{ project? }` | `{ ok: true, rules }`；`project` 不是字符串就按缺省处理，也就是给全量库 |
+| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`；`limit` 不是有限数、≤ 0 或缺省都是全量，内容零截断 |
+| `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`，或 `{ ok: false, error, status }` |
 
-- 信任闸门：四条路由 handler 体的第一条语句都是 `shared/lib/trust` 的 `guardTrust(req, res, { servingNonLoopback })`，判据依次为 Host 权威 → `sec-fetch-site` 白名单 → `Origin` 逐字比对；`servingNonLoopback` 只由 `isNonLoopbackBindHost(webServer.host)` 取（宿主 `0.2.1-alpha.2` 起 `Config.host` 是任意本机 IP 字面量、通配地址载入即拒，比 `=== "0.0.0.0"` 那种字面量恒为 false）。
-  - 任一不成立 → `403` + JSON `{ ok: false, error: "untrusted host authority" | "cross-origin request rejected" }`，后一句是 `sec-fetch-site` 与 `Origin` 两条腿共用的文案。
-- 写端点守卫：`x-lesson-csrf` 头须回灌 GET 下发的 token（缺或错 → 403 `invalid csrf token`），body ≤ 1 MiB（超限 413、坏流 400）。
-- 状态码：方法不符 405、超限 413、JSON 不合法或缺 `id`/`action` 或动作不在白名单 400、无此卡 404、没存住 500 且 error 原样回 `rules-not-persisted`。
-  - 405 不再是空体：带 `Allow` 头与 `{ ok: false, error: "GET only" }`（三条 GET 路由）或 `"POST only"`（rule-action）。
-- HTTP 投影刻意去掉 `evidence[]` 正文（单条 detail 最长 400 字符，卡片按轮询取数），并补上派生态 `undeterminable`。
-- 命令 `/lessons-digest [附加说明]` 把本会话人工差评与该项目近期教训交给模型蒸馏成候选卡（`origin` 为 `lessons-digest`），只能人工触发。
-- 闸门关着、不在会话内、无 `llm` 服务或无模型选择都会明确拒绝。
-
+- 写面只认那六个动作白名单（`arm` / `reject` / `demote` / `archive` / `edit` / `revive`），`statement` 也只由 `arm` 与 `edit` 读取——它会被 trim，空白串（空串或全空白）按「没给」处理：已存的正文原样保留。
+- 拒绝回执里的 `status` 是**保留下来的语义码，不是 HTTP 状态**：缺 `id` / `action` 或动作不在白名单是 400，规则查无此条是 404，库侧拒绝落盘是 500 且文案就是 `rules-not-persisted`。卡片渲染的是 `error`，那个数字的作用是让测试钉住是哪条判据拦的；405 与 413 那一档已经没有了——方法名对不对、body 大不大都是网关的判定。
+- 客户端（`src/rules-reader.ts`）持四条 descriptor，`$mount` 只做一次，然后按派生键 `remote.lessonLoopRules` 取。客户端上下文里没有 `remote` 服务时根本不构造读面，卡片退回它的 `statsUnavailable`；服务在、这枚命名空间没挂上时读面抛错——缺能力要明说，不能被渲染成「规则库是空的」。
+- 读数是被拉的，不是被推的：打开面板一次、保存之后一次、每次人工动作之后一次。这里**没有轮询循环也没有客户端墙钟**——一次调用允许跑多久由网关决定，卡片再设一枚就是「写得慢的那次被判成丢了，而它其实落了」。
+- `/lessons-digest [附加说明]` 这条命令把本会话的人工负反馈与该项目的近期教训一起交给模型，蒸馏出候选卡片（`origin` 为 `lessons-digest`）。
 ### 数据与隐私
 
 - 派生数据只有两份：
@@ -112,7 +108,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 - 规则会不会自己生效？不会。只有 `arm` 把状态写成 `armed`；`rejected` 卡复发达阈值也只回到 `candidate`，`demoted` / `archived` 的复活同样是人工动作。
 - 把 `reportEnabled` 关掉会怎样？`report()` 直接回 `{ ok: false, reason: "disabled" }`，既不写事件流水也不建卡（集成测试钉了这条负向路径）。
-  - `/lessons-digest` 同样拒绝执行；读端点与设置卡照常可用。
+  - `/lessons-digest` 同样拒绝执行；四个读面方法与设置卡照常可用。
 - 卡片上点 arm 提示失败？`rules-not-persisted` 意味着这一次没进库（端口拒写或 CAS 冲突用满），库里仍是旧状态，重试即可。
   - 若段里的 `rules` 被手改成非数组，规则面降级为「读空、写拒」（坏内容原样留着等人修，本进程一次都不写这段），同段的开关照改照生效，修好那段设置即恢复。
 - 规则一直显示「不可判定」？说明机器**没有干净命中可作分母**：`suppressed` 仍为 0，且要么这条规则已静置超过 `decayDays`（锚点是它最近一次活动：arm / 最后一次复发 / 最后一次遵守），要么复发已达 `demoteThreshold` 却始终没有一次被遵守的会话。两种情况下 `violation/(violation+suppressed)` 结构上恒为 1.0，机器既不降级也不归档——保持 `armed` 由你停用或归档；出现一次 `pass` 命中即自动退出该态。

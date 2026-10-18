@@ -4,7 +4,7 @@
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir, networkInterfaces } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { setImmediate as flushAsync } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -17,7 +17,7 @@ import type {
   RuleCard,
 } from "../lib/lesson-store.ts";
 import { RULES_FIELD, SETTINGS_NAMESPACE, cardsOfValue } from "../lib/rules-layout.ts";
-import { MESSAGES, fill, localeFromAcceptLanguage } from "../lib/messages.ts";
+import { MESSAGES, fill } from "../lib/messages.ts";
 import { makeSettingsProvider } from "./rules-fake.ts";
 import type { SettingsProviderFake } from "./rules-fake.ts";
 import type { LlmService } from "../lib/digest.ts";
@@ -111,6 +111,8 @@ interface FakeCtx {
   /** 规则库落在那儿的 settings 假件：注入存量行、数写次数、制造冲突都走它。 */
   rulesProvider: SettingsProviderFake;
   provide: (name: string, value: unknown) => () => void;
+  /** 官方服务注册口（Remote 服务构造时用）。 */
+  reflect: { provide: (name: string, value: unknown) => () => void };
   get: (name: string) => unknown;
   /** 官方 `ctx.sessionQuery.observeSession()` 交回的事件流（/lessons-digest 的差评来源）。
    *  迁移前这一档由 `agent.session.snapshotEvents()` 给；官方已把那条同步读面标为
@@ -232,8 +234,16 @@ function makeCtx(
         Reflect.deleteProperty(ctx.provided, name);
       };
     },
+    reflect: {
+      provide: (name: string, value: unknown) =>
+        typeof ctx.provide === "function"
+          ? ctx.provide(name, value)
+          : () => {
+              void 0;
+            },
+    },
     get(name: string) {
-      return ctx.services[name];
+      return ctx.services[name] ?? ctx.provided[name];
     },
     /** ctx.inject(deps, fn)：cordis 立即用带齐依赖的子上下文回调一次。 */
     inject(deps: readonly string[], attach: (child: unknown) => void) {
@@ -314,87 +324,10 @@ function apply(ctx: FakeCtx): void {
   plugin.apply(ctx as never, ctx.config as never);
 }
 
-function makeRes(): FakeRes {
-  const res: FakeRes = {
-    writeHead(code, headers) {
-      res.code = code;
-      if (headers !== undefined) {
-        // Node 的 writeHead(status, headers) 是**并入**已 setHeader 的项，不是替换；
-        // 这里原来是整份覆盖，于是 405 的 `Allow` 在假响应里凭空消失（真机上不会）。
-        // 夹具按 Node 的语义合，断言才落在被测代码上而不是夹具上。
-        res.headers = { ...res.headers, ...headers };
-      }
-      return res;
-    },
-    end(body) {
-      if (body !== undefined) {
-        res.body = body;
-      }
-      return res;
-    },
-    setHeader(name, value) {
-      res.headers = { ...res.headers, [name]: value };
-      return res;
-    },
-  };
-  return res;
-}
-
-function makeReq(over: Partial<FakeReq> = {}): FakeReq {
-  const chunks = over.chunks ?? [];
-  const req: FakeReq = {
-    method: over.method ?? "GET",
-    url: over.url ?? "/",
-    headers: over.headers ?? {},
-    chunks,
-    [Symbol.asyncIterator](): AsyncIterator<unknown> {
-      let cursor = 0;
-      return {
-        next: async () => {
-          if (cursor < chunks.length) {
-            const block = chunks[cursor];
-            cursor += 1;
-            return { value: block, done: false };
-          }
-          return { value: undefined, done: true };
-        },
-      };
-    },
-  };
-  return req;
-}
-
 /** rule-action 端点 handler 是 fire-and-forget（同步 wrapper + void 内部 async），
  *  落盘响应在微任务队列完成；setImmediate（宏任务）可保证其已 flush（防时序假设）。 */
 
-/** rule-action POST：模拟 async-iterable body（readBody 的 for await 消费 chunks）。
- *  触发 handler 后冲刷宏任务，待内部 async 处理完成再回读响应。 */
-async function postJson(
-  ctx: FakeCtx,
-  routePath: string,
-  body: unknown,
-  headers: Record<string, unknown> = {},
-): Promise<FakeRes> {
-  return (async () => {
-    const res = makeRes();
-    const req = makeReq({
-      method: "POST",
-      url: routePath,
-      headers,
-      chunks: [JSON.stringify(body)],
-    });
-    ctx.routes[routePath]?.(req, res);
-    await flushAsync();
-    return res;
-  })();
-}
-
 // ── 端点/服务面公共小件 ───────────────────────────────────────────────────
-
-const STATS_ROUTE = "/_dsh/lesson-loop/stats";
-const RULES_ROUTE = "/_dsh/lesson-loop/rules";
-const LESSONS_ROUTE = "/_dsh/lesson-loop/lessons";
-const RULE_ACTION_ROUTE = "/_dsh/lesson-loop/rule-action";
 
 // ── 夹具字面量（本文件内重复的输入数据与期望值，逐枚命名）───────────────
 // 全部是测试侧自己写的字面量：本文件从不指向 lib/prompt.ts 的 PLUGIN_NAME/SECTION_NAME
@@ -463,13 +396,6 @@ function fireSettingsUpdated(ctx: FakeCtx, ns: string): void {
   for (const handler of handlers) {
     handler(ns);
   }
-}
-
-/** 从 stats GET 取本实例的 csrf（rule-action 端点要带它）。 */
-function csrfOf(ctx: FakeCtx): string {
-  const res = makeRes();
-  ctx.routes[STATS_ROUTE]?.(makeReq(), res);
-  return String((JSON.parse(String(res.body)) as { csrf?: string }).csrf);
 }
 
 /** 走真实总线造一张 armed 规则卡（gate-failure / pnpm check @ /repo/proj），返回 id。 */
@@ -671,21 +597,6 @@ const EDITABLE_FIELDS = [
 
 // ── 非回环服务面判据的两枚夹具（描述块外声明：oxlint 的 consistent-function-scoping
 //    不许把只读环境表的函数嵌进 describe，consistent-return 又禁 `return undefined`）──
-/** 本机实装的第一枚非回环 IPv4；纯回环环境（容器 CI）没有，回 null。 */
-function firstNonLoopbackIPv4(): string | null {
-  for (const infos of Object.values(networkInterfaces())) {
-    for (const info of infos ?? []) {
-      if (info.family === "IPv4" && !info.address.startsWith("127.")) {
-        return info.address;
-      }
-    }
-  }
-  return null;
-}
-
-const LAN_BIND = firstNonLoopbackIPv4();
-/** TEST-NET-1（RFC 5737）：本机任何网卡都不会持有它。 */
-const NOT_LOCAL_AUTHORITY = "192.0.2.11";
 
 describe("host：lesson-loop 的宿主半", () => {
   beforeEach(() => {
@@ -1072,230 +983,6 @@ describe("host：lesson-loop 的宿主半", () => {
     });
   });
 
-  describe("webServer 端点", () => {
-    it("stats GET 下发 csrf + 全量规则 + 教训计数", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const svc = loopService(ctx);
-      await svc.report({ source: "manual", category: "c", signature: "s", detail: "d" });
-      const res = makeRes();
-      ctx.routes[STATS_ROUTE]?.(makeReq({ url: STATS_ROUTE }), res);
-      const body = JSON.parse(res.body!) as {
-        ok: boolean;
-        csrf: string;
-        rules: unknown[];
-        lessonsCount: number;
-      };
-      assert.equal(body.ok, true);
-      assert.match(body.csrf, /[0-9a-f-]{36}/u);
-      assert.equal(body.lessonsCount, 1);
-      assert.equal(body.rules.length, 1);
-    });
-
-    it("rule-action POST：csrf 校验 + arm 生效 + 异常路径", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const svc = loopService(ctx);
-      const first = await svc.report({
-        source: "manual",
-        category: "c",
-        signature: "s",
-        detail: "d",
-      });
-      const { id } = first.candidate!;
-      const statsRes = makeRes();
-      ctx.routes[STATS_ROUTE]?.(makeReq(), statsRes);
-      const { csrf } = JSON.parse(statsRes.body!) as { csrf: string };
-
-      // 错 csrf → 403
-      const bad = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id, action: "arm" },
-        { "x-lesson-csrf": "wrong" },
-      );
-      assert.equal(bad.code, 403);
-      // 未知 action → 400
-      const unknownAction = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id, action: "nuke" },
-        { "x-lesson-csrf": csrf },
-      );
-      assert.equal(unknownAction.code, 400);
-      // 未知 id → 404
-      const unknownId = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id: "rule-nope", action: "arm" },
-        { "x-lesson-csrf": csrf },
-      );
-      assert.equal(unknownId.code, 404);
-      // 正确 arm（带 statement 改写）
-      const ok = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id, action: "arm", statement: "改写后的规则" },
-        { "x-lesson-csrf": csrf },
-      );
-      assert.equal(ok.code, 200);
-      assert.equal(svc.rules()[0]?.status, "armed");
-      assert.equal(svc.rules()[0]?.statement, "改写后的规则");
-    });
-
-    it("lessons GET：project 过滤 + 全量缺省", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const svc = loopService(ctx);
-      await svc.report({
-        source: "manual",
-        category: "c",
-        signature: "s1",
-        detail: "d1",
-        cwd: GATE_PROJECT_CWD,
-      });
-      await svc.report({
-        source: "manual",
-        category: "c",
-        signature: "s2",
-        detail: "d2",
-        cwd: "/other",
-      });
-      const res = makeRes();
-      const projectUrl = `/_dsh/lesson-loop/lessons?project=${encodeURIComponent(deriveProject(GATE_PROJECT_CWD))}`;
-      ctx.routes[LESSONS_ROUTE]?.(makeReq({ url: projectUrl }), res);
-      const body = JSON.parse(res.body!) as { count: number; lessons: { detail: string }[] };
-      assert.equal(body.count, 1);
-      assert.equal(body.lessons[0]?.detail, "d1");
-      const all = makeRes();
-      ctx.routes[LESSONS_ROUTE]?.(makeReq({ url: LESSONS_ROUTE }), all);
-      assert.equal((JSON.parse(all.body!) as { count: number }).count, 2);
-    });
-
-    it("端点方法守卫：stats/rules/lessons 非 GET、rule-action 非 POST → 405 + Allow", () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const getRoutes = [STATS_ROUTE, RULES_ROUTE, LESSONS_ROUTE];
-      for (const routePath of getRoutes) {
-        const res = makeRes();
-        ctx.routes[routePath]?.(makeReq({ method: "POST", url: routePath }), res);
-        assert.equal(res.code, 405, `${routePath} 非 GET 应 405`);
-        assert.equal(res.headers?.["Allow"], "GET");
-        // 405 不再是空体，与全仓统一的 JSON 回执由这条针钉住。
-        assert.match(res.body ?? "", /"error":"GET only"/u, routePath);
-      }
-      const postRes = makeRes();
-      ctx.routes[RULE_ACTION_ROUTE]?.(makeReq({ method: "GET", url: RULE_ACTION_ROUTE }), postRes);
-      assert.equal(postRes.code, 405);
-      assert.equal(postRes.headers?.["Allow"], "POST");
-    });
-
-    it("rule-action 跨域 → 403（csrf 前的纵深防线）", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const res = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id: "x", action: "arm" },
-        { "sec-fetch-site": "cross-site" },
-      );
-      assert.equal(res.code, 403);
-      assert.match(res.body!, /cross-origin/u);
-    });
-
-    it("rule-action body 超限 → 413", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const statsRes = makeRes();
-      ctx.routes[STATS_ROUTE]?.(makeReq(), statsRes);
-      const { csrf } = JSON.parse(statsRes.body!) as { csrf: string };
-      const bigStatement = "x".repeat(1024 * 1024 + 16);
-      const res = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id: "rule-1", action: "arm", statement: bigStatement },
-        { "x-lesson-csrf": csrf },
-      );
-      assert.equal(res.code, 413);
-    });
-
-    it("rule-action body 非合法 JSON → 400", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const statsRes = makeRes();
-      ctx.routes[STATS_ROUTE]?.(makeReq(), statsRes);
-      const { csrf } = JSON.parse(statsRes.body!) as { csrf: string };
-      const res = makeRes();
-      const req = makeReq({
-        method: "POST",
-        url: RULE_ACTION_ROUTE,
-        headers: { "x-lesson-csrf": csrf },
-        chunks: ["not-json{{{"],
-      });
-      ctx.routes[RULE_ACTION_ROUTE]?.(req, res);
-      await flushAsync();
-      assert.equal(res.code, 400);
-      assert.ok(String(res.body).includes(MESSAGES.zh.errInvalidJsonBody));
-    });
-
-    it("rule-action 缺 id/action → 400；未知 action → 400", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const statsRes = makeRes();
-      ctx.routes[STATS_ROUTE]?.(makeReq(), statsRes);
-      const { csrf } = JSON.parse(statsRes.body!) as { csrf: string };
-      const noId = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { action: "arm" },
-        { "x-lesson-csrf": csrf },
-      );
-      assert.equal(noId.code, 400);
-      assert.ok(String(noId.body).includes(MESSAGES.zh.errIdAndActionRequired));
-      const unknownAction = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id: "rule-1", action: "boom" },
-        { "x-lesson-csrf": csrf },
-      );
-      assert.equal(unknownAction.code, 400);
-      // 未知动作回显带原值（白名单外一律拒，并把发来的名字点出来便于定位）
-      const expectedUnknown = fill(MESSAGES.zh.errUnknownAction, { action: "boom" });
-      assert.ok(String(unknownAction.body).includes(expectedUnknown));
-    });
-
-    it("rules GET：project 过滤命中与未命中", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const svc = loopService(ctx);
-      await svc.report({ cwd: GATE_PROJECT_CWD, category: "c", signature: "s1", detail: "d1" });
-      await svc.report({ cwd: "/other", category: "c", signature: "s2", detail: "d2" });
-      const hit = makeRes();
-      const projectUrl = `/_dsh/lesson-loop/rules?project=${encodeURIComponent(deriveProject(GATE_PROJECT_CWD))}`;
-      ctx.routes[RULES_ROUTE]?.(makeReq({ url: projectUrl }), hit);
-      const hitBody = JSON.parse(hit.body!) as { rules: { project: string }[] };
-      assert.equal(hitBody.rules.length, 1);
-      const miss = makeRes();
-      ctx.routes[RULES_ROUTE]?.(makeReq({ url: "/_dsh/lesson-loop/rules?project=none" }), miss);
-      assert.equal((JSON.parse(miss.body!) as { rules: unknown[] }).rules.length, 0);
-    });
-
-    it("lessons GET：limit 生效且非法 limit 回落全量", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const svc = loopService(ctx);
-      await svc.report({ source: "manual", category: "c", signature: "s1", detail: "d1" });
-      await svc.report({ source: "manual", category: "c", signature: "s2", detail: "d2" });
-      await svc.report({ source: "manual", category: "c", signature: "s3", detail: "d3" });
-      const limited = makeRes();
-      ctx.routes[LESSONS_ROUTE]?.(makeReq({ url: "/_dsh/lesson-loop/lessons?limit=2" }), limited);
-      assert.equal((JSON.parse(limited.body!) as { count: number }).count, 2);
-      const zero = makeRes();
-      ctx.routes[LESSONS_ROUTE]?.(makeReq({ url: "/_dsh/lesson-loop/lessons?limit=abc" }), zero);
-      assert.equal((JSON.parse(zero.body!) as { count: number }).count, 3);
-    });
-  });
-
   describe("cacheFile 路径解析（官方 dsh-home-paths 通道）", () => {
     it("DSH_HOME 已设 → $DSH_HOME/cache/lesson-loop/<name>", () => {
       const previousDshHome = process.env["DSH_HOME"];
@@ -1535,9 +1222,9 @@ describe("host：lesson-loop 的宿主半", () => {
       const ctx = makeCtx();
       apply(ctx);
       assert.equal(ctx.timerCallbacks.length, 1);
-      // apply 的 effect 顺序：provide → systemPrompt section → decay timer → webServer routes。
-      // decay disposer 是倒数第二个。
-      const decayDisposer = ctx.effects.at(-2);
+      // 规则读面迁到官方 Remote 之后，应用期最后一项 effect 就是 decay timer
+      //（旧的 webServer routes 子 fiber 已删除）。
+      const decayDisposer = ctx.effects.at(-1);
       if (decayDisposer === undefined) {
         throw new Error("decay disposer 缺失");
       }
@@ -1877,148 +1564,17 @@ describe("host：lesson-loop 的宿主半", () => {
       // 装载期一共两份依赖声明：`settings`（页面策略）与 `webServer`（四条路由）。
       // 后者是**子 fiber**：ctx.get 是无 inject 语义的存储读，官方注释写着 "or `undefined`
       // when not (yet) provided"（installed @deepseek-ai/cordis/lib/types/reflect.d.ts:10-14），
-      // 真实宿主上 webServer 比本条目晚到位（隔离 DSH_HOME 实测 apply 当场 undefined、约 1s 后
-      // 才有实例），只在 apply 里读一次的结果是四条路由永不注册。
+      // 真实宿主上 webServer 比本条目晚到位（隔离 DSH_HOME 实测 apply 当场 undefined、稍后
+      // 才交得出实例），只在 apply 里读一次的结果是四条路由永不注册。
       assert.deepEqual(
         ctx.injectDeps,
-        [["settings"], ["webServer"]],
-        "两份子依赖：settings 管页面策略，webServer 管路由；此外不多要一枚",
+        [["settings"]],
+        "只留 settings 一份子依赖：规则读面已迁到官方 Remote，不再等 webServer",
       );
       assert.equal(ctx.configureCalls.length, 1, "一次装载一次策略登记（重复登记宿主会抛）");
       const [call] = ctx.configureCalls;
       assert.equal(call?.presentation.auto, false);
       assert.equal(call.owner, ctx.fiber, "owner 必须是本插件 fiber");
-    });
-  });
-
-  describe("端点注册与失败面", () => {
-    it("effect 卸载 → 四条路由全部注销", () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      assert.equal(Object.keys(ctx.routes).length, 4);
-      const disposeRoutes = ctx.effects.at(-1);
-      assert.ok(disposeRoutes, "routes disposer 缺失");
-      disposeRoutes();
-      assert.deepEqual(Object.keys(ctx.routes), []);
-    });
-
-    it("rules GET 无 project → 全量下发（不过滤）", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const svc = loopService(ctx);
-      // 两笔 report 都要等落库：规则库存 settings 命名空间，整段是「读 → 重放 → 带
-      // revision 的 CAS 覆写」，第二笔要看得见第一笔；GET 也得等两笔都写完才有意义。
-      await svc.report({
-        source: "manual",
-        category: "c",
-        cwd: "/repo/one",
-        signature: "s1",
-        detail: "d1",
-      });
-      await svc.report({
-        source: "manual",
-        category: "c",
-        cwd: "/repo/two",
-        signature: "s2",
-        detail: "d2",
-      });
-      const res = makeRes();
-      ctx.routes[RULES_ROUTE]?.(makeReq({ url: RULES_ROUTE }), res);
-      assert.equal((JSON.parse(String(res.body)) as { rules: unknown[] }).rules.length, 2);
-    });
-
-    it("规则库落不进盘 → 回执 PERSIST_FAILED 且端点回 500（不能假装成功）", async () => {
-      const error = vi.spyOn(console, "error").mockImplementation(() => {
-        // 断言在下方
-      });
-      const ctx = makeCtx();
-      apply(ctx);
-      const svc = loopService(ctx);
-      // 先落一张真进得了库的卡：拒写之后 report() 不再留任何内存副本（commit 改的是本次
-      // 读取的副本，随调用返回即丢弃），端点连"这条规则存在"都无从知道——那种情形下的
-      // 正确回执是 404（rejected 不复活），拿它当"落盘失败回 500"的证据会测不到东西。
-      const seeded = await svc.report({
-        source: "manual",
-        category: "c",
-        cwd: GATE_PROJECT_CWD,
-        signature: "s-seeded",
-        detail: "d",
-      });
-      const id = seeded.candidate?.id;
-      if (id === undefined) {
-        throw new Error("候选卡缺失");
-      }
-      assert.equal(seeded.ok, true, "种子卡要真写进库");
-      // provider 拒写（端口回执 rejected）：规则库这一段整片写不进去
-      ctx.rulesProvider.failWrites(99);
-      const receipt = await svc.report({
-        source: "manual",
-        category: "c",
-        cwd: GATE_PROJECT_CWD,
-        signature: "s",
-        detail: "d",
-      });
-      assert.equal(receipt.ok, false);
-      assert.equal(receipt.reason, PERSIST_FAILED);
-      const res = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id, action: "arm" },
-        { "x-lesson-csrf": csrfOf(ctx) },
-      );
-      assert.equal(res.code, 500);
-      assert.match(String(res.body), new RegExp(PERSIST_FAILED, "u"));
-      // 库里还是旧状态：那次 arm 没生效
-      assert.equal(
-        rulesOf(ctx).find((row) => row.id === id)?.status,
-        "candidate",
-        "拒写不得留下半截改动",
-      );
-      // 磁盘没存住必须留 error 日志（首条是 lessons 的同类失败，故整体查找）
-      assert.ok(
-        error.mock.calls.some((call) => String(call[0]).includes("rules write failed")),
-        "规则库落盘失败未记 error 日志",
-      );
-    });
-
-    it("handler 内任何抛错都被兜住 → 500 + error 日志（响应绝不挂住）", async () => {
-      const error = vi.spyOn(console, "error").mockImplementation(() => {
-        // 断言在下方
-      });
-      const ctx = makeCtx();
-      apply(ctx);
-      const id = await armedRule(ctx);
-      vi.spyOn(LessonStore.prototype, "ruleAction").mockImplementation(async () => {
-        throw new Error("端点里炸了");
-      });
-      const res = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id, action: "arm" },
-        { "x-lesson-csrf": csrfOf(ctx) },
-      );
-      assert.equal(res.code, 500);
-      assert.ok(String(res.body).includes(MESSAGES.zh.errRuleActionFailed));
-      assert.match(String(error.mock.calls[0]?.[0]), /rule-action handler failed: 端点里炸了/u);
-    });
-
-    it("body 是 JSON 标量 / 缺 action → 400（非对象取字段一律为空）", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const csrf = csrfOf(ctx);
-      const scalar = await postJson(ctx, RULE_ACTION_ROUTE, "just-a-string", {
-        "x-lesson-csrf": csrf,
-      });
-      assert.equal(scalar.code, 400);
-      assert.ok(String(scalar.body).includes(MESSAGES.zh.errIdAndActionRequired));
-      const noAction = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id: "rule-1" },
-        { "x-lesson-csrf": csrf },
-      );
-      assert.equal(noAction.code, 400);
-      assert.ok(String(noAction.body).includes(MESSAGES.zh.errIdAndActionRequired));
     });
   });
 
@@ -2423,12 +1979,13 @@ describe("host：lesson-loop 的宿主半", () => {
       const ctx = makeCtx({ rules: [undeterminableRow()] });
       apply(ctx);
       await flushAsync();
-      const res = makeRes();
-      ctx.routes[STATS_ROUTE]?.(makeReq({ url: STATS_ROUTE }), res);
-      const body = JSON.parse(String(res.body)) as {
-        undeterminableCount: number;
-        rules: { id: string; undeterminable: boolean; samples: number }[];
+      const service = ctx.get("lessonLoopRules") as {
+        stats: () => {
+          undeterminableCount: number;
+          rules: { id: string; undeterminable: boolean; samples: number }[];
+        };
       };
+      const body = service.stats();
       assert.equal(body.undeterminableCount, 1);
       assert.equal(body.rules.find((rule) => rule.id === "rule-und")?.undeterminable, true);
       assert.equal(body.rules.find((rule) => rule.id === "rule-und")?.samples, 0);
@@ -2438,11 +1995,13 @@ describe("host：lesson-loop 的宿主半", () => {
       const ctx = makeCtx();
       apply(ctx);
       const id = await armedRule(ctx);
-      const res = makeRes();
-      ctx.routes[RULES_ROUTE]?.(makeReq({ url: RULES_ROUTE }), res);
-      const body = JSON.parse(String(res.body)) as {
-        rules: { id: string; undeterminable: boolean }[];
-      };
+      const body = (
+        ctx.get("lessonLoopRules") as {
+          rules: (request: Record<string, unknown>) => {
+            rules: { id: string; undeterminable: boolean }[];
+          };
+        }
+      ).rules({});
       assert.equal(body.rules.find((rule) => rule.id === id)?.undeterminable, false);
     });
 
@@ -2464,7 +2023,7 @@ describe("host：lesson-loop 的宿主半", () => {
     });
   });
 
-  // ── 双语（P6）：host 侧文案随官方 locale 偏好走，规则数据永不改写 ─────────
+  // ── 双语：host 侧文案随官方 locale 偏好走，规则数据永不改写 ───────────────
   // 读的是官方 dsh-client-locale 拥有的 settings 命名空间 `locale`（假件里由
   // makeCtx({ locale }) 递值）；未注册即中文——上面 60 多条既有断言全走中文路径，
   // 它们本身就是「默认语言 = zh」的回归网。这里只补 en 分支与数据面红线。
@@ -2613,47 +2172,6 @@ describe("host：lesson-loop 的宿主半", () => {
       );
     });
 
-    it("en：rule-action 端点的 error 回显换语言（卡片直接显示它）", async () => {
-      const ctx = makeCtx({ locale: { preference: "en" } });
-      apply(ctx);
-      const csrf = csrfOf(ctx);
-      const unknown = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id: "rule-1", action: "boom" },
-        { "x-lesson-csrf": csrf },
-      );
-      assert.ok(
-        String(unknown.body).includes(fill(MESSAGES.en.errUnknownAction, { action: "boom" })),
-      );
-      const missing = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { action: "arm" },
-        { "x-lesson-csrf": csrf },
-      );
-      assert.ok(String(missing.body).includes(MESSAGES.en.errIdAndActionRequired));
-      const notFound = await postJson(
-        ctx,
-        RULE_ACTION_ROUTE,
-        { id: "rule-nope", action: "arm" },
-        { "x-lesson-csrf": csrf },
-      );
-      assert.ok(String(notFound.body).includes(MESSAGES.en.errRuleNotFound));
-      const broken = makeRes();
-      ctx.routes[RULE_ACTION_ROUTE]?.(
-        makeReq({
-          method: "POST",
-          url: RULE_ACTION_ROUTE,
-          headers: { "x-lesson-csrf": csrf },
-          chunks: ["{"],
-        }),
-        broken,
-      );
-      await flushAsync();
-      assert.ok(String(broken.body).includes(MESSAGES.en.errInvalidJsonBody));
-    });
-
     it("改偏好即时生效：同一次装载里上一条 zh、下一条 en（不重启、不重装载）", async () => {
       const ctx = makeCtx({ value: { enabled: false } });
       apply(ctx);
@@ -2662,77 +2180,6 @@ describe("host：lesson-loop 的宿主半", () => {
       ctx.localeValue = { preference: "en" };
       const after = await ctx.command?.handler(digestInvocation());
       assert.equal(after?.text, MESSAGES.en.digestRejectedDisabled);
-    });
-
-    it("q 值协商 Accept-Language：降序取胜、同权重先到先得、表外/坏值判不出", () => {
-      // 主语言子标签匹配（与设置偏好那条链同一口径）
-      assert.equal(localeFromAcceptLanguage("en-US,en;q=0.9,zh-CN;q=0.8"), "en");
-      assert.equal(localeFromAcceptLanguage("en;q=0.3, zh-Hans-CN;q=0.9"), "zh");
-      // 同权重按出现顺序先到的那枚（严格大于：后面的不再顶掉）
-      assert.equal(localeFromAcceptLanguage("en;q=0.5, zh;q=0.5"), "en");
-      // 大小写不敏感；非 q 参数（level）不干扰，缺省权重按 1
-      assert.equal(localeFromAcceptLanguage("EN-us;level=1"), "en");
-      // 判不出的六种：表外语言、通配、坏 q、q 超 1、q=0（显式拒绝）、空串/非字符串头
-      assert.equal(localeFromAcceptLanguage("fr-FR,de;q=0.8"), undefined);
-      assert.equal(localeFromAcceptLanguage("*"), undefined);
-      assert.equal(localeFromAcceptLanguage("en;q=abc"), undefined);
-      assert.equal(localeFromAcceptLanguage("en;q=1.5"), undefined);
-      assert.equal(localeFromAcceptLanguage("en;q=0, zh;q=0"), undefined);
-      assert.equal(localeFromAcceptLanguage(""), undefined);
-      assert.equal(
-        localeFromAcceptLanguage(["en-US", "en"]),
-        undefined,
-        "重复头在 Node 里是数组：判不出就好，不猜",
-      );
-    });
-
-    it("locale 未注册时，rule-action 回显跟请求的 Accept-Language 走", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const csrf = csrfOf(ctx);
-      const notFound = { id: "rule-nope", action: "arm" };
-      const en = await postJson(ctx, RULE_ACTION_ROUTE, notFound, {
-        "x-lesson-csrf": csrf,
-        "accept-language": "en-US,en;q=0.9",
-      });
-      assert.equal(en.code, 404);
-      assert.ok(String(en.body).includes(MESSAGES.en.errRuleNotFound), "en 头 → 英文回显");
-      const zh = await postJson(ctx, RULE_ACTION_ROUTE, notFound, {
-        "x-lesson-csrf": csrf,
-        "accept-language": "en;q=0.1, zh-CN;q=0.9",
-      });
-      assert.ok(String(zh.body).includes(MESSAGES.zh.errRuleNotFound), "q 值高的 zh 胜出");
-      const neither = await postJson(ctx, RULE_ACTION_ROUTE, notFound, {
-        "x-lesson-csrf": csrf,
-        "accept-language": "fr-FR",
-      });
-      assert.ok(String(neither.body).includes(MESSAGES.zh.errRuleNotFound), "表外语言回落中文");
-    });
-
-    it("locale 已注册 → 设置偏好优先，请求头不参与（含偏好值不认识的情形）", async () => {
-      const enCtx = makeCtx({ locale: { preference: "en" } });
-      apply(enCtx);
-      const zhHeader = await postJson(
-        enCtx,
-        RULE_ACTION_ROUTE,
-        { id: "rule-nope", action: "arm" },
-        { "x-lesson-csrf": csrfOf(enCtx), "accept-language": "zh-CN,zh;q=0.9" },
-      );
-      assert.ok(
-        String(zhHeader.body).includes(MESSAGES.en.errRuleNotFound),
-        "设置里明确选了 en，请求头不得改写它",
-      );
-      // 偏好值不认识（fr-FR）→ 按设置那条链归中文默认；此时请求头**不**兜底——
-      // 兜底只在"未注册"（describe 里没有 locale 那条）时启用。
-      const bogusCtx = makeCtx({ locale: { preference: "fr-FR" } });
-      apply(bogusCtx);
-      const enHeader = await postJson(
-        bogusCtx,
-        RULE_ACTION_ROUTE,
-        { id: "rule-nope", action: "arm" },
-        { "x-lesson-csrf": csrfOf(bogusCtx), "accept-language": "en-US" },
-      );
-      assert.ok(String(enHeader.body).includes(MESSAGES.zh.errRuleNotFound));
     });
   });
 
@@ -2784,147 +2231,6 @@ describe("host：lesson-loop 的宿主半", () => {
       error.mockRestore();
     });
   });
-
-  describe("信任闸门：/_dsh/lesson-loop/* 的三判据", () => {
-    /** DNS 重绑定的真实形状：Host 是外域，sec-fetch-site 与 Origin 都自洽 ⇒ 只有 Host 腿拒得了。 */
-    const REBINDING: Record<string, unknown> = {
-      host: "evil.test:8787",
-      origin: "http://evil.test:8787",
-      "sec-fetch-site": "same-origin",
-    };
-
-    it("token 下发的 GET 与写端点的 POST 都拒重绑定（本包一半暴露面在 token GET 上）", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const statsRes = makeRes();
-      ctx.routes[STATS_ROUTE]?.(makeReq({ url: STATS_ROUTE, headers: REBINDING }), statsRes);
-      assert.equal(statsRes.code, 403);
-      assert.match(statsRes.body ?? "", /untrusted host authority/u);
-      assert.doesNotMatch(statsRes.body ?? "", /csrf/u, "被拒的响应里不许带出 token");
-
-      const action = await postJson(ctx, RULE_ACTION_ROUTE, { action: "arm" }, REBINDING);
-      assert.equal(action.code, 403);
-      assert.match(action.body ?? "", /untrusted host authority/u);
-    });
-
-    it("四条路由逐条都被拒（防「只装了其中两条」的漏装）", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      // 闸门的判据与写响应都是同步的 ⇒ 先把四次打完，再统一断言。
-      const hits: { routePath: string; res: FakeRes }[] = [];
-      for (const routePath of [STATS_ROUTE, RULES_ROUTE, LESSONS_ROUTE, RULE_ACTION_ROUTE]) {
-        const res = makeRes();
-        ctx.routes[routePath]?.(makeReq({ url: routePath, headers: REBINDING }), res);
-        hits.push({ routePath, res });
-      }
-      await Promise.resolve();
-      assert.equal(hits.length, 4);
-      for (const one of hits) {
-        assert.equal(one.res.code, 403, one.routePath);
-        assert.match(one.res.body ?? "", /untrusted host/u, one.routePath);
-        assert.doesNotMatch(one.res.body ?? "", /csrf/u, `${one.routePath} 被拒时不许带出 token`);
-      }
-    });
-
-    it("判据次序：恶意 Host 与 cross-site 同现时报 Host 腿那句（钉住闸门顺序）", () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const res = makeRes();
-      ctx.routes[STATS_ROUTE]?.(
-        makeReq({
-          url: STATS_ROUTE,
-          headers: { host: "evil.test:8787", "sec-fetch-site": "cross-site" },
-        }),
-        res,
-      );
-      assert.equal(res.code, 403);
-      assert.match(res.body ?? "", /untrusted host authority/u);
-    });
-
-    it("缺 Host 仍按旧口径走（本地 CLI 面）：token 正常下发，闸门不插手", async () => {
-      // 这条是"本波新增 17 处插桩却一条既有断言都不用改"的针：171 个手搓构造点都不带 host，
-      // requestTrust 那一侧退回看对端（无 socket ⇒ 未知），于是继续走它自己的 CSRF 判据。
-      const ctx = makeCtx();
-      apply(ctx);
-      const res = makeRes();
-      ctx.routes[STATS_ROUTE]?.(makeReq({ url: STATS_ROUTE }), res);
-      assert.equal(res.code, 200);
-      const body = JSON.parse(res.body ?? "{}") as { csrf?: string };
-      assert.match(String(body.csrf), /[0-9a-f-]{36}/u);
-    });
-
-    it("回环 Host + 同源 Origin 正常通过；异源 Origin 即便 Host 是回环也拒", async () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const okRes = makeRes();
-      ctx.routes[STATS_ROUTE]?.(
-        makeReq({
-          url: STATS_ROUTE,
-          headers: { host: "127.0.0.1:8787", origin: "http://127.0.0.1:8787" },
-        }),
-        okRes,
-      );
-      assert.equal(okRes.code, 200);
-
-      const badRes = makeRes();
-      ctx.routes[STATS_ROUTE]?.(
-        makeReq({
-          url: STATS_ROUTE,
-          headers: { host: "127.0.0.1:8787", origin: "http://evil.test" },
-        }),
-        badRes,
-      );
-      assert.equal(badRes.code, 403);
-      assert.match(badRes.body ?? "", /cross-origin request rejected/u);
-    });
-
-    // ── servingNonLoopback 的取值口径（宿主 0.2.1-alpha.2 起）──────────────────
-    // 官方 `Config.host` 从 `'127.0.0.1' | '0.0.0.0'` 换成任意本机 IP 字面量，通配地址在
-    // 载入即拒。本包当时那枚 `webServer.host === "0.0.0.0"` 于是恒为 false：绑真实网卡的
-    // 插件把自己的 Host 权威整片拒成 403「untrusted host authority」，而类型检查、构建与
-    // 其余信任用例一条都不红。下面两条一放一拒，把这个只在装机时才暴露的分支钉在测试面上。
-
-    it.skipIf(LAN_BIND === null)(
-      "绑网卡地址时该网卡权威照常放行（回归钉：比字面量会让这里恒 403）",
-      () => {
-        if (LAN_BIND === null) {
-          return;
-        }
-        const ctx = makeCtx();
-        (ctx.services["webServer"] as { host: string }).host = LAN_BIND;
-        apply(ctx);
-        const res = makeRes();
-        ctx.routes[STATS_ROUTE]?.(
-          makeReq({
-            url: STATS_ROUTE,
-            headers: { host: `${LAN_BIND}:8787`, origin: `http://${LAN_BIND}:8787` },
-          }),
-          res,
-        );
-        assert.equal(res.code, 200, `绑 ${LAN_BIND} 时 ${LAN_BIND} 就是本机可信权威`);
-      },
-    );
-
-    it("回环绑定时私网权威照旧拒（不许用「恒为 true」绕过上面那条）", () => {
-      const ctx = makeCtx();
-      apply(ctx);
-      const res = makeRes();
-      ctx.routes[STATS_ROUTE]?.(
-        makeReq({
-          url: STATS_ROUTE,
-          headers: {
-            host: `${NOT_LOCAL_AUTHORITY}:8787`,
-            origin: `http://${NOT_LOCAL_AUTHORITY}:8787`,
-          },
-        }),
-        res,
-      );
-      assert.equal(res.code, 403);
-      assert.match(res.body ?? "", /untrusted host authority/u);
-    });
-  });
-
-  // ── 蒸馏超时/衰减周期进 entry config；退出清算改可 await 的异步 disposer ────────
 
   describe("部署值与退出清算静默", () => {
     it("行 config 覆盖 decayIntervalMs → 周期衰减按配置时长武装（不再写死 24h）", () => {

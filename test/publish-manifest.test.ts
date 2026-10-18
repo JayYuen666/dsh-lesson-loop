@@ -453,11 +453,6 @@ function patchFiles(bundle: DshDeclaration["bundle"]): string[] {
   return Array.isArray(declared) ? [...declared] : [];
 }
 
-/** 一段源码里出现的 `/_dsh/lesson-loop/<段>` 路径（去重排序）。 */
-function pathsIn(text: string): string[] {
-  return [...new Set(text.match(/\/_dsh\/lesson-loop\/[a-z-]+/gu))].toSorted();
-}
-
 /** 产物里的 require 说明符清单（去重排序；跨半门禁用它钉"只允许平台模块"）。 */
 function requiresIn(text: string): string[] {
   return [...new Set(text.match(/require\("(?<specifier>[^"]+)"\)/gu))].toSorted();
@@ -511,23 +506,6 @@ describe("dsh 声明面（宿主按这些字段决定装什么、加载什么）
     expect(yml, "patch 的 name 必须是本包包名（裸名，不带版本/路径）").toContain(
       `name: "${manifest.name}"`,
     );
-  });
-
-  it("client 半与 host 半的端点/请求头常量一致（跨半漂移 = 卡片 404 或被拒）", async () => {
-    const [hostText, clientText] = await Promise.all([
-      readFile(path.join(pkgDir, "host.ts"), "utf8"),
-      readFile(path.join(pkgDir, "src", "client-entry.ts"), "utf8"),
-    ]);
-    const hostPaths = pathsIn(hostText);
-    expect(hostPaths.length, "host 侧至少要有一条端点").toBeGreaterThan(0);
-    // 客户端只消费其中两条（stats / rule-action），但两条路径必须逐字出现在 host 侧。
-    for (const used of pathsIn(clientText)) {
-      expect(hostPaths, `client 打的 ${used} 在 host 侧不存在`).toContain(used);
-    }
-    // csrf 头名：host 的 LESSON_CSRF_HEADER 与客户端写端点回填的名字必须同源。
-    const header = "x-lesson-csrf";
-    expect(hostText, "host 侧没有 csrf 头名").toContain(header);
-    expect(clientText, "client 侧没有回填 csrf 头名").toContain(header);
   });
 
   it("client.js 只 require 平台模块（其余依赖一律内联，避免第二份实例）", async () => {

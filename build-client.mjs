@@ -41,7 +41,7 @@ const pkgName = typeof nameRaw === "string" ? nameRaw : "unknown";
  * `packages/client/tsdown.client.ts` 的 `clientExternals()` 算的就是「基座 ∪ 本包
  * dsh.client.external」——同文件注释明写 "The shell baseline is implicit for every
  * dynamic bundle"。基座里每一枚都必须 external：内联一份 react / cordis / UI 库的副本
- * 就是同一个模块两份身份（宿主只认模块表那一条），而这份清单此前只写了 react。
+ * 就是同一个模块两份身份（宿主只认模块表那一条），基座里漏一枚就是少一份外部化。
  * test/build-client.test.ts 把清单逐条钉住，改这里之前先看官方那两份真源动没动。
  * @type {readonly string[]}
  */

@@ -2,7 +2,7 @@
 //
 // 为什么值得一条测试（两个坏方向都不报错、只在线上发作）：发布形态下 host.js 躺在
 // node_modules 里被 dsh 载入——
-//   1) 内联：`@jayyuen66/dsh-plugin-shared/lib/http` 这类**子路径**说明符一旦被打进产物，shared 的
+//   1) 内联：`@jayyuen66/dsh-plugin-shared/lib/errors` 这类**子路径**说明符一旦被打进产物，shared 的
 //      模块级状态就在每个插件里各复制一份；rolldown 的 external 字符串项是精确匹配，
 //      只列包名会漏掉子路径，故 build-host.mjs 按「包名段」判定（该坑已在脚本注释登记）。
 //   2) 残留：产物里只要还剩 `./lib/xxx.ts`，Node 载入即抛 ERR_UNSUPPORTED_NODE_MODULES_
@@ -48,8 +48,8 @@ describe("buildHost()", () => {
     );
     // 子路径说明符：external 字符串项匹配不到的那个坑
     assert.ok(
-      out.includes('from "@jayyuen66/dsh-plugin-shared/lib/http"'),
-      "shared/http 必须外部化",
+      out.includes('from "@jayyuen66/dsh-plugin-shared/lib/errors"'),
+      "shared/lib/errors 必须外部化",
     );
     assert.ok(
       out.includes('from "@jayyuen66/dsh-plugin-shared/lib/project-key"'),
@@ -74,19 +74,6 @@ describe("buildHost()", () => {
     const out = await buildHost();
     // lib/*.ts 应已被吃进单文件；留着即"发布后 Node 直接拒载"的形态
     assert.ok(!/["']\.\/[^"']*\.ts["']/u.test(out), "不得有 ./x.ts 说明符残留");
-  });
-});
-
-describe("闸门的外部化面（shared/lib/trust）", () => {
-  it("lib/trust 子路径保持裸说明符，且 guardTrust 的实现未被内联", async () => {
-    // 这些包原先只钉了 http/project-key/record/jsonl 几枚子路径，`lib/trust` 是新增的第四个坑位：
-    // external 的字符串项是精确匹配，子路径一旦漏掉就把整份判据复制进本包产物（判据分叉的起点）。
-    const out = await buildHost();
-    assert.ok(
-      out.includes('from "@jayyuen66/dsh-plugin-shared/lib/trust"'),
-      "shared/trust 必须外部化",
-    );
-    assert.ok(!/^function guardTrust\(/mu.test(out), "产物不得内联 guardTrust 的函数体");
   });
 });
 

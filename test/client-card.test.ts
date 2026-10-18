@@ -23,7 +23,6 @@ import {
   apply,
   buildConfigRows,
   cardDescriptionText,
-  diffTouched,
   inject,
   LlcCard,
   retiredToggleText,
@@ -210,7 +209,7 @@ describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置
     assert.equal(rows[4]?.label, "候选升格门槛（次）");
     assert.match(rows[0]?.hint ?? "", /\/lessons-digest/u);
     // 落盘串钉在**真实流水路径**上：host 写的是 cache/lesson-loop/events.jsonl
-    // （host.ts:909-910），旧串 metrics/lessons.jsonl 那个文件根本不存在。
+    // （host.ts 的 `lessonsFile: cacheFile("events.jsonl")`），旧串 metrics/lessons.jsonl 那个文件根本不存在。
     assert.match(rows[1]?.hint ?? "", /cache\/lesson-loop\/events\.jsonl/u);
     for (const item of rows) {
       assert.notEqual(item.label, "");
@@ -228,7 +227,7 @@ describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置
     // 同一件事的英文侧：换语言不许把路径换掉。
     assert.match(rows[1]?.hint ?? "", /cache\/lesson-loop\/events\.jsonl/u);
     // 保险丝钉的是**流水文件当前那个名字**：host 写的是 cache/lesson-loop/events.jsonl
-    // （host.ts:909-910 `lessonsFile: cacheFile("events.jsonl")`），旧的
+    // （host.ts 的 `lessonsFile: cacheFile("events.jsonl")`），旧的
     // metrics/lessons.jsonl 已不存在，串还写着它就是卡面在承诺一段没人写的数据。
     // 精确等号（不是 includes）＝字典一改这里就红，逼着两处一起对齐。
     assert.equal(rows[10]?.label, "events.jsonl disk fuse (bytes)");
@@ -310,12 +309,6 @@ describe("规则评审区文案", () => {
     );
     assert.equal(saveBarStatus(tEn, { dirty: true, writable: false }), "This scope is read-only");
   });
-
-  it("touched 与快照的差异判定与语言无关（undefined 与缺失等价）", () => {
-    assert.deepEqual(diffTouched({ decayDays: undefined }, {}), []);
-    assert.deepEqual(diffTouched({ decayDays: undefined }, { decayDays: 5 }), ["decayDays"]);
-    assert.deepEqual(diffTouched({ decayDays: 30 }, { decayDays: 30 }), []);
-  });
 });
 
 // ── 整卡渲染（两语）：钩子打桩后走 createElement 产物，直读文本面 ──────────────
@@ -360,7 +353,7 @@ function textOf(node: unknown): string {
 }
 
 /** 写入回调的哑目的（本测试不驱动保存）。0.2.1-alpha.2 的 `ConfigForm.mutate` 回**受理位**
- *  （true=宿主接受；installed config-form-types.d.ts:55），卡片消费它：false 时报错并
+ *  （true=宿主接受；installed config-form-types.d.ts:52），卡片消费它：false 时报错并
  *  保留草稿（见 src/client-entry.ts 的 LlcCardProps / save），故假件回 true。 */
 const noWrite = async (): Promise<boolean> => true;
 const noOp = (): void => {
@@ -383,12 +376,20 @@ function cardText(translator: Translate): string {
 }
 
 /** 单条规则卡（含动作按钮）的文本面。 */
+/** 规则读面的最小替身：文本面用例不触发动作，四个方法只为满足组件契约。 */
+const fakeRulesRemote = {
+  stats: async () => ({}),
+  rules: async () => ({ ok: true, rules: [] }),
+  lessons: async () => ({ ok: true, count: 0, lessons: [] }),
+  ruleAction: async () => ({ ok: true, id: "x", action: "arm" }),
+} as never;
+
 function ruleText(translator: Translate, row: RuleCardView): string {
   return textOf(
     createElement(RuleItem, {
       t: translator,
       rule: row,
-      csrf: "csrf-fake",
+      rulesRemote: fakeRulesRemote,
       busy: false,
       onDone: noOp,
       setBusy: noOp,
@@ -497,7 +498,7 @@ interface CardPayload {
   t: Translate;
   hooks: { card: { getSnapshot: () => unknown; subscribe: () => () => void } };
   /** 直通 0.2.1-alpha.2 `ConfigForm` 的原子写口：`mutate(ops, revision) => Promise<boolean>`
-   *  （installed config-form-types.d.ts:55），`true` = 宿主受理、false = 拒绝/跳过，
+   *  （installed config-form-types.d.ts:52），`true` = 宿主受理、false = 拒绝/跳过，
    *  只有传输失败才 reject。 */
   mutate: (ops: readonly unknown[], revision?: number) => Promise<boolean>;
 }
@@ -552,7 +553,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
     let payload: CardPayload | null = null;
     let view: unknown = null;
     const scope = {
-      // 官方 `ConfigFormSnapshot` 七位全必选（value/revision 只在「首个快照尚未受理」
+      // 官方 `ConfigFormSnapshot` 六位全必选（value/revision 只在「首个快照尚未受理」
       // 时为 undefined），照官方形状给，不再自造三位小快照。
       getSnapshot: (): ConfigFormSnapshot<Record<string, unknown>> => ({
         status: "ready",
@@ -561,7 +562,6 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
         user: { enabled: true },
         revision: 3,
         writable: true,
-        mode: "host",
       }),
       subscribe: (): (() => void) => (): undefined => undefined,
       set: async (): Promise<boolean> => true,
@@ -569,7 +569,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
       // 官方 ConfigForm 的第五位（路径级原子写入）：本卡不走它，但类型面要求在位。
       mutate: async (): Promise<boolean> => true,
       // 假件**留着** dispose 这根绊线：0.2.1-alpha.2 的消费契约 `ConfigForm`
-      // （installed config-form-types.d.ts:36-74）里没有 dispose，卡片一旦去销毁
+      // （installed config-form-types.d.ts:33-71）里没有 dispose，卡片一旦去销毁
       // provider 持有的那张共享表单，下面 disposed 的精确全等清单就会多出 "scope"。
       dispose: (): void => {
         disposed.push("scope");
@@ -630,7 +630,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
           formEntryIds.push(entryId);
           return scope;
         },
-        // 官方 `ConfigForms.whileServed`（installed config-form.d.ts:154-160）：宿主 served
+        // 官方 `ConfigForms.whileServed`（installed config-form.d.ts:138-151）：宿主 served
         // 本命名空间时才跑 register，返回一枚收尾 disposer（本假件同步跑、同步收）。
         whileServed: (namespaces, register) => {
           servedNamespaces.push([...namespaces]);
@@ -642,7 +642,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
       locale: {
         // 官方**类型化**那条 register：两语一次交齐、回**一枚** disposer。旧写法是逐语
         // 三参 + 两个 disposer，宿主侧走的正是同一个 `Object.entries(dicts)` 分支
-        // （installed dsh-client-locale/lib/client.js:1379-1406），故这里按语言摊平记录、
+        // （installed dsh-client-locale/lib/client.js:1387-1413），故这里按语言摊平记录、
         // 把那枚 disposer 逐项展开，下面的断言逐字不改。
         register: (ns, dicts: Record<BuiltInLocaleId, LocaleDictOf<LocaleNs>>): (() => void) => {
           for (const [localeId, dict] of Object.entries(dicts)) {
@@ -698,8 +698,8 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
     assert.equal(injected.t("cardTitle"), UI_MESSAGES.zh.cardTitle);
     // 回收顺序即 apply 的注册顺序：样式 → locale 两语 → 槽位。槽位的 disposer 只注销，
     // **不再** dispose 表单——0.2.1-alpha.2 的 `configForms.get(entryId)` 交回的是 provider 持有的
-    // 共享表单（installed config-form.d.ts:138-142，实例按 entryId 缓存在 provider 的
-    // forms 表里），消费契约 `ConfigForm`（config-form-types.d.ts:36-74）里根本没有
+    // 共享表单（installed config-form.d.ts:133-137，实例按 entryId 缓存在 provider 的
+    // forms 表里），消费契约 `ConfigForm`（config-form-types.d.ts:33-71）里根本没有
     // dispose；slot collapse 会跑本 disposer 再重跑工厂（installed
     // dsh-client-ui-renderer/lib/types/client/registry.d.ts:100），卡片自己销毁表单 =
     // 重挂之后写入永久静默丢弃（0.1.6 那个坑）。假件上的 dispose 绊线仍在：清单里
@@ -719,7 +719,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
     // configForms 取代 0.1.6 的 settingsScope（该服务在 installed 0.2.1-alpha.2 全树零命中，
     // 继续注入它 = 整条 client 入口挂不上）：契约源 installed
     // dsh-client-ui-settings/lib/types/client/config-form.d.ts:94-98（Context 增强）
-    // 与 :142（get(entryId)）。
+    // 与 :137（get(entryId)）。
     assert.ok(inject.includes("configForms"), "缺了 configForms 卡片拿不到写口，保存整条静默失败");
     // 精确全等清单（不只是包含判定）：多一项 = 白要宿主能力，少一项 = apply 里读到 undefined。
     assert.deepEqual(inject, ["slots", "configForms", "locale"]);

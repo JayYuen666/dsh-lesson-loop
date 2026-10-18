@@ -23,7 +23,6 @@
 // @deepseek-ai/cordis 等服务面一律 type-only。
 
 import { randomUUID } from "node:crypto";
-import type { IncomingMessage, ServerResponse } from "node:http";
 // 0.2.1-alpha.2 设置面要求宿主 fork：只有 @deepseek-ai/schemastery 的 resolve 会把 volatile
 // 字段包成 Volatile 引用（vendor/schemastery/src/index.ts:521-533），公共
 // schemastery@3.18.0 既没有 `.volatile()`、解析出来的也仍是普通值（设置卡写进去的值读不到）。
@@ -41,7 +40,6 @@ import type { Context, Events, Fiber, Volatile } from "@deepseek-ai/cordis";
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { CommandRuntime } from "@deepseek-ai/dsh-commands";
-import type { WebServer } from "@deepseek-ai/dsh-host-webserver";
 import type { MessageId } from "@deepseek-ai/dsh-llm";
 import type { Session, SessionEvent, SessionHeader, SessionId } from "@deepseek-ai/dsh-session";
 import type { SettingsForms } from "@deepseek-ai/dsh-settings";
@@ -49,17 +47,9 @@ import type { SettingsForms } from "@deepseek-ai/dsh-settings";
 import type { SessionQueryEngine } from "@deepseek-ai/dsh-session-query";
 import type { SystemPrompt } from "@deepseek-ai/dsh-system-prompt";
 import type { TimerService } from "@deepseek-ai/cordis-plugin-timer";
-// 共享 webServer 样板：sendJson/queryParam/guardBody（跨域 + CSRF + body 上限）
-// 与 session-rescue/zvec-grep/ocr-review 的同名实现收敛到 shared，避免双份维护。
-import { sendJson, queryParam, guardBody } from "@jayyuen66/dsh-plugin-shared/lib/http";
-// 信任闸门：四条路由的 handler 第一条语句都走它（Host 权威 → sec-fetch-site → Origin）。
-// isNonLoopbackBindHost 管同一判据的绑定地址侧——宿主 0.2.1-alpha.2 起通配地址载入即拒，
-// 比 `=== "0.0.0.0"` 恒为 false。
-import { guardTrust, isNonLoopbackBindHost } from "@jayyuen66/dsh-plugin-shared/lib/trust";
-// catch 值转日志文本：直接用 shared 的 errorText（本包曾经由 lesson-store 的
-// describeError 转发同一份逻辑）。
+// catch 值转日志文本：直接用 shared 的 errorText。
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
-import { LessonStore, deriveProject, PERSIST_FAILED } from "./lib/lesson-store.ts";
+import { LessonStore, deriveProject } from "./lib/lesson-store.ts";
 import type {
   LessonRecord,
   LessonSource,
@@ -68,6 +58,8 @@ import type {
   RuleCard,
   RulesRepository,
 } from "./lib/lesson-store.ts";
+import { installRulesRemote } from "./lib/rules-remote.ts";
+import type { RuleActionName } from "./lib/rules-shape.ts";
 import { RulesFieldSchema, createRulesRepository } from "./lib/rules-namespace.ts";
 import type { SettingsCasSurface } from "./lib/rules-namespace.ts";
 import {
@@ -80,7 +72,7 @@ import {
 } from "./lib/prompt.ts";
 import { runDigest, digestCreatedLine, DEFAULT_DIGEST_TIMEOUT_MS } from "./lib/digest.ts";
 import type { LlmService, AgentDefaultModel, SessionLike } from "./lib/digest.ts";
-import { MESSAGES, fill, localeFromAcceptLanguage } from "./lib/messages.ts";
+import { MESSAGES, fill } from "./lib/messages.ts";
 import type { LessonLoopMessages } from "./lib/messages.ts";
 // host 侧文案语言跟官方 locale 插件的偏好同源：读它拥有的 settings 命名空间（未注册即中文）。
 // 这条链覆盖 lesson-loop 自己产出的全部文案，**含起草新规则卡时那份 statement 正文**
@@ -101,26 +93,13 @@ const noDisposer = (): void => {
   void 0;
 };
 
-/** 人工动作键（rule-action 端点入参白名单）。 */
-type RuleActionKind = "arm" | "reject" | "demote" | "archive" | "edit" | "revive";
-const ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
-  "arm",
-  "reject",
-  "demote",
-  "archive",
-  "edit",
-  "revive",
-]);
-function isRuleAction(value: unknown): value is RuleActionKind {
-  return typeof value === "string" && ALLOWED_ACTIONS.has(value);
-}
+/** 人工动作键（总线服务面与规则读面共用的取值域；白名单在 lib/rules-remote.ts）。 */
+type RuleActionKind = RuleActionName;
 
 /**
- * `webServer` 与 `commands` 两枚可选服务**共用**的运行时判据：值是 record，且 `register`
- * 那一位可调用。两枚投影（{@link WebServerService} / {@link CommandsService}）的
- * `register` **签名**来自两份不同的官方类（`WebRoute` vs `CommandDefinition`），`Pick<>`
- * 出来是两台名义类型，收窄只能各留一枚；但结构检查只有一份，故收敛到这个函数，
- * 由两枚守卫各自一行委托（此前是两份逐字相同的六行抄本）。
+ * `commands` 可选服务的运行时判据：值是 record，且 `register` 那一位可调用。
+ * 投影（{@link CommandsService}）的 `register` **签名**来自官方类；结构检查与类型投影
+ * 分开，替身才满足得了名义类之外的那一层。
  */
 function hasCallableRegister(value: unknown): boolean {
   if (!isRecord(value)) {
@@ -128,26 +107,6 @@ function hasCallableRegister(value: unknown): boolean {
   }
   const { register } = value;
   return typeof register === "function";
-}
-
-/**
- * webServer 可选服务投影：官方 `WebServer`（@deepseek-ai/dsh-host-webserver，installed
- * `lib/types/index.d.ts:119` 起是 cordis `Service` 子类 + `exact`/`prefixes`/`upgrades`/
- * `fallback`/`server` 等一堆 private 字段 → TS 对类按名义比，测试替身满足不了整类型）的
- * 方法面 `Pick`，本包只 `register()`（installed `:157`）。
- * 旧镜像在这里手抄过一枚 route：`kind: string`（一处**静默加宽**——官方 `WebRouteKind`
- * 是 `'exact' | 'prefix'` 字面量联合，installed `:32`/`:35`。kind 拼错在运行时**不会**报错：
- * 官方 register 走 `route.kind === "exact" ? this.exact : this.prefixes`（installed
- * `lib/index.js:299`），任何非 `"exact"` 的串都被塞进**前缀**表，于是本应精确命中的端点会
- * 连子路径一起吃掉）、`path`、以及 handler 的 `(IncomingMessage, ServerResponse)` 形参与
- * `void | Promise<void>` 返回（installed `:34-40`）。现在全部来自官方 `WebRoute`，
- * 拼错的 kind 在编译期就红，disposer 亦按官方 `() => void` 收。别名取名 `WebServerService`：
- * 官方导出名 `WebServer` 已被上面的 type import 占用，同名会互相顶掉
- * （ctx-observe / zvec-grep / ocr-review 同款）。
- */
-type WebServerService = Pick<WebServer, "register" | "host">;
-function isWebServer(value: unknown): value is WebServerService {
-  return hasCallableRegister(value);
 }
 
 /**
@@ -179,12 +138,12 @@ function isCommandsService(value: unknown): value is CommandsService {
 
 /**
  * systemPrompt 服务投影：官方 `SystemPrompt`（@deepseek-ai/dsh-system-prompt，installed
- * `lib/types/index.d.ts:234` 起是 cordis `Service` 子类 + private `layers`/`toolOrder`
- * → 名义比较）的 `section` 方法面（installed `:247`）。载荷即官方 `PromptSection`
+ * `lib/types/index.d.ts:237` 起是 cordis `Service` 子类 + private `layers`/`toolOrder`
+ * → 名义比较）的 `section` 方法面（installed `:250`）。载荷即官方 `PromptSection`
  * （installed `:47-70`）：`name`/`order` 必填，`text` 允许静态串**或**每次拼装以
  * `AssembleContext`（installed `:37-45`）求值的 provider——旧镜像把 provider 的入参抄成了
  * `unknown`，那是加宽后的假面；官方还多两枚本包不用的可选旗标 `interpolate`/`complete`。
- * 返回是官方承诺的 "the exact Cordis effect disposer" `() => void`（installed `:245-247`）。
+ * 返回是官方承诺的 "the exact Cordis effect disposer" `() => void`（installed `:248-250`）。
  */
 type SystemPromptService = Pick<SystemPrompt, "section">;
 function isSystemPromptService(value: unknown): value is SystemPromptService {
@@ -275,12 +234,6 @@ function isHostCtx(value: unknown): value is HostCtx {
 
 // PLUGIN_NAME / LESSON_SOURCE_KIND 的定义收敛到 lib/prompt.ts（lib/digest.ts 也要用
 // 同一个 kind，而它 import 不到 host——方向是 host → lib）。见该处的注释。
-/** stats/rules/lessons GET 端点（下发 csrf）。 */
-const STATS_PATH = "/_dsh/lesson-loop/stats";
-const RULES_PATH = "/_dsh/lesson-loop/rules";
-const LESSONS_PATH = "/_dsh/lesson-loop/lessons";
-/** 写端点（POST，csrf + 同源校验）。 */
-const RULE_ACTION_PATH = "/_dsh/lesson-loop/rule-action";
 
 // ── 结构类型（与宿主交互面的运行时形状；避免值导入 @deepseek-ai/*）────────
 
@@ -414,12 +367,12 @@ interface HostCtx {
   settings: SettingsProvider;
   /** 服务读取面取官方 `Context["get"]`（installed @deepseek-ai/cordis/lib/types/reflect.d.ts:14
    *  `get<K extends string & keyof this>(name: K, strict?: boolean): undefined | this[K]`）：
-   *  本包读的 `webServer` / `commands` / `llm` / `agentDefaultModel` / `systemPrompt` **全部**
-   *  是官方声明进 `Context` 的名字（installed @deepseek-ai/dsh-host-webserver/lib/types/
-   *  index.d.ts:16-19、@deepseek-ai/dsh-commands/lib/types/index.d.ts:65、
+   *  本包读的 `commands` / `llm` / `agentDefaultModel` / `systemPrompt` / `sessionQuery` **全部**
+   *  是官方声明进 `Context` 的名字（installed @deepseek-ai/dsh-commands/lib/types/index.d.ts:65、
    *  @deepseek-ai/dsh-llm/lib/types/index.d.ts:29-31、
    *  @deepseek-ai/dsh-agent-default-model/lib/types/index.d.ts:6-8、
-   *  @deepseek-ai/dsh-system-prompt 同名增强），故走泛型臂拿到 `undefined | 官方服务类`，
+   *  @deepseek-ai/dsh-system-prompt 同名增强、@deepseek-ai/dsh-session-query 同名增强），
+   *  故走泛型臂拿到 `undefined | 官方服务类`，
    *  一条都不落进 `get(name: string): any` 兜底臂（:16）。
    *  ⚠ 与 danger-guard/host.ts 的 `HostCtx.get` 相反：那一包读的是 `SETTINGS_READER` 与
    *  `lessonLoop`，两者都不在官方 `Context` 上，换官方面只会把 `unknown` 降级成 `any`，
@@ -448,7 +401,7 @@ interface HostCtx {
    *  @deepseek-ai/dsh-session/lib/types/index.d.ts:50）；本包只读它的 `id`，那道
    *  `stringIdOf`/`isRecord` 守卫照旧（官方类型说的是宿主的承诺，交付由守卫负责）。
    *  ⚠ 不换 `Context["on"]`：那是全仓延后项（泛型 `on<K extends keyof Events>` 会重写每一枚
-   *  监听器签名，ctx-observe/host.ts:328-336 记着同一条理由）。按重载逐枚点名，
+   *  监听器签名，ctx-observe 的 host.ts 记着同一条理由）。按重载逐枚点名，
    *  新增事件时加一条签名即可，不必把整张事件表拖进来。 */
   on: ((
     event: "session/disposed",
@@ -512,7 +465,7 @@ export interface Config {
  *  `Config`（vendor/cordis/src/registry.ts:104 `Plugin.Base.Config`，装载时
  *  fiber._resolveConfig → resolveConfig 校验；此前本包写成 `ConfigSchema` 键，
  *  registry 取不到，本包的行 config 校验从未真正跑过）。
- *  十二个字段**全部** `.volatile()`：没有任何 volatile 字段的条目会被宿主 describe() 整条
+ *  可编辑字段**全部** `.volatile()`（两枚部署值刻意不标，见下）：没有任何 volatile 字段的条目会被宿主 describe() 整条
  *  跳过（packages/settings/settings/src/index.ts:308-309），写入则抛
  *  `has no volatile fields`（:386）——开关与规则库因此都是"从 schema 反推"的，漏标一项
  *  不会报错，只会让那一项从设置卡上静默消失（test/host.test.ts 拿宿主同一个判据钉住）。 */
@@ -596,14 +549,6 @@ function createRulesFacet(settings: unknown): RulesRepository {
   return createRulesRepository(settings);
 }
 
-// ── webServer 工具（样板由 shared 提供，本文件只留常量）────────────────────
-
-/** CSRF header 名（各插件历史上不同名，收敛时保持各自语义）。 */
-const LESSON_CSRF_HEADER = "x-lesson-csrf";
-
-/** rule-action 请求体上限（UTF-8 字节）：合法载荷只有 id/action/statement 三个短串。 */
-const RULE_ACTION_BODY_MAX_BYTES = 1024 * 1024;
-
 /** 会话台账容量上限（ctx-observe 同款纪律：防长驻进程无界）。 */
 const WATCH_MAX_SESSIONS = 200;
 
@@ -617,268 +562,12 @@ interface SessionWatchEntry {
 /** sessionId → 台账行：会话内复发记账，session/disposed 时清算 suppressed。 */
 type SessionWatch = Map<string, SessionWatchEntry>;
 
-/** 规则卡的 HTTP 投影类型：去证据 + 派生的"不可判定"态（armed 够久却无复发无干净命中）。 */
-type RuleView = Omit<RuleCard, "evidence"> & { undeterminable: boolean };
-
-/** 规则卡的 HTTP 投影：去掉 evidence[]，并补上派生态 undeterminable。
- *  证据是全文（一条教训的 detail 可含整段工具输出），而卡片只渲染状态与计数——
- *  原样序列化等于每次轮询把整份证据库传给浏览器再丢掉。不可判定是"该不该由人处理"
- *  的判据（既不自动降级也不自动归档），必须在投影里带出去让人看到。
- */
-function ruleViewOf(store: LessonStore, rule: RuleCard): RuleView {
-  const { evidence: _evidence, ...rest } = rule;
-  return { ...rest, undeterminable: store.isUndeterminable(rule) };
-}
-
-// ── webServer 端点（卡片读写的四条路由）────────────────────────────────────
-
 /**
  * 消息表的取用口：每次现取，用户在「设置 → 常规」改语言偏好后，下一条回显/注入
- * 就是新文案（不重启、也不给本包加一个自己的 locale 设置项）。
- * 带 `req` 的调用点（HTTP 回显）多一层兜底：官方 locale 条目**未注册**时按请求的
- * Accept-Language 协商（见 localeMessages）。四条路由里只有 rule-action 产人读文案，
- * GET 三路是纯数据与字面量回执（"GET only" 这类协议串刻意不翻译），故只有它把 req 带下来；
- * 不带 req 的调用点（注入段、起草正文）没有头可依，语言只由设置偏好决定。
+ * 就是新文案（不重启、也不给本包加一个自己的 locale 设置项）。语言只由设置偏好决定：
+ * 旧 HTTP 面那条 Accept-Language 兜底随请求一起消失，Remote 调用没有浏览器请求头可依。
  */
-type MessagesOf = (req?: IncomingMessage) => LessonLoopMessages;
-
-/**
- * 四条端点在**同一次装载**里共享的依赖：`csrf` 与非回环判据随 effect 实例走（依赖换实例
- *  即重生成，与旧闭包同寿命），store/stats/取文案口由 registerRoutes 交进来。收成一只盒子
- *  而不是四枚形参，是为了让 handler 保持官方 `WebRoute` 的 `(req, res)` 形状。
- */
-interface RouteRuntime {
-  store: LessonStore;
-  /** 管理面快照；/stats 把刚读到的规则卡交回来复用（同一次轮询不读两遍规则库）。 */
-  stats: (rules: RuleCard[]) => Record<string, unknown>;
-  messagesOf: MessagesOf;
-  csrf: string;
-  servingNonLoopback: boolean;
-}
-
-/** GET stats：全量规则投影 + csrf（卡片轮询的入口，也是 csrf 的唯一来源）。 */
-function handleStatsRoute(
-  req: IncomingMessage,
-  res: ServerResponse,
-  { csrf, servingNonLoopback, stats, store }: RouteRuntime,
-): void {
-  // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句——先验权威再谈方法/参数。
-  if (!guardTrust(req, res, { servingNonLoopback })) {
-    return;
-  }
-  if (req.method !== "GET") {
-    res.setHeader("Allow", "GET");
-    sendJson(res, 405, { ok: false, error: "GET only" });
-    return;
-  }
-  const rules = store.rules();
-  sendJson(res, 200, {
-    ok: true,
-    csrf,
-    ...stats(rules),
-    rules: rules.map((rule) => ruleViewOf(store, rule)),
-  });
-}
-
-/** GET rules：project 缺省给全量，给定即按卡片自存的 project 过滤。 */
-function handleRulesRoute(
-  req: IncomingMessage,
-  res: ServerResponse,
-  { csrf, servingNonLoopback, store }: RouteRuntime,
-): void {
-  // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句——先验权威再谈方法/参数。
-  if (!guardTrust(req, res, { servingNonLoopback })) {
-    return;
-  }
-  if (req.method !== "GET") {
-    res.setHeader("Allow", "GET");
-    sendJson(res, 405, { ok: false, error: "GET only" });
-    return;
-  }
-  const project = queryParam(req, "project");
-  const all = store.rules();
-  const rules = (project === null ? all : all.filter((rule) => rule.project === project)).map(
-    (rule) => ruleViewOf(store, rule),
-  );
-  sendJson(res, 200, { ok: true, csrf, rules });
-}
-
-/** GET lessons：事件流水只读投影，零写面。 */
-function handleLessonsRoute(
-  req: IncomingMessage,
-  res: ServerResponse,
-  { servingNonLoopback, store }: RouteRuntime,
-): void {
-  // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句——先验权威再谈方法/参数。
-  if (!guardTrust(req, res, { servingNonLoopback })) {
-    return;
-  }
-  if (req.method !== "GET") {
-    res.setHeader("Allow", "GET");
-    sendJson(res, 405, { ok: false, error: "GET only" });
-    return;
-  }
-  // limit ≤ 0 / 缺省 = 全量（不截断）；project 可选过滤。
-  const project = queryParam(req, "project");
-  const limitRaw = Number(queryParam(req, "limit") ?? "0");
-  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 0;
-  const lessons = store.recentLessons(project ?? undefined, limit);
-  sendJson(res, 200, { ok: true, count: lessons.length, lessons });
-}
-
-/** POST rule-action 的体：csrf 令牌校验 → 入参白名单 → 落库并按结果定状态码。 */
-async function applyRuleAction(
-  req: IncomingMessage,
-  res: ServerResponse,
-  { csrf, messagesOf, store }: RouteRuntime,
-): Promise<void> {
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
-    sendJson(res, 405, { ok: false, error: "POST only" });
-    return;
-  }
-  const raw = await guardBody(req, res, {
-    maxBytes: RULE_ACTION_BODY_MAX_BYTES,
-    csrf: { token: csrf, headerName: LESSON_CSRF_HEADER },
-  });
-  if (raw === null) {
-    return;
-  }
-  // 语言在每次请求现取：改偏好不必重启、也不影响已经在盘上的规则数据。带请求的调用点
-  // 走 Accept-Language 兜底（偏好未注册时），见 MessagesOf 的注记。
-  const messages = messagesOf(req);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    sendJson(res, 400, { ok: false, error: messages.errInvalidJsonBody });
-    return;
-  }
-  const idVal = fieldOf(parsed, "id");
-  const id = typeof idVal === "string" ? idVal : "";
-  const actionVal = fieldOf(parsed, "action");
-  const action = typeof actionVal === "string" ? actionVal : "";
-  const statementVal = fieldOf(parsed, "statement");
-  const statement = typeof statementVal === "string" ? statementVal : undefined;
-  if (id === "" || action === "") {
-    sendJson(res, 400, { ok: false, error: messages.errIdAndActionRequired });
-    return;
-  }
-  if (!isRuleAction(action)) {
-    sendJson(res, 400, {
-      ok: false,
-      error: fill(messages.errUnknownAction, { action }),
-    });
-    return;
-  }
-  const outcome = await store.ruleAction(id, action, statement);
-  if (outcome === "not-found") {
-    sendJson(res, 404, { ok: false, error: messages.errRuleNotFound });
-    return;
-  }
-  if (outcome === "persist-failed") {
-    // 这一次改动没进规则库（端口拒写或 CAS 冲突耗尽）：库里还是旧状态，必须报 500
-    // 让人重试，而不是回 200 假装升格已生效。PERSIST_FAILED 是回执码不是文案——
-    // 它与 report() 的 receipt.reason 同一个值，翻译它会让调用方的判等作用失效。
-    sendJson(res, 500, { ok: false, error: PERSIST_FAILED });
-    return;
-  }
-  sendJson(res, 200, { ok: true, id, action });
-}
-
-/** POST rule-action 的壳：闸门 + 兜底 catch（体本身失败一律 500，不许漏成 unhandled rejection）。 */
-async function handleRuleActionRoute(
-  req: IncomingMessage,
-  res: ServerResponse,
-  routes: RouteRuntime,
-): Promise<void> {
-  // 信任闸门（shared/lib/trust）：必须是 handler 体的第一条语句——先验权威再谈方法/参数。
-  if (!guardTrust(req, res, { servingNonLoopback: routes.servingNonLoopback })) {
-    return;
-  }
-  try {
-    await applyRuleAction(req, res, routes);
-  } catch (error) {
-    console.error(`[lesson-loop] rule-action handler failed: ${errorText(error)}`);
-    sendJson(res, 500, { ok: false, error: routes.messagesOf(req).errRuleActionFailed });
-  }
-}
-
-/** 端点装载体：读服务 → 取权威信号与 csrf → 四条路由逐个注册 → 交回合并 disposer。
- *  服务缺席（TUI 宿主没有 webServer）时只交回空清理，装载不许中断。 */
-function installLessonRoutes(
-  svc: HostCtx,
-  store: LessonStore,
-  stats: (rules: RuleCard[]) => Record<string, unknown>,
-  messagesOf: MessagesOf,
-): () => void {
-  const webServerRaw = svc.get?.("webServer");
-  if (!isWebServer(webServerRaw)) {
-    return noDisposer;
-  }
-  const webServer = webServerRaw;
-  // 非回环服务面的信号只有绑定字面量这一枚（官方 `Config.host` 的 trustedHosts 那面在
-  // webStartup 服务上，插件侧读不到）。绑非回环地址时本机网卡持有的 IP 才算可信权威，
-  // 回环档不必用它——归类交给 shared 的谓词，别在这里比字面量。
-  const servingNonLoopback = isNonLoopbackBindHost(webServer.host);
-  const csrf = randomUUID();
-  const routes: RouteRuntime = { store, stats, messagesOf, csrf, servingNonLoopback };
-  const disposeStats = webServer.register({
-    kind: "exact",
-    path: STATS_PATH,
-    handler: (req, res) => {
-      handleStatsRoute(req, res, routes);
-    },
-  });
-  const disposeRules = webServer.register({
-    kind: "exact",
-    path: RULES_PATH,
-    handler: (req, res) => {
-      handleRulesRoute(req, res, routes);
-    },
-  });
-  const disposeLessons = webServer.register({
-    kind: "exact",
-    path: LESSONS_PATH,
-    handler: (req, res) => {
-      handleLessonsRoute(req, res, routes);
-    },
-  });
-  const disposeAction = webServer.register({
-    kind: "exact",
-    path: RULE_ACTION_PATH,
-    // 任何一处抛错若不被接住 = unhandled rejection（Node 默认退出进程），且响应
-    // 永远不结算，客户端挂在那里 → 整段 await 包在 try 内，失败一律回 500。
-    handler: (req, res) => handleRuleActionRoute(req, res, routes),
-  });
-  return () => {
-    disposeStats();
-    disposeRules();
-    disposeLessons();
-    disposeAction();
-  };
-}
-
-/** 注册 webServer 端点：GET stats/rules/lessons（下发 csrf）+ POST rule-action（csrf 校验）。
- *  端点回显给卡片的 error 文案随语言偏好走（卡片把它们直接显示进 .llc-err）。
- *  ⚠ `owner` 必须是 apply 末尾那个 `svc.inject(["webServer"], …)` 交回的子上下文：效应挂在
- *  子 fiber 上才跟着依赖"后到即注册、换实例先卸后装"。挂在父 ctx 上会变成"父 fiber 卸载时
- *  才清"，依赖每次变化都多留一组路由。
- *  类型取本包对子上下文的投影（`InjectedCtx` 的 effect 位），不取官方 `Context["effect"]`：
- *  本包那份是比官方宽一格的本地镜像（官方两条重载的返回域是 Disposable/AsyncDisposable），
- *  混用会当场对不上——收窄到"这里只用到 effect"这一位即可。 */
-function registerRoutes(
-  svc: HostCtx,
-  owner: Pick<InjectedCtx, "effect">,
-  store: LessonStore,
-  stats: (rules: RuleCard[]) => Record<string, unknown>,
-  messagesOf: MessagesOf,
-): void {
-  owner.effect(
-    () => installLessonRoutes(svc, store, stats, messagesOf),
-    "lesson-loop: webServer routes",
-  );
-}
+type MessagesOf = () => LessonLoopMessages;
 
 /** commands 服务缺失只 warn 一次（模块级：一次进程内多次装载不刷屏）。
  *  位装在 const 盒子里而不是裸 `let`：模块级可变声明正是"谁都能改"的那种面，
@@ -1316,10 +1005,10 @@ function buildLessonStore(
  *
  *  ⚠ 必须先 `fiber.await()` 等本条目 settle 再读规则库：真实 `settings.describe()` 只投影
  *  `entry.fiber.state === ACTIVE` 的条目（packages/settings/settings/src/index.ts:305-306），
- *  而 apply 跑在自己那条 fiber 变 ACTIVE **之前**（同文件 :665-672 的状态机：`_execute`
+ *  而 apply 跑在自己那条 fiber 变 ACTIVE **之前**（vendor/cordis/src/fiber.ts 的状态机：`_execute`
  *  结算后才 `_updateState`）。在 apply 里同步读的后果不是报错而是**静默空转**：describe()
- *  投不出本条目 → 端口判 unusable（lib/rules-namespace.ts:198-212）→ commit 不写
- *  （lib/lesson-store.ts:830-842）→ 存量碎片永不归并、project 键永不归一，而日志一声不响。
+ *  投不出本条目 → 端口判 unusable（lib/rules-namespace.ts 的 load）→ commit 不写
+ *  （lib/lesson-store.ts 的 commit）→ 存量碎片永不归并、project 键永不归一，而日志一声不响。
  *  `fiber.await()` 等的正是这条边界（vendor/cordis/src/fiber.ts:698-710，装载错误会在这
  *  里重抛，故失败装载直接收手——那种情况下本条目根本没有规则库可迁）。 */
 function startBootMigrations(svc: HostCtx, store: LessonStore): void {
@@ -1586,7 +1275,7 @@ function wireSessionEvents(runtime: ApplyRuntime): void {
   });
 }
 
-/** 常驻 systemPrompt 段（项目无关；webServer/timer/commands 皆可选读）。
+/** 常驻 systemPrompt 段（项目无关；timer/commands 皆可选读）。
  *  开关用动态 text 而不是「注册时读一次」：section 注册在 effect 里只跑一次，
  *  读一次的写法要让设置卡改动生效必须重启。renderPrompt 会丢掉空 text 段
  *  （core/system-prompt/src/index.ts:283），所以关闭时返回空串即完全不参与拼装。 */
@@ -1681,7 +1370,7 @@ export function apply(ctx: Context, config: Config): void {
       hasCachedPreference = false;
     }
   });
-  const localeMessages: MessagesOf = (req) => {
+  const localeMessages: MessagesOf = () => {
     // **缺席不缓存**：locale 条目可能晚于本条目才到位，缓存一次缺席就把语言跟随永久钉死。
     if (!hasCachedPreference) {
       const row = svc.settings
@@ -1692,17 +1381,13 @@ export function apply(ctx: Context, config: Config): void {
         hasCachedPreference = true;
       }
     }
-    // 偏好已注册（装且投影出了 client-locale 那条）→ 设置优先，请求头不参与。
+    // 偏好已注册（装且投影出了 client-locale 那条）→ 设置优先。
     if (hasCachedPreference) {
       return messagesFor(MESSAGES, resolveLocalePreference(cachedPreference));
     }
-    // 偏好未注册 → 带请求的调用点按 Accept-Language 协商（卡片由浏览器发起，头是浏览器
-    // 自动带的；没装 client-locale 的宿主因此也能给对语言）；判不出、或本来就没有请求
-    // （注入段/起草正文）→ 中文默认。
-    return messagesFor(
-      MESSAGES,
-      localeFromAcceptLanguage(req?.headers["accept-language"]) ?? DEFAULT_LOCALE,
-    );
+    // 偏好未注册 → 中文默认。卡片改走 Remote 之后没有浏览器请求头可依，旧 HTTP 面那条
+    // Accept-Language 协商不再有调用点。
+    return messagesFor(MESSAGES, DEFAULT_LOCALE);
   };
 
   const store = buildLessonStore(svc, settingsOf, localeMessages);
@@ -1741,7 +1426,7 @@ export function apply(ctx: Context, config: Config): void {
     "lesson-loop: 退出清算",
   );
 
-  // 常驻 systemPrompt 段（项目无关；webServer/timer/commands 皆可选读）。
+  // 常驻 systemPrompt 段（项目无关；timer/commands 皆可选读）。
   registerPromptSection(runtime);
 
   // /lessons-digest 命令（人工触发蒸馏；commands 服务可选读——缺失只 warn 一次）。
@@ -1751,17 +1436,13 @@ export function apply(ctx: Context, config: Config): void {
   // （timer 可选读；缺失退化为主管人工）。
   registerDecayTimer(runtime);
 
-  // webServer 端点：GET stats/rules/lessons（下发 csrf）+ POST rule-action（csrf 校验）。
-  // ⚠ 这里走 inject 而不是在 apply 里读一次服务：`ctx.get` 是无 inject 语义的存储读，官方
-  // 注释本身就写着 "or `undefined` when not (**yet**) provided"（installed
-  // @deepseek-ai/cordis/lib/types/reflect.d.ts:10-14）。真实宿主上 webServer 比本条目晚到位
-  // （隔离 DSH_HOME 实测：apply 当场 get 返回 undefined，+1.3s 才交得出实例），旧写法的后果是
-  // 四条路由永不注册、设置页只剩一张空白卡片，而卡片端两头都没有报错。子 fiber 在依赖到位时
-  // 才激活、依赖换实例时先卸后装（同文件 registry.d.ts:97），效应挂在**子上下文**上即得
-  // 「后到即注册、重启即重注册」。不写进插件级 inject：那会让没有 webServer 的宿主（TUI）
-  // 连沉淀与注入一并失活——那些能力只需要 settings。
-  svc.inject(["webServer"], (child) => {
-    registerRoutes(svc, child, store, (rules) => statsSnapshot(runtime, rules), localeMessages);
+  // 设置卡的规则读面（官方 Typert Remote）：构造即注册到本插件 fiber 上，四个方法由
+  // 官方网关暴露给本 profile 的客户端。它不依赖任何可选宿主服务（store 与快照取用口都在
+  // 这里），故无条件上线——旧 HTTP 面那个等 webServer 到位的子 fiber 不再存在。
+  installRulesRemote(ctx, {
+    store,
+    stats: (rules) => statsSnapshot(runtime, rules),
+    messagesOf: localeMessages,
   });
 }
 

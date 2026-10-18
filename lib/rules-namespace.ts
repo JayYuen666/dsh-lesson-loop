@@ -26,7 +26,7 @@
 import Schema from "@deepseek-ai/schemastery";
 // 规则库读写口绑官方声明（type-only：运行时服务由 ctx 注入，值导入会破坏 host.js 自包含）。
 import type { SettingsForms } from "@deepseek-ai/dsh-settings";
-import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
+import { errorText, isSettingsConflict } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 import type { RuleCard, RulesRead, RulesRepository, RulesWriteOutcome } from "./lesson-store.ts";
 // 段名与 `rules` 字段名（以及"解析值 → 卡数组"那一步投影）在 lib/rules-layout.ts：本文件是
 // 端口实现，坐标是另一端，两边各改各的就会长成"卡片绑的段 ≠ 这里读的段"。
@@ -96,7 +96,7 @@ export const RulesFieldSchema = Schema.array(Schema.union([RuleCardSchema, cardF
  * index.d.ts:62，cordis `Service` 子类 + private 字段 → 名义比较）的两位成员投影：
  * - `update` **整体**取官方成员（:102 `update(ns: string, patch: object, expectedRevision?:
  *   number): Promise<void>`），签名一个字都不重述。`ns` 官方就是裸 `string`（品牌
- *   `SettingsNamespace` 只出现在 :43 的冲突错误与 :73 的事件载荷上），故本包不为它造品牌。
+ *   `SettingsNamespace` 只出现在 :43 的冲突错误与 types.d.ts:73 的事件载荷上），故本包不为它造品牌。
  * - `describe` 只把**入参**绑官方（:96 那个可选的 `SettingsDescribeOptions`，:21-23），
  *   返回域留 `readonly unknown[]`。这不是偷懒：本包对这一行的全部工作就是判"读不读得懂"
  *   （`value`/`user`/`revision` 三位分别对应"解析值 / 文档原文 / CAS 版本"，任一不合形状
@@ -116,18 +116,6 @@ interface RulesDescriptor {
   readonly value: unknown;
   readonly user: unknown;
   readonly revision: number;
-}
-
-/**
- * SettingsConflictError 的判定：不值导入 @deepseek-ai/*（本插件只 type-only 用它），
- * 按官方类的两个稳定成员认（`code === 'SETTINGS_CONFLICT'` 是给人映射的机器码，
- * `name` 是类名兜底）。认出来才谈重试——其它错误重试也不会变好。
- */
-function isSettingsConflict(error: unknown): boolean {
-  return (
-    fieldOf(error, "code") === "SETTINGS_CONFLICT" ||
-    fieldOf(error, "name") === "SettingsConflictError"
-  );
 }
 
 /**

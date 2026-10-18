@@ -1,5 +1,5 @@
-// client 半的**数据面**契约测试：/stats 拉取、rule-action 提交（csrf）、原子保存、输入纠偏、
-// 未知状态可见性。此前这一层零覆盖——client-card.test.ts 把 react 两个钩子换成常量桩，只读
+// client 半的**数据面**契约测试：stats 拉取、rule-action 提交、原子保存、输入纠偏、
+// 未知状态可见性。client-card.test.ts 把 react 两个钩子换成常量桩，只读
 // 文本面，onClick/onChange 从不触发，状态迁移（open/touched/busy/error）一条都没跑过。
 //
 // 这里换一个**有状态**的最小钩子运行时（仍是 vi.mock("react")，createElement 用真实现）：
@@ -16,13 +16,14 @@ import { LlcCard, NumberInputRow } from "../src/client-entry.ts";
 import type { CardSnapshot, RuleCardView } from "../src/client-entry.ts";
 import { UI_MESSAGES } from "../src/ui-messages.ts";
 import type { Translate } from "../src/ui-messages.ts";
+import type { RulesReader } from "../src/rules-reader.ts";
 
 type Props = Record<string, unknown>;
 
 /** 有状态钩子运行时：槽位按 hook 次序分配（React 的规则），setter 触发重渲。
  *  ⚠ setter 身份必须**跨渲染稳定**（React 的保证）：卡片把 setStats/setStatsError 放进
  *  useEffect 的 deps，每次渲染换一枚新闭包会让 effect 每轮重跑 → 拉取→setState→重渲
- *  无限自激（这份运行时第一版就这么挂过：worker 186s 后被 SIGABRT 杀掉）。 */
+ *  无限自激（这条链真挂过：worker 被 SIGABRT 杀掉）。 */
 const runtime = vi.hoisted(() => {
   const box = {
     /** 每个 hook 序号一个槽（useState 的值与 setter / useEffect 的 deps 与 cleanup）。 */
@@ -256,7 +257,7 @@ const descOf = (tree: unknown): string => {
   return textOf(desc.children);
 };
 
-/** 一条 /stats 规则行（字段与 host 的 RuleView 投影同形）。 */
+/** 一条 stats 规则行（字段与 host 的 RuleView 投影同形）。 */
 function ruleRow(over: Partial<RuleCardView> = {}): RuleCardView {
   return {
     id: "rule-1",
@@ -277,18 +278,17 @@ function ruleRow(over: Partial<RuleCardView> = {}): RuleCardView {
   };
 }
 
-/** 一次 /stats 回包的形状（卡片按它的逐字段投影读）。 */
+/** 一次 stats 回包的形状（卡片按它的逐字段投影读）。 */
 function statsBody(over: Props = {}): Props {
   return {
     ok: true,
-    csrf: "csrf-token",
     rules: [ruleRow()],
     lessonsCount: 5,
     ...over,
   };
 }
 
-/** Response 替身：只给卡片真正用到的 json()（非 JSON 回包让它抛错，模拟 SPA fallback 回 HTML）。 */
+/** Response 替身：只给卡片真正用到的 json()（读不出一屏对象时让它抛错，演服务侧回了非 JSON 的那一臂）。 */
 interface JsonResponse {
   ok: boolean;
   status: number;
@@ -303,13 +303,18 @@ function jsonResponse(body: unknown, status = 200): JsonResponse {
   };
 }
 
-/** 一次 fetch 调用的记录（卡片打的是相对路径 + init）。 */
+/** 夹具自己的分支标签（不是路由）：数据面两个方法各一枚。 */
+const STATS_CALL = "stats";
+const ACTION_CALL = "rule-action";
+
+/** 一次夹具调用的记账（标签 + 适配器自己的 init 形状）。生产代码走 `RulesReader`，不经 fetch；
+ *  这里的标签只是本文件内的分支判据，不是任何路由。 */
 interface FetchCall {
   url: string;
   init?: { method?: string; headers?: Record<string, string>; body?: string } | undefined;
 }
 
-/** fetch 替身：记下每次调用，按**端点**分别答复（/stats 与 rule-action 常要不同回包）。 */
+/** 夹具替身：记下每次调用，按标签分别答复（stats 与 rule-action 常要不同回包）。 */
 function fetchStubOf(reply: (url: string) => Promise<unknown>): {
   fetch: typeof fetch;
   calls: FetchCall[];
@@ -323,6 +328,29 @@ function fetchStubOf(reply: (url: string) => Promise<unknown>): {
 }
 
 /** 卡片固定输入：useCard 读一张可控快照（revision 是 save 的 CAS 栅栏）。 */
+/**
+ * 测试适配器：把既有的 fetch 替身接到 `RulesReader` 的四枚方法上。URL 与 init 都是夹具内部的
+ * 记账形状——生产代码调的是读面方法，不经 fetch，所以断言不拿这些字符串当被验对象。
+ */
+function readerFromFetch(): RulesReader {
+  return {
+    stats: async () => {
+      const res = await fetch(STATS_CALL);
+      return (await res.json()) as Record<string, unknown>;
+    },
+    rules: async () => ({ ok: true, rules: [] }),
+    lessons: async () => ({ ok: true, count: 0, lessons: [] }),
+    ruleAction: async (id, action, statement) => {
+      const res = await fetch(ACTION_CALL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, action, ...(statement === undefined ? {} : { statement }) }),
+      });
+      return (await res.json()) as never;
+    },
+  };
+}
+
 function cardProps(
   snapshot: CardSnapshot,
   mutate: (ops: readonly unknown[], revision?: number) => Promise<boolean>,
@@ -331,6 +359,7 @@ function cardProps(
     t: tZh,
     useCard: (selector: (snap: CardSnapshot) => unknown): unknown => selector(snapshot),
     mutate,
+    rulesRemote: readerFromFetch(),
     initialOpen: true,
   };
 }
@@ -348,7 +377,7 @@ interface MutateCall {
   revision: number | undefined;
 }
 
-describe("client 数据面：/stats 拉取与回包呈现", () => {
+describe("client 数据面：stats 拉取与回包呈现", () => {
   beforeEach(resetHooks);
 
   afterEach(() => {
@@ -364,8 +393,7 @@ describe("client 数据面：/stats 拉取与回包呈现", () => {
     );
     await card.settle();
 
-    assert.equal(stub.calls.length, 1, "展开时拉一次 /stats");
-    assert.equal(stub.calls[0]?.url, "/_dsh/lesson-loop/stats");
+    assert.equal(stub.calls.length, 1, "展开时拉一次 stats");
     const text = card.text();
     assert.ok(
       text.includes("结束回合前先本地运行 pnpm check 自检"),
@@ -375,17 +403,13 @@ describe("client 数据面：/stats 拉取与回包呈现", () => {
     assert.ok(text.includes("proj-6b906b9c"), "项目桶随规则行渲染");
   });
 
-  it("非 JSON 回包（路由未注册时 SPA fallback 回 HTML）→ 本地化兜底，不把解析异常原文贴给用户", async () => {
-    const parseError = new Error("Unexpected token '<', \"<!doctype \"... is not valid JSON");
+  it("读面抛错（例如命名空间没挂上）→ 本地化兜底，不把内部错误原文贴给用户", async () => {
+    const parseError = new Error("gateway/internal: namespace not mounted");
     vi.stubGlobal(
       "fetch",
-      fetchStubOf(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => {
-          throw parseError;
-        },
-      })).fetch,
+      fetchStubOf(async () => {
+        throw parseError;
+      }).fetch,
     );
     const error = vi.spyOn(console, "error").mockImplementation(() => {
       // 断言在下方
@@ -407,17 +431,17 @@ describe("client 数据面：/stats 拉取与回包呈现", () => {
     error.mockRestore();
   });
 
-  it("端点回 ok:false + error → 错误条显示服务端文案（不落成兜底）", async () => {
+  it("防御路径：stats 载荷带 ok:false 时出错误条（当前宿主恒回 ok:true，这条守着换实现）", async () => {
     vi.stubGlobal(
       "fetch",
-      fetchStubOf(async () => jsonResponse({ ok: false, error: "untrusted host authority" })).fetch,
+      fetchStubOf(async () => jsonResponse({ ok: false, error: "rules-not-persisted" })).fetch,
     );
     const card = mount(
       LlcCard as never,
       cardProps(READY, async () => true),
     );
     await card.settle();
-    assert.ok(card.text().includes("untrusted host authority"), "服务端 error 原样呈现");
+    assert.ok(card.text().includes("rules-not-persisted"), "服务侧 error 原样呈现");
   });
 
   it("规则卡渲染 signature：判「管的是哪条命令/路径」的那枚数据不再丢", async () => {
@@ -496,16 +520,16 @@ describe("client 数据面：数值字段的同一容忍度", () => {
   });
 });
 
-describe("client 数据面：rule-action 提交（csrf + 回执）", () => {
+describe("client 数据面：rule-action 提交（入参与回执）", () => {
   beforeEach(resetHooks);
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("动作按钮按规则 id 提交：POST + x-lesson-csrf + {id, action}；回执 ok:false 时显示服务端文案", async () => {
+  it("动作按钮按规则 id 提交 `{ id, action }`；回执 ok:false 时显示服务侧文案", async () => {
     const stub = fetchStubOf(async (url) =>
-      url.includes("rule-action")
+      url === ACTION_CALL
         ? jsonResponse({ ok: false, error: "rule library refused the write" })
         : jsonResponse(statsBody()),
     );
@@ -526,12 +550,12 @@ describe("client 数据面：rule-action 提交（csrf + 回执）", () => {
     (button.onClick as () => void)();
     await card.settle();
 
-    const postCall = stub.calls.find((call) => call.url.includes("rule-action"));
-    assert.ok(postCall !== undefined, "动作要打到 rule-action 端点");
-    assert.equal(postCall.url, "/_dsh/lesson-loop/rule-action");
-    const init = expectItem(postCall.init, "写端点必须带 init");
-    assert.equal(init.method, "POST");
-    assert.equal(init.headers?.["x-lesson-csrf"], "csrf-token", "写端点必须回填 /stats 下发的令牌");
+    // 只核「动作带着什么出去」这一件事：URL 与方法名是适配器自己写的，断言它们等于检夹具。
+    const postCall = expectItem(
+      stub.calls.find((call) => call.url === ACTION_CALL),
+      "动作要经 ruleAction 这一枚方法出去",
+    );
+    const init = expectItem(postCall.init, "写面调用必须带 init");
     assert.deepEqual(JSON.parse(String(init.body)), { id: "rule-1", action: "demote" });
     assert.ok(card.text().includes("rule library refused the write"), "回执 error 显示给用户");
   });

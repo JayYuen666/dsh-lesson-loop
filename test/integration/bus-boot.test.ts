@@ -1,4 +1,4 @@
-// 真实 Loader 组合测试（P8/#27 定性）：判定「quality-gate 的门禁失败上报，到底能不能
+// 真实 Loader 组合测试：判定「quality-gate 的门禁失败上报，到底能不能
 // 落到 lesson-loop 的事件流水与规则库」。
 //
 // 形态照抄 session-rescue/test/integration/loader-boot.test.ts：
@@ -22,7 +22,7 @@
 //
 // 发布态产物用 buildHost()（build-host.mjs 导出的纯函数）在内存里现建，不读磁盘上那份 gitignored
 // host.js：真装机跑的是 publishConfig.exports 指向的产物（依赖被内联/残留 ./x.ts/默认导出丢失等
-// 构建回归，源码态测试盖不住），这条链路正是 #27「沙箱里没落盘」最可能在生产形态下暴露的那一面。
+// 构建回归，源码态测试盖不住），这条链路正是「沙箱里没落盘」那类故障最可能在生产形态下暴露的那一面。
 
 import { afterEach, afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";

@@ -41,10 +41,9 @@ const ST = { PENDING: 0, ACTIVE: 2, FAILED: 3 } as const;
 /** 排干一轮 fiber 生命周期：`_reload()` 首行就是一个微任务。 */
 const settle = (): Promise<void> => sleep(0);
 
-/** webServer 探针：记下注册了哪些路径、以及哪些 disposer 真被调用。 */
+/** webServer 探针：只记注册了哪些路径——本包不再有路由，所以这一面是用来证「一条都没注册」的。 */
 interface RouteProbe {
   registered: string[];
-  disposed: string[];
 }
 
 interface TestFiber {
@@ -79,7 +78,7 @@ interface BusView {
  * @returns 提供面与探针
  */
 function makeWebServer(): { service: Record<string, unknown>; probe: RouteProbe } {
-  const probe: RouteProbe = { registered: [], disposed: [] };
+  const probe: RouteProbe = { registered: [] };
   return {
     probe,
     service: {
@@ -88,7 +87,7 @@ function makeWebServer(): { service: Record<string, unknown>; probe: RouteProbe 
       register(route: { path: string }) {
         probe.registered.push(route.path);
         return () => {
-          probe.disposed.push(route.path);
+          // 本包不注册路由，探针没有要回收的东西
         };
       },
     },
@@ -233,19 +232,21 @@ describe("真实 cordis 装载面：lesson-loop 的服务契约", () => {
     await rm(FIXTURE_DIR, { recursive: true, force: true });
   });
 
-  it("装载 ACTIVE：服务经官方 reflect 交出，四条路由各自注册", { timeout: 30_000 }, async () => {
-    const inst = await mount();
-    live = inst.ctx;
-    expect(stateOf(entryOf(inst.ctx, ENTRY_ID)), "条目须 ACTIVE").toBe(ST.ACTIVE);
-    const bus = inst.ctx.get("lessonLoop") as BusView | undefined;
-    expect(bus?.report, "ctx.get 须交出带 report 的服务面").toBeTypeOf("function");
-    expect(inst.probe.registered.toSorted()).toStrictEqual([
-      "/_dsh/lesson-loop/lessons",
-      "/_dsh/lesson-loop/rule-action",
-      "/_dsh/lesson-loop/rules",
-      "/_dsh/lesson-loop/stats",
-    ]);
-  });
+  it(
+    "装载 ACTIVE：服务经官方 reflect 交出，规则读面的四个方法可用",
+    { timeout: 30_000 },
+    async () => {
+      const inst = await mount();
+      live = inst.ctx;
+      expect(stateOf(entryOf(inst.ctx, ENTRY_ID)), "条目须 ACTIVE").toBe(ST.ACTIVE);
+      const bus = inst.ctx.get("lessonLoop") as BusView | undefined;
+      expect(bus?.report, "ctx.get 须交出带 report 的服务面").toBeTypeOf("function");
+      const rules = inst.ctx.get("lessonLoopRules") as Record<string, unknown> | undefined;
+      for (const method of ["stats", "rules", "lessons", "ruleAction"]) {
+        expect(rules?.[method], `远程读面缺 ${method}`).toBeTypeOf("function");
+      }
+    },
+  );
 
   it(
     "跨条目：兄弟插件声明 inject ['lessonLoop'] 时依赖图解析得动，上报也落盘",
@@ -276,19 +277,14 @@ describe("真实 cordis 装载面：lesson-loop 的服务契约", () => {
     },
   );
 
-  it(
-    "卸载：注入子 fiber 交回的 disposer 被 cordis 采纳，四条路由各自撤销",
-    { timeout: 30_000 },
-    async () => {
-      const inst = await mount();
-      live = inst.ctx;
-      expect(inst.probe.registered.length, "先确认装载期注册过路由").toBeGreaterThan(0);
-      await disposeFiber(entryOf(inst.ctx, ENTRY_ID));
-      await settle();
-      // disposer 形状不被采纳时这里就是空的：路由留在宿主表里，热重载一次多一套 handler。
-      expect(inst.probe.disposed.toSorted()).toStrictEqual(inst.probe.registered.toSorted());
-    },
-  );
+  it("卸载：官方 reflect 交回的 Remote 服务随 fiber 撤除", { timeout: 30_000 }, async () => {
+    const inst = await mount();
+    live = inst.ctx;
+    expect(inst.ctx.get("lessonLoopRules"), "装载期须交出规则读面").toBeDefined();
+    await disposeFiber(entryOf(inst.ctx, ENTRY_ID));
+    await settle();
+    expect(inst.ctx.get("lessonLoopRules"), "卸载后读面必须消失").toBeUndefined();
+  });
 
   it(
     "舱壁：本包 config 非法只杀自己那条 fiber，兄弟条目与服务照旧",

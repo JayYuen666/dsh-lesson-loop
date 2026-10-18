@@ -54,7 +54,7 @@ describe("buildClient", () => {
     assert.match(out, /factory: \(require\)/u);
     // 卡片代码被打进去（React createElement 与端点路径）
     assert.match(out, /plugins\.bundle\.config/u);
-    assert.match(out, /_dsh\/lesson-loop\/stats/u);
+    assert.match(out, /lessonLoopRules/u);
   });
 
   // external 清单 = 官方 client bundle 的**隐式基座**（外壳预置的冻结模块表）。真源两份：

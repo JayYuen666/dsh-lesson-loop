@@ -77,7 +77,7 @@ export interface SessionLike {
 
 /**
  * 蒸馏请求帧的形状 = 官方 `GenerateOptions.messages` 受理的那一档。
- * installed @deepseek-ai/dsh-llm/lib/types/types.d.ts:475
+ * installed @deepseek-ai/dsh-llm/lib/types/types.d.ts:492
  * `RequestMessage = Message | RequestUserInput`——**两档都受理**：本包的帧带稳定 `id` 与
  * producer 归属（`source.form` 声明"这段上下文是要读的指令"，见 lib/prompt.ts），故走完整的
  * 官方 `UserMessage`（`id` 是品牌 `MessageId`，installed lib/types/brand.d.ts:14，构造口只有
@@ -272,13 +272,10 @@ export async function runDigest(
     const stream = llm.stream({
       provider: selection.provider,
       model: selection.model,
-      // 帧就此是官方 `GenerateOptions.messages` 受理的 **request-only 输入**
-      // （`RequestUserInput`，installed @deepseek-ai/dsh-llm/lib/types/types.d.ts:457-462：
-      // `id`/`source` 两位都是 `?: never`）。旧镜像给这一帧写了 `id` + `source.kind`，
-      // 官方形状说不该有：**这帧从不落任何持久消息位**（runDigest 只把 prompt 送进适配器、
-      // 结果经 store 写进设置段，消息本身不回投给会话），所以它既不需要稳定身份也不需要
-      // producer 归属；带 `source` 反而暗示"这是一条会被读回的消息"。dir-prep-organize 的
-      // 整理帧同一条理由、同一处形状。
+      // 帧走 `DigestRequestMessage`（官方 `RequestMessage` 的 `Message` 那一臂，见文件顶部）：
+      // 稳定 `id` 与 producer 归属都是这一臂的形状要求。这帧从不落任何持久消息位（runDigest
+      // 只把 prompt 送进适配器、结果经 store 写进设置段），但形状仍按 `Message` 交，
+      // 不降级成 `RequestUserInput`——那会把品牌 id 与 `source` 归属一起丢掉。
       messages: [
         {
           id: brandString<MessageId>(`lesson-loop-digest-${randomUUID()}`),

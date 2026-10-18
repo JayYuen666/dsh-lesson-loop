@@ -32,18 +32,18 @@ Both this package and its runtime dependency `@jayyuen66/dsh-plugin-shared` are 
   - `dsh plugin --profile web add/remove` maintains that layer, and `dsh --profile web --dump-config` verifies it.
 - Deployment defaults may go on the registration line's `config:`; precedence is runtime value in the settings card > line `config` > built-in default, and invalid config fails the load loudly.
 - `settings` is the only plugin-level hard dependency (`default.inject = ["settings"]`). Every other service (`timer` / `commands` / `systemPrompt` / `llm`) is read optionally: a missing one only skips that capability, the plugin still loads.
-  - The four `/_dsh/lesson-loop/*` routes hang off an `inject(["webServer"])` child fiber - on the real host webServer arrives about a second after this entry, so a one-off `ctx.get` in apply would never register them.
+  - The card's data plane is four methods on one official Typert Remote namespace, installed unconditionally on the apply fiber — they depend on no optional host service, so unlike the old route surface they exist even on a host whose web layer arrives late or never arrives at all.
 
 ### Install acceptance checks
 
-Four checks, all run locally against `dsh 0.2.1-alpha.2` with `DSH_HOME` pointed at a temporary directory so the day-to-day profile stays untouched:
+Four checks, all run locally against `dsh 0.2.1-rc.2` with `DSH_HOME` pointed at a temporary directory so the day-to-day profile stays untouched:
 
 - After `dsh plugin --profile web add <tarball>`, the profile's `node_modules/` should contain exactly one scope directory, `@jayyuen66/`, and **no `@deepseek-ai/` directory**. That directory is the fingerprint of host packages leaking into `dependencies` and materializing a second copy of the host type surface in the profile - the invariant `test/publish-manifest.test.ts` guards.
 - `dsh --profile web --dump-config` ends with `# == @jayyuen66/dsh-lesson-loop` plus `- id: lesson-loop`, which is the bundle layer claiming the entry.
-- The host **enforces** peers at install time: `@deepseek-ai/dsh` and every `@deepseek-ai/dsh-*` peer go through `semver.satisfies(runtime, requirement, { includePrerelease: true })` (`dsh-app-boot/src/plugin-compatibility.ts:61-86`; preflight on `add` at `dsh-plugin-manager/src/operations.ts:344`, re-check after install at `:479`). A probe package whose peer said `@deepseek-ai/dsh: 0.1.0` came back as `dsh: installation rejected: … is incompatible with dsh 0.2.1-alpha.2`, followed by `dsh: restored package.json, pnpm-lock.yaml, and node_modules.` - all three rolled back. `engines.dsh` carries the same value but **nothing in the host reads it**: `@deepseek-ai/dsh-package-manifest` only declares the type, and its own README states that installers and loaders do not enforce it.
+- The host **enforces** peers at install time: `@deepseek-ai/dsh` and every `@deepseek-ai/dsh-*` peer go through `semver.satisfies(runtime, requirement, { includePrerelease: true })` (`dsh-app-boot/src/plugin-compatibility.ts:61-86`; preflight on `add` at `dsh-plugin-manager/src/operations.ts:344`, re-check after install at `:479`). A probe package whose peer said `@deepseek-ai/dsh: 0.1.0` came back as `dsh: installation rejected: … is incompatible with dsh 0.2.1-rc.2`, followed by `dsh: restored package.json, pnpm-lock.yaml, and node_modules.` - all three rolled back. `engines.dsh` carries the same value but **nothing in the host reads it**: `@deepseek-ai/dsh-package-manifest` only declares the type, and its own README states that installers and loaders do not enforce it.
 - Because this package pins its `dsh-*` peers exactly (the discipline shared by all nine sibling packages), a host **newer** than this floor mismatches the same way and needs an explicit, per-runtime-version grant: `dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --dsh-version <exact host version> --accept-risk`. `version-exemptions` lists grants and `revoke-version` removes them (all three commands measured).
 
-The same properties on the loading side are pinned against a real cordis + loader in `test/integration/host-contract.test.ts`: the service is handed out through the official reflect face, a sibling entry declaring `inject: ["lessonLoop"]` resolves it, unloading adopts each of the four route disposers, an invalid `Config` fails **only** this entry's fiber, and a missing `settings` keeps the entry out of ACTIVE.
+The same properties on the loading side are pinned against a real cordis + loader in `test/integration/host-contract.test.ts`: the service is handed out through the official reflect face, a sibling entry declaring `inject: ["lessonLoop"]` resolves it, a load that fails — whether the `Config` is invalid or `settings` is missing — registers **no** route on the webServer stub and provides no bus, an invalid `Config` fails **only** this entry's fiber, and a missing `settings` keeps the entry out of ACTIVE.
 
 ### Bus interface (how other plugins report)
 
@@ -63,7 +63,7 @@ The same properties on the loading side are pinned against a real cordis + loade
 
 ### Settings
 
-Settings namespace = the profile entry id `lesson-loop` (changeable at runtime). Registration is implicit under 0.2.1-alpha.2 - the host derives the namespace and its editable fields from the `Config` the entry exports - and one entry has exactly one section: the rule library is its 12th `.volatile()` field, `rules` (directly user-editable), while the switches and thresholds are the other 11 fields of that same section. What the old two-namespace split (`lesson-loop-rules`) used to guarantee is now recovered in three places: `rules` carries `.loose()` (a human editing it into a non-array cannot make the whole entry fail to load), the read side additionally checks the raw shape in `describe().user` (unreadable means it refuses to write rather than overwriting the data with an empty library), and the section is mutated under one shared revision with CAS re-read/replay. One broken rule never takes the switches down, and vice versa. The four booleans all default to `true`: `enabled` (master switch: no reporting, no injection, no exit settlement when off), `reportEnabled` (sink and merge), `injectEnabled` (session-start injection), `sectionEnabled` (permanent section).
+Settings namespace = the profile entry id `lesson-loop` (changeable at runtime). Registration is implicit under 0.2.1-rc.2 - the host derives the namespace and its editable fields from the `Config` the entry exports - and one entry has exactly one section: `rules` is one of its `.volatile()` fields (directly user-editable), the switches and thresholds are the section's other editable fields, and the two deployment-only values below share the section without being projected into the card. What the old two-namespace split (`lesson-loop-rules`) used to guarantee is now recovered in three places: `rules` carries `.loose()` (a human editing it into a non-array cannot make the whole entry fail to load), the read side additionally checks the raw shape in `describe().user` (unreadable means it refuses to write rather than overwriting the data with an empty library), and the section is mutated under one shared revision with CAS re-read/replay. One broken rule never takes the switches down, and vice versa. The four booleans all default to `true`: `enabled` (master switch: no reporting, no injection, no exit settlement when off), `reportEnabled` (sink and merge), `injectEnabled` (session-start injection), `sectionEnabled` (permanent section).
 
 | Field              | Default    | Range                  | Purpose                                                                   |
 | ------------------ | ---------- | ---------------------- | ------------------------------------------------------------------------- |
@@ -81,24 +81,21 @@ The last two rows are the deployment values: deliberately not `.volatile()`, so 
 
 ### Public surface
 
-The endpoints:
+The card's data plane is four methods on one **official Typert Remote namespace**, `lessonLoopRules` (`lib/rules-shape.ts`). There is no `/_dsh/*` route, no CSRF token and no body cap of ours: the namespace reaches clients of this profile through the host `/api` gateway, and authentication plus the Host / DNS-rebinding / Origin checks and the request-size limit are the gateway's own. What the methods enforce is unchanged from the HTTP version — the six-action whitelist and "no such rule ⇒ refused" guard the action, not the transport.
 
-| Route                                | Notes                                                                                |
-| ------------------------------------ | ------------------------------------------------------------------------------------ |
-| `GET /_dsh/lesson-loop/stats`        | issues the csrf token plus the config summary, counters and the full rule projection |
-| `GET /_dsh/lesson-loop/rules`        | filterable by `project`                                                              |
-| `GET /_dsh/lesson-loop/lessons`      | `project` filter plus `limit`, ≤ 0 or absent = everything                            |
-| `POST /_dsh/lesson-loop/rule-action` | `{ id, action, statement? }`, action restricted to the six whitelisted values above  |
+| Method | Input | Reply |
+| --- | --- | --- |
+| `stats()` | — | `{ ok: true, …counters, …config summary, rules }`; the rule projection carries the derived `undeterminable` flag and **no** `evidence[]` bodies |
+| `rules(request)` | `{ project? }` | `{ ok: true, rules }`; a `project` that is not a string is read as absent, i.e. the whole library |
+| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`; a `limit` that is not a finite number, is ≤ 0, or is absent means everything — the event feed is never truncated |
+| `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`, or `{ ok: false, error, status }` |
 
-- Trust gate: all four handlers open with `guardTrust(req, res, { servingNonLoopback })` from `shared/lib/trust`, judged as Host authority -> `sec-fetch-site` allowlist -> verbatim `Origin` comparison.
-  - Any failure -> `403` plus JSON `{ ok: false, error: "untrusted host authority" | "cross-origin request rejected" }`, the second text shared by the `sec-fetch-site` and `Origin` legs; `servingNonLoopback` comes only from `isNonLoopbackBindHost(webServer.host)` - from host `0.2.1-alpha.2` on `Config.host` is any concrete local-interface IP literal and a wildcard bind is rejected at load, so comparing against `"0.0.0.0"` would be constant false.
-- Write-endpoint guards: `x-lesson-csrf` must echo the token handed out by a GET (missing or wrong -> 403 `invalid csrf token`), body ≤ 1 MiB (oversized 413, unreadable stream 400).
-- Status codes: wrong method 405, oversized body 413, invalid JSON / missing `id` or `action` / non-whitelisted action 400, unknown card 404, unpersisted change 500 with the error echoed as `rules-not-persisted`.
-  - 405 is no longer an empty body: it carries `Allow` plus `{ ok: false, error: "GET only" }` (the three GET routes) or `"POST only"` (rule-action).
-- The HTTP projection deliberately drops `evidence[]` bodies (each detail is up to 400 characters and cards poll) and adds the derived `undeterminable` flag.
+- `action` must be one of the six whitelisted values, and `statement` is read by `arm` and `edit` only — it is trimmed, and a blank string (empty or whitespace-only) counts as "not given": the stored statement stays as it is.
+- A refusal's `status` is a **retained semantic code, not an HTTP status**: a missing `id` / `action` or an off-whitelist action is 400, an unknown card is 404, and a change the library refused to persist is 500 with the text `rules-not-persisted`. The card renders `error`; the number exists so the tests can pin which rule fired. There is no 405 or 413 arm any more — whether the method exists and how big the body is, are the gateway's verdicts now.
+- The client (`src/rules-reader.ts`) holds the four descriptors, `$mount`s them once and then reads the derived key `remote.lessonLoopRules`. With no `remote` service in the client context there is no reader at all and the card shows its `statsUnavailable` line; with the service present but this namespace unmounted, the read throws — a missing capability is said out loud instead of being rendered as "the library is empty".
+- Reads are pulled, not pushed: once when the panel opens, once after a save, once after each manual action. There is **no polling loop and no client-side wall clock**; how long a call may take is the gateway's decision, and a second deadline inside the card is how a slow write gets reported as lost while it actually landed.
+- The evidence bodies stay on the host deliberately: each detail can run to 400 characters, and `undeterminable` — armed long enough with zero recurrence and zero compliance — is a machine's way of saying "this one needs a human".
 - The `/lessons-digest [additional note]` command sends this session's human negative feedback plus the project's recent lessons to the model and distils candidate cards (`origin` `lessons-digest`).
-- It only runs when a human triggers it, and refuses loudly when a switch is off, outside a session, without the `llm` service, or without a model selection.
-
 ### Data and privacy
 
 - Two derived-data stores only:
@@ -115,7 +112,7 @@ The endpoints:
 
 - Do rules ever enable themselves? No. Only `arm` writes status `armed`; a `rejected` card that hits the revive threshold goes back to `candidate`, and reviving `demoted` / `archived` is a human action too.
 - What happens with `reportEnabled` off? `report()` returns `{ ok: false, reason: "disabled" }` immediately — no event line, no card (the integration test pins this negative path).
-  - `/lessons-digest` refuses as well; the read endpoints and the settings card keep working.
+  - `/lessons-digest` refuses as well; the Remote reads and the settings card keep working.
 - The arm button reports failure? `rules-not-persisted` means this change never reached the library (the port refused the write or CAS retries ran out); the library still holds the old state, so retry.
   - If the `rules` field is hand-edited into a non-array, the rule side degrades to "reads empty, refuses writes" (the bad content is left untouched for a human to fix, and this process never writes that section) while the switches in the same section keep working; repairing the field restores the rule side.
 - A rule keeps showing "undeterminable"? The machine has no clean hit to divide by: `suppressed` is still zero, and either the rule has been sitting unchanged for `decayDays` (the anchor is its most recent activity — armed / last violation / last pass) or it has already hit `demoteThreshold` violations without a single followed-through session. In both cases the ratio `violation/(violation+suppressed)` would be 1.0 by construction, so the machine neither demotes nor archives it: it stays armed for you to disable or archive. A single `pass` hit clears the flag.

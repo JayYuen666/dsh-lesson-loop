@@ -48,7 +48,7 @@ export const MAX_EVIDENCE_ENTRIES = 5;
  * 持久化前的证据收敛：detail 截断 + 只留最近 N 条。
  *
  * 为什么在写这一侧：规则库整份落在 profile 的 patch 文档里，`evidence` 是其中唯一会无界
- * 增长的部分（实测：一份 940 行的 patch 里绝大部分是 gate 失败与 lint 的逐字转储）。读侧
+ * 增长的部分（实测：长 patch 里绝大部分是 gate 失败与 lint 的逐字转储）。读侧
  * 照旧全量解析、不做二次改写——收敛只发生在落盘那一刻。
  * @param cards 本次要写的规则卡
  * @returns 证据已收敛的新数组（不改入参）

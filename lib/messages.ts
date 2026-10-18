@@ -17,7 +17,7 @@
 // 新起草的规则卡正文没有理由是中文。模板里的 signature 与 category 取值域仍是**数据**
 // （同 digest.ts 的处理：键名与枚举面留在原文件，只把说明文字进字典）。
 // console.* 的日志文案也不在此列——那是给排障的人看的，不随界面语言切换。
-import type { Locale, MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
+import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
 /** 字典模板的插值参数（数值由调用点现算，字典只收整行模板）。 */
 export type MessageParams = Readonly<Record<string, string | number>>;
@@ -132,7 +132,6 @@ export interface LessonLoopMessages {
   readonly errEmptyDigest: string;
 
   // ── 端点里回显给人的 error（卡片直接显示这些串）────────────────────────
-  readonly errInvalidJsonBody: string;
   readonly errIdAndActionRequired: string;
   /** 白名单外的动作（{action} 原样回显，便于定位是谁发的）。 */
   readonly errUnknownAction: string;
@@ -235,7 +234,6 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     errIncompleteFinish: "模型整理未正常完成（{kind}{failure}）",
     errEmptyDigest: "模型整理结果为空",
 
-    errInvalidJsonBody: "请求体不是合法 JSON",
     errIdAndActionRequired: "缺少 id 或 action",
     errUnknownAction: "未知操作：{action}",
     errRuleNotFound: "找不到该规则",
@@ -332,59 +330,9 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     errIncompleteFinish: "The model digest did not finish normally ({kind}{failure})",
     errEmptyDigest: "The model digest result is empty",
 
-    errInvalidJsonBody: "invalid json body",
     errIdAndActionRequired: "id and action required",
     errUnknownAction: "unknown action: {action}",
     errRuleNotFound: "rule not found",
     errRuleActionFailed: "rule action failed",
   },
 };
-
-/** 一枚标签的 `;q=` 质量值：缺省 1；坏值/`≤0`/`>1` 一律按 0（该标签作废，不参与协商）。
- *  分几段写而不是一条 `&&` 链：覆盖门禁按分支算，短路掉的第二个操作数算没执行。 */
-function qualityOf(parameters: readonly string[]): number {
-  for (const parameter of parameters) {
-    const [key = "", value] = parameter.split("=");
-    if (key.trim().toLowerCase() === "q") {
-      const parsed = Number(value);
-      if (!Number.isFinite(parsed)) {
-        return 0;
-      }
-      if (parsed <= 0 || parsed > 1) {
-        return 0;
-      }
-      return parsed;
-    }
-  }
-  return 1;
-}
-
-/**
- * `Accept-Language` 请求头 → 本包支持的 locale（q 值协商 + 主语言子标签）。
- *
- * 只在官方 locale 偏好**未注册**时启用（见 host.ts 的 localeMessages）：卡片由浏览器发起，
- * 浏览器自动带这枚头，于是没装 client-locale 的宿主也能给出用户语言的回显文案。判不出
- * （头缺席/不是字符串/表外语言/`*`/q=0）返回 undefined——缺省口径留给调用方（本包是中文），
- * 这里不替它决定。不复用 shared 的 `resolveLocale` 判命中：那只管归一，"不认识"会被它说成
- * zh，拿它当"匹配上了"用会把任何语言都读成中文。
- * @param header - `req.headers['accept-language']` 原值（跨进程来的，类型不可信）。
- * @returns 命中的 `zh` / `en`；判不出 undefined。
- */
-export function localeFromAcceptLanguage(header: unknown): Locale | undefined {
-  let best: Locale | undefined;
-  if (typeof header === "string") {
-    let bestQuality = 0;
-    for (const part of header.split(",")) {
-      const [tag = "", ...parameters] = part.split(";");
-      const quality = qualityOf(parameters);
-      const [primary = ""] = tag.trim().toLowerCase().split("-");
-      const locale = primary === "en" || primary === "zh" ? primary : undefined;
-      // 严格大于：同权重多枚命中时先到的那枚胜出（HTTP 惯例，也让结果与头里的顺序可预期）
-      if (locale !== undefined && quality > bestQuality) {
-        best = locale;
-        bestQuality = quality;
-      }
-    }
-  }
-  return best;
-}
