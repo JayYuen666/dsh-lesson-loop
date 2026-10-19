@@ -1151,9 +1151,13 @@ export class LessonStore {
         // 查找键，第二张同键卡永远查不到（新观测堆在没人看的卡上），人工决定也会被
         // 蒸馏路径绕过重开一张。故一律并回已有卡。
         existing.updatedAt = now;
-        existing.evidence.push(evidenceRow(now, source, input.detail, rawSignature, signature));
-        // 只有候选卡计 occurrences；rejected/armed/archived 的状态由人拍板，蒸馏不改。
+        // 只有候选卡消费蒸馏产出（计 occurrences + 追加证据）；rejected/armed/archived/
+        // demoted 的状态与证据都由人拍板，蒸馏一概不改。证据这一面尤其不能松：落盘时
+        // capEvidence 只留最近几条（见 lib/rules-layout.ts），而蒸馏正文是模型产出——
+        // 模型连报几条同键条目就能把人工卡此前的真实证据整批挤出，且状态与计数一格不动，
+        // 任何日志都不会发现。想留下这一笔，就在人审时自己写进卡片正文。
         if (existing.status === "candidate") {
+          existing.evidence.push(evidenceRow(now, source, input.detail, rawSignature, signature));
           existing.occurrences += 1;
         }
         return { value: existing, write: true };
@@ -1329,12 +1333,12 @@ export class LessonStore {
       return CLEAN_PASS;
     }
     let merged = 0;
-    let armedSource: RuleCard | undefined;
+    const armedSources: RuleCard[] = [];
     const doomed = new Set<string>();
     for (const card of fragments) {
       if (card.id !== primary.id) {
-        if (card.status === "armed" && armedSource === undefined) {
-          armedSource = card;
+        if (card.status === "armed") {
+          armedSources.push(card);
         }
         LessonStore.mergeFragment(primary, card);
         doomed.add(card.id);
@@ -1346,16 +1350,47 @@ export class LessonStore {
       primary.signature = stableSig;
       rewritten = true;
     }
-    // 人工"已升格"决定优先于卡面状态：碎片里有 armed 而主卡只是候选时，
-    // 归并后必须仍是 armed（否则升格过的规则静默退回候选，注入随之停止）。
-    if (primary.status !== "armed" && armedSource !== undefined) {
-      LessonStore.inheritArmed(primary, armedSource);
-    }
+    LessonStore.absorbArmedSources(primary, armedSources);
     if (merged > 0 || rewritten) {
       primary.updatedAt = this.now();
     }
     dropCards(cards, doomed);
     return { merged, dirty: merged > 0 || rewritten };
+  }
+
+  /**
+   * 把若干 armed 碎片的决定与度量折进主卡。
+   *
+   * 人工"已升格"的决定优先于卡面状态：碎片里有 armed 而主卡只是候选时，归并后必须
+   * 仍是 armed（否则升格过的规则静默退回候选，注入随之停止）。
+   *
+   * 度量要**逐张累加**：arm 期计数属于各自那次升格，而这里可能不止一张 armed 碎片
+   * （旧版按路径分片就会这样）。只搬第一张等于把其余几张真实被测到的证据抹掉——
+   * 复发率分母随之变小，一条本该校降级的规则会永远留在 armed 继续注入。
+   *
+   * @param primary - 归并后的主卡
+   * @param armedSources - 被并掉的 armed 碎片（不含主卡自身）
+   */
+  private static absorbArmedSources(primary: RuleCard, armedSources: readonly RuleCard[]): void {
+    if (armedSources.length === 0) {
+      return;
+    }
+    if (primary.status === "armed") {
+      // 主卡自己就是 armed：它的度量已在卡上，只折叠被并的那几张。
+      for (const source of armedSources) {
+        LessonStore.foldMetrics(primary, source);
+      }
+      return;
+    }
+    // 主卡不是 armed：第一张整片继承（含 armedAt 与三个时间戳的缺键语义），
+    // 其余几张按度量累加，免得继承与累加把第一张算两遍。
+    for (const [index, source] of armedSources.entries()) {
+      if (index === 0) {
+        LessonStore.inheritArmed(primary, source);
+      } else {
+        LessonStore.foldMetrics(primary, source);
+      }
+    }
   }
 
   /** 把 armed 碎片的生命周期度量搬到主卡（arm 期计数属于那次升格，不能留空）。

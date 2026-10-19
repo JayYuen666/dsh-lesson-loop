@@ -67,6 +67,7 @@ import {
   SECTION_ORDER,
   PLUGIN_NAME,
   LESSON_SOURCE_KIND,
+  armedRulesOf,
   renderSectionText,
   renderRulesDigest,
 } from "./lib/prompt.ts";
@@ -296,6 +297,8 @@ interface ResolvedSettings {
   digestTimeoutMs: number;
   /** 部署值（非 volatile）：周期衰减的武装间隔（毫秒）。 */
   decayIntervalMs: number;
+  /** 部署值（非 volatile）：会话开始最多注入几条 armed 规则（0 = 不设上限）。 */
+  maxInjectedRules: number;
 }
 
 /** 取设置快照的取用口：每次现读引用当前值（设置卡改完下一个事件/回合即生效）。 */
@@ -457,6 +460,15 @@ export interface Config {
   digestTimeoutMs: number;
   /** 部署值：周期衰减的武装间隔（毫秒）。随部署的会话节奏调整。 */
   decayIntervalMs: number;
+  /**
+   * 部署值：会话开始最多注入几条 armed 规则（0 = 不设上限）。
+   *
+   * 为什么需要它：armed 只能由人工升格，而"零干净命中"的卡拿不到降级或归档的裁决
+   * （见 lib/decay-policy.ts 的不可判定态），条数因此没有任何自动收敛路径——这条上限是
+   * 唯一能兜住"注入面单调增长"的地方。每条规则的正文仍**全文**注入（不截断），
+   * 少的是条数不是内容。同 digestTimeoutMs：是部署旋钮而非用户随时翻的开关，故不标 volatile。
+   */
+  maxInjectedRules: number;
 }
 
 /** 设置命名空间与 loader 行 config 共用同一 schema（单源，防漂移）。
@@ -473,6 +485,11 @@ export interface Config {
  *  这里只剩 schema `.default()` 的单一来源）。一天一轮：衰减是统计口径的整理活，
  *  比会话节奏慢得多，跑赢 24h 就够；更密的部署在行 config 上收紧。 */
 const DEFAULT_DECAY_INTERVAL_MS = 24 * 60 * 60_000;
+
+/** 会话开始注入 armed 规则的条数上限默认值（0 = 不设上限）。
+ *  取一个宽松但有限的值：它兜的是"零干净命中的卡永不自动收敛"这条结构性缺口
+ *  （见 Config.maxInjectedRules），而不是日常使用；真嫌挤的部署在行 config 上收紧。 */
+const DEFAULT_MAX_INJECTED_RULES = 50;
 
 const configSchema = Schema.object({
   enabled: Schema.boolean().default(true).volatile(),
@@ -495,12 +512,14 @@ const configSchema = Schema.object({
   // 理由见 lib/rules-namespace.ts 的 RulesFieldSchema——同段最贵的那件事（坏存量打死整条
   // 总线）就是靠它们补回来的。
   rules: RulesFieldSchema,
-  // 两枚部署级调优值（官方 config.md:78-92 的判据是"行 config 能否不改代码改值"，
+  // 三枚部署级调优值（官方 config.md:78-92 的判据是"行 config 能否不改代码改值"，
   // 不是"能不能在页面上改"）。刻意不标 volatile ⇒ 不进设置卡；默认与旧常量同值，
   // 行为冻结由 test/host.test.ts 的字面值钉住。min(1000) 挡掉 0：零墙钟会让蒸馏一帧都
-  // 读不到，零间隔会让衰减定时器变成忙循环。
+  // 读不到，零间隔会让衰减定时器变成忙循环。maxInjectedRules 的 0 是**有语义的**
+  // （不设上限，与 maxLessonsBytes 同义），故它没有 min(1)。
   digestTimeoutMs: Schema.natural().min(1000).default(DEFAULT_DIGEST_TIMEOUT_MS),
   decayIntervalMs: Schema.natural().min(1000).default(DEFAULT_DECAY_INTERVAL_MS),
+  maxInjectedRules: Schema.natural().max(1000).default(DEFAULT_MAX_INJECTED_RULES),
 });
 export { configSchema as Config };
 
@@ -857,7 +876,11 @@ function onSessionStart(args: {
     ) {
       return;
     }
-    const digest = renderRulesDigest(store.rules(), project, messages);
+    // 规则库只读一次：帧与日志都要这份选取，两次 store.rules() 会各跑一遍 provider
+    // describe + 逐行归一。
+    const allRules = store.rules();
+    const armedCount = armedRulesOf(allRules, project).length;
+    const digest = renderRulesDigest(allRules, project, messages, cfg.maxInjectedRules);
     if (digest === null) {
       return;
     }
@@ -876,8 +899,11 @@ function onSessionStart(args: {
       content: [{ type: "text", text: digest }],
       source: { kind: LESSON_SOURCE_KIND, form: "instructions" },
     });
+    // 计数取自 armedRulesOf 的同一次选取，不从帧的行数推：帧尾可能多一行"另有更早的未列出"。
+    const shown =
+      cfg.maxInjectedRules > 0 ? Math.min(armedCount, cfg.maxInjectedRules) : armedCount;
     console.info(
-      `[lesson-loop] injected ${digest.split("\n").length - 1} armed rule(s) for project ${project}`,
+      `[lesson-loop] injected ${shown} of ${armedCount} armed rule(s) for project ${project}`,
     );
   } catch (error) {
     console.error(`[lesson-loop] session-start inject failed: ${errorText(error)}`);
@@ -968,10 +994,11 @@ function settingsSnapshot(config: Config): ResolvedSettings {
     decayDays: config.decayDays.get(),
     reviveThreshold: config.reviveThreshold.get(),
     maxLessonsBytes: config.maxLessonsBytes.get(),
-    // 两枚是**非 volatile** 的部署值：cordis 交进来的是值而不是引用（改值随重启生效）
+    // 三枚是**非 volatile** 的部署值：cordis 交进来的是值而不是引用（改值随重启生效）
     // ——带 .get() 会读到一个函数。
     digestTimeoutMs: config.digestTimeoutMs,
     decayIntervalMs: config.decayIntervalMs,
+    maxInjectedRules: config.maxInjectedRules,
   };
 }
 
@@ -1172,6 +1199,8 @@ function statsSnapshot(
       demoteThreshold: cfg.demoteThreshold,
       decayDays: cfg.decayDays,
       maxLessonsBytes: cfg.maxLessonsBytes,
+      // 注入条数上限与它兜的那条缺口一起暴露：卡片读得到才知道"还有更老的规则没被注入"。
+      maxInjectedRules: cfg.maxInjectedRules,
     },
   };
 }

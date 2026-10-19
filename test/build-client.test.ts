@@ -98,13 +98,13 @@ describe("buildClient", () => {
 // **问题清单**、不登记用例（vitest/require-hook 不收 hook 外的 setup，隔层断言
 // vitest/expect-expect 也看不见），故断言写在本文件的用例体内。
 // 本包 11 项 volatile 设置字段全部有卡面控件（buildConfigRows 的 ToggleRow/NumberInputRow
-// 行，field props 写字面量），只两项非 volatile 部署值声明豁免；helper 会反向校验
+// 行，field props 写字面量），只三项非 volatile 部署值声明豁免；helper 会反向校验
 // 豁免项确实未绑定，所以豁免表不能用来藏本该上卡的东西。
 // ⚠ 门禁看不见 `rules`：host.ts 那一位写的是 `rules: RulesFieldSchema`（引用而不是
 // `Schema.` 内联式），正则不认；它的写入面在规则卡（webServer 动作 + lib/rules-namespace.ts
 // 的 RULES_FIELD），不由这张表管。
 describe("卡片字段覆盖 host schema（test/schema-coverage.ts）", () => {
-  it("除两项部署值外，host 设置字段全部绑定到卡面控件", () => {
+  it("除三项部署值外，host 设置字段全部绑定到卡面控件", () => {
     assert.deepEqual(
       schemaCoverageProblems(import.meta.url, {
         allowUnbound: [
@@ -117,6 +117,11 @@ describe("卡片字段覆盖 host schema（test/schema-coverage.ts）", () => {
             field: "decayIntervalMs",
             reason:
               "W4 非 volatile 部署值：周期衰减的武装间隔，装载期读一次随重启生效，不标 volatile 即不进设置卡（host.ts:535）",
+          },
+          {
+            field: "maxInjectedRules",
+            reason:
+              "W4 非 volatile 部署值：会话开始注入几条 armed 规则的上限（0 = 不设上限）。它是部署旋钮而不是用户随时翻的开关，与 digestTimeoutMs 同类，同样只经 profile 行 config 调整。",
           },
         ],
       }),

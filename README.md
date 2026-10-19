@@ -26,6 +26,11 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 Both this package and its runtime dependency `@jayyuen66/dsh-plugin-shared` are on the public npm registry, so installs need no credentials; remove it with `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`.
 
+
+### Shared version floor
+
+If your profile pins `@jayyuen66/dsh-plugin-shared` with a pnpm `overrides` entry, that pin must be at least the `@jayyuen66/dsh-plugin-shared` version this package declares. A lower pin installs a copy without the names this package imports at runtime, and the host then reports `N entries did not activate` with `does not provide an export named ...` when it boots -- the package installs fine and never loads, and no per-repo CI run can see it.
+
 ### Enabling it in dsh
 
 - The in-package `cordis.patch.yml`, pointed at by `dsh.bundle.patch` in `package.json`, carries the registration line `- id: lesson-loop` + `name: "@jayyuen66/dsh-lesson-loop"`; the bare package name is what makes the client half load.

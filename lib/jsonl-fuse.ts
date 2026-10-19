@@ -9,10 +9,12 @@
 //
 // 为什么追加也要进临界区：追加是 O_APPEND 写、裁剪是"读整份 → 写临时文件 → rename 覆盖"。
 // 两进程各写各的时，另一进程在「裁剪读完、rename 之前」追加的那一行会被新内容整体覆盖掉
-// （事件静默消失，而 report 仍回 ok）。锁把两条路串起来之后只剩两种顺序：追加落在裁剪前
-// （裁的是含它的内容）或后（它落在新文件尾）。**拿不到锁时仍然追加、只跳过裁剪**——宁可
-// 这轮不裁，绝不丢事件；为此锁的覆盖面包含 maxBytes = 0 的纯追加（那时没有读改写，但别的
-// 进程可能正举着 maxBytes > 0 的裁剪）。
+// （事件静默消失，而 report 仍回 ok）。锁只把**持有者之间**的读改写串行，这还不够：
+// **拿不到锁时仍然追加、只跳过裁剪**（宁可这轮不裁，绝不丢事件），那条裸追加照样可能落进
+// 持有者的 read→rename 窗口。所以持有者还要在 rename 前做一次乐观并发控制——比对快照字节数
+// 与当前字节数，变了就放弃本轮裁剪（见 shrinkLocked）。代价是两进程持续抢写时裁剪可能长期
+// 不生效（文件停在 maxBytes 之上）：这是"最多超配额"换"绝不丢事件"的刻意取舍。
+// 锁的覆盖面因此包含 maxBytes = 0 的纯追加（那时没有读改写，但别的进程可能正举着裁剪）。
 //
 // 原子替换的取舍：`.tmp` + rename 让读者（readJsonl）要么见旧全文、要么见新全文，不会读到
 // 写了一半的中间态；代价是崩溃时可能留下 `.lock` / `.tmp` 两个兄弟文件——锁文件 mtime 超过
@@ -66,19 +68,29 @@ function withLock(file: string, action: () => void): boolean {
 }
 
 /** 裁剪本体（**只允许在锁内调用**）：读整份 → 按行裁尾 → 临时文件 + 原子 rename。
- *  错误出口在这里吞掉：裁剪是尽力而为，失败绝不误伤调用方紧接着的这次追加。 */
+ *  错误出口在这里吞掉：裁剪是尽力而为，失败绝不误伤调用方紧接着的这次追加。
+ *
+ *  rename 之前还有一道**乐观并发控制**：锁只串行持有者，拿不到锁的一方走的是裸追加
+ *  （见 appendUnderFuse），它若在本函数读完、rename 之前落笔，rename 会把那一行整片覆盖
+ *  ——事件静默消失而追加方已正常返回。故用"读完那一刻的字节数"当快照，rename 前再比一次：
+ *  变了就说明有人在我们读之后写过，**放弃本轮裁剪**。
+ *  取舍：持续抢写时裁剪可能长期不生效（文件停在 maxBytes 之上），换来的是绝不丢事件。
+ *  基准取在 readFileSync **之后**：read 与取基准之间落进来的追加只会让我们白放弃一轮，
+ *  而按解码后的字节数比会在文件里有非法 UTF-8 时永久放弃裁剪。 */
 function shrinkLocked(file: string, maxBytes: number): void {
   try {
     if (statSync(file).size <= maxBytes) {
       return;
     }
     const text = readFileSync(file, "utf8");
+    const snapshotBytes = statSync(file).size;
     const shrunk = shrinkJsonlTail(text, maxBytes);
-    if (shrunk !== text) {
-      const tmp = `${file}.tmp`;
-      writeFileSync(tmp, shrunk);
-      renameSync(tmp, file);
+    if (shrunk === text || statSync(file).size !== snapshotBytes) {
+      return;
     }
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, shrunk);
+    renameSync(tmp, file);
   } catch {
     /* 截断尽力而为 */
   }

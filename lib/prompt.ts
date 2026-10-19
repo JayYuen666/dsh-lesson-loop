@@ -139,20 +139,41 @@ function armedMetric(messages: LessonLoopMessages, rule: RuleCard): string {
   return "";
 }
 
-/** 会话开始注入的 armed 规则摘要。无 armed 规则返回 null（零噪音，不注入空块）。 */
+/**
+ * 本项目当前生效的 armed 规则，按 armedAt 升序（缺值视为最早）。
+ *
+ * 单独成函数是因为"注入了几条"这件事有两个消费者：帧本身与调用点的日志。让日志按
+ * 帧的行数去减，就等于把"帧尾那行说明不算规则"这条约定编进算术里——一处漏改就是一条
+ * 虚报的计数。选取口径只此一份，两边都对得上。
+ */
+export function armedRulesOf(rules: readonly RuleCard[], project: string): RuleCard[] {
+  return rules
+    .filter((rule) => rule.status === "armed" && rule.project === project)
+    .toSorted((left, right) => (left.armedAt ?? 0) - (right.armedAt ?? 0));
+}
+
+/**
+ * 会话开始注入的 armed 规则摘要。无 armed 规则返回 null（零噪音，不注入空块）。
+ *
+ * `maxRules > 0` 时只注入**最新**的那几条（按 armedAt 升序取尾部，0 = 不设上限）。
+ * 为什么需要这道上限：armed 只能由人工升格，而"零干净命中"的卡永远拿不到降级或归档的
+ * 裁决（见 lib/decay-policy.ts 的不可判定态），条数**没有任何自动收敛路径**；每次会话
+ * 开始都全量全文注入，等于让历史决定单调地吃上下文。越老越可能已经失效，故按时间取新。
+ * 少了就不装作没少：帧尾追加一句"另有更早的未列出"，调用点另记一条日志。
+ */
 export function renderRulesDigest(
   rules: readonly RuleCard[],
   project: string,
   messages: LessonLoopMessages,
+  maxRules = 0,
 ): string | null {
-  const armed = rules
-    .filter((rule) => rule.status === "armed" && rule.project === project)
-    .toSorted((left, right) => (left.armedAt ?? 0) - (right.armedAt ?? 0));
+  const armed = armedRulesOf(rules, project);
   if (armed.length === 0) {
     return null;
   }
+  const shown = maxRules > 0 ? armed.slice(-maxRules) : armed;
   const lines: string[] = [messages.digestHeading];
-  for (const [index, rule] of armed.entries()) {
+  for (const [index, rule] of shown.entries()) {
     const armedDay =
       rule.armedAt === undefined ? "?" : new Date(rule.armedAt).toISOString().slice(0, 10);
     // statement 是模型蒸馏/人工改写正文（不可信），逐行定界后才进编号帧。
@@ -164,6 +185,9 @@ export function renderRulesDigest(
         metrics: armedMetric(messages, rule),
       }),
     );
+  }
+  if (shown.length < armed.length) {
+    lines.push(fill(messages.digestOmitted, { total: armed.length, shown: shown.length }));
   }
   return lines.join("\n");
 }

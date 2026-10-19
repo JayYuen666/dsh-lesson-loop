@@ -104,10 +104,19 @@ export type LlmService = Pick<LlmRuntime, "stream">;
 /** `ctx.agentDefaultModel` 的本包面：只 `currentSelection()`（installed 同文件 :41）。 */
 export type AgentDefaultModel = Pick<AgentDefaultModelConfig, "currentSelection">;
 
-/** 默认模型选择 = 官方成员返回形状，但**可选性按交付面放宽**：`currentSelection()` 是宿主
- *  服务交回来的值，官方声明里 `provider`/`model` 必选，而本包拿到的是跨边界交付——配置没落、
- *  Volatile 引用未解析时照样可能是缺位的半截对象。守卫留在 runDigest 入口，类型不再替宿主打包票。 */
-export type ModelSelection = Partial<ReturnType<AgentDefaultModelConfig["currentSelection"]>>;
+/** 默认模型选择 = 官方 `ModelSelection` 的三位形状，但**可选性按交付面放宽**：`currentSelection()`
+ *  是宿主服务交回来的值，官方声明里 `provider`/`model` 必选，而本包拿到的是跨边界交付——配置
+ *  没落、Volatile 引用未解析时照样可能是缺位的半截对象。守卫留在 runDigest 入口，类型不再替
+ *  宿主打包票。
+ *
+ *  为什么不直接 import 官方类型：那会在 `types/lib/digest.d.ts` 里留下裸说明符
+ *  `@deepseek-ai/dsh-agent`，而本包只把它当 devDependency——消费方按 manifest 装依赖，
+ *  声明里没这个名字就是 TS2307。扩 peer 是发布契约变更，归用户裁决；此前用结构等价类型。 */
+export interface ModelSelection {
+  readonly provider?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: string;
+}
 
 // 本插件的消息身份（PLUGIN_NAME / LESSON_SOURCE_KIND）只在 lib/prompt.ts 定义一份：
 // 蒸馏请求帧与 host 的 armed 规则摘要注入是同一个生产者，不得有两个身份

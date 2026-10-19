@@ -339,6 +339,7 @@ const EVENTS_FILE_NAME = "events.jsonl";
 /** 门禁失败上报夹具四件套：来源 / 分类 / 工作目录 / 签名（armedRule 造卡与各处回读同一笔）。 */
 const SOURCE_QUALITY_GATE = "quality-gate";
 const CATEGORY_GATE_FAILURE = "gate-failure";
+const CATEGORY_TRANSIENT_FAILURE = "transient-failure";
 const GATE_PROJECT_CWD = "/repo/proj";
 const SIGNATURE_GATE_COMMAND = "pnpm check";
 /** danger-guard 来源 + factgate-deny 分类：碎片行/迁移样本用的另一对生产者与分类。 */
@@ -577,8 +578,8 @@ function isThenable(value: unknown): boolean {
 }
 
 /** 设置卡该能编辑的字段：11 项开关/阈值 + 规则库那枚数组，一个都不该漏。 */
-/** 字段化的两枚部署值：在 Config 上但**不标** volatile ⇒ 不进设置卡。 */
-const DEPLOYMENT_FIELDS = ["digestTimeoutMs", "decayIntervalMs"];
+/** 字段化的三枚部署值：在 Config 上但**不标** volatile ⇒ 不进设置卡。 */
+const DEPLOYMENT_FIELDS = ["digestTimeoutMs", "decayIntervalMs", "maxInjectedRules"];
 
 const EDITABLE_FIELDS = [
   "decayDays",
@@ -597,6 +598,31 @@ const EDITABLE_FIELDS = [
 
 // ── 非回环服务面判据的两枚夹具（描述块外声明：oxlint 的 consistent-function-scoping
 //    不许把只读环境表的函数嵌进 describe，consistent-return 又禁 `return undefined`）──
+
+/**
+ * 上报一条差评并把它升格为 armed —— 「上报 + 人工升格」这对动作在多条用例里逐字相同。
+ *
+ * 收成一处是因为它两次撞上 sonarjs 的 no-identical-functions：复制一份就等于把
+ * 「升格成功」这条判据散成多份，改一处漏一处的后果是某条用例在验一个已经不存在的契约。
+ *
+ * @param svc - 本插件对外服务
+ * @param category - 差评分类
+ * @param signature - 判据签名
+ */
+async function armingReport(
+  svc: ReturnType<typeof loopService>,
+  category: string,
+  signature: string,
+): Promise<void> {
+  const receipt = await svc.report({
+    source: SOURCE_QUALITY_GATE,
+    category,
+    cwd: GATE_PROJECT_CWD,
+    signature,
+    detail: "d",
+  });
+  assert.equal(await svc.ruleAction(receipt.candidate!.id, "arm"), "persisted");
+}
 
 describe("host：lesson-loop 的宿主半", () => {
   beforeEach(() => {
@@ -938,6 +964,113 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(source["kind"], "plugin:lesson-loop", "kind 须是本插件的 producer-owned 串");
       assert.equal(source["plugin"], undefined, "退役包装的 plugin 字段不得再出现");
       assert.equal(source["form"], "instructions", "自有 form 字段必须保留");
+    });
+
+    it("注入条数上限：只注入最新 N 条、帧尾说明还剩多少，日志报 injected X of Y", async () => {
+      // armed 只能人工升格、"零干净命中"的卡又永不自动降级或归档 ⇒ 条数没有自动收敛
+      // 路径。这条上限是唯一兜住"注入面单调增长"的地方，故它自己也要有人钉。
+      const ctx = makeCtx({ value: { maxInjectedRules: 2 } });
+      const info = vi.spyOn(console, "info").mockImplementation(() => {
+        // 断言在下方
+      });
+      apply(ctx);
+      const svc = loopService(ctx);
+      // 三个**不同类别**各自成卡：同类别会被折叠到类别级稳定签名，三张会变一张。
+      // 三次上报必须**串行**（后一次要看见前一次落盘的规则库）。逐段 await 写在
+      // 循环里会被 no-await-in-loop 拦，所以把「上报 + 升格」收成一个 helper，循环体只调用它。
+      await armingReport(svc, CATEGORY_GATE_FAILURE, "gate-1");
+      await armingReport(svc, CATEGORY_TRANSIENT_FAILURE, "transient-1");
+      await armingReport(svc, "max-tokens", "max-1");
+      const injected: unknown[] = [];
+      fireCreated(ctx, {
+        inject: (message: unknown) => {
+          injected.push(message);
+        },
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD } },
+      });
+      assert.equal(injected.length, 1, "仍然只注入一条消息");
+      const first = injected[0] as { content: { text: string }[] } | undefined;
+      assert.ok(first);
+      const [block] = first.content;
+      assert.ok(block);
+      const { text } = block;
+      assert.equal(text.split("\n").length, 4, "抬头 + 2 条规则 + 1 行省略说明");
+      assert.match(text, /共 3 条生效规则，此处只列最近 2 条/u);
+      assert.match(
+        String(info.mock.calls[0]?.[0]),
+        /injected 2 of 3 armed rule\(s\)/u,
+        "日志的计数不得按帧行数推（帧尾那行说明不是规则）",
+      );
+      info.mockRestore();
+    });
+
+    it("上限充裕时不截断：日志报 injected N of N，帧里没有省略说明", async () => {
+      // 上一格钉的是「超上限时只列最近 N 条」，但那条走的永远是 Math.min 的**被压小**那一支。
+      // 上限比 armed 数大时取的是 armedCount 本身——两个分支各要一次真实回执，
+      // 否则「上限逻辑写反成恒取上限」这种错只会在生产里表现成一条虚报的计数。
+      const ctx = makeCtx({ value: { maxInjectedRules: 10 } });
+      const info = vi.spyOn(console, "info").mockImplementation(() => {
+        // 断言在下方
+      });
+      apply(ctx);
+      const svc = loopService(ctx);
+      const receipt = await svc.report({
+        source: SOURCE_QUALITY_GATE,
+        category: CATEGORY_FACTGATE_DENY,
+        cwd: GATE_PROJECT_CWD,
+        signature: "/single.ts",
+        detail: "d",
+      });
+      assert.equal(await svc.ruleAction(receipt.candidate!.id, "arm"), "persisted");
+      const injected: unknown[] = [];
+      fireCreated(ctx, {
+        inject: (message: unknown) => {
+          injected.push(message);
+        },
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD } },
+      });
+      const first = injected[0] as { content: { text: string }[] } | undefined;
+      assert.ok(first);
+      const [block] = first.content;
+      assert.ok(block);
+      assert.doesNotMatch(block.text, /此处只列最近/u, "没超上限就不该有那句省略说明");
+      assert.match(
+        String(info.mock.calls[0]?.[0]),
+        /injected 1 of 1 armed rule\(s\)/u,
+        "上限充裕时 shown 取 armedCount 本身",
+      );
+      info.mockRestore();
+    });
+
+    it("maxInjectedRules = 0 即不设上限：shows armedCount，帧尾无省略说明", async () => {
+      // 0 是**有语义的**（与 maxLessonsBytes 同义：不设上限），不是"没配"。这条钉住
+      // 那个三分支的假支：0 时 shown 必须等于 armedCount，而不是被 min 成 0。
+      const ctx = makeCtx({ value: { maxInjectedRules: 0 } });
+      const info = vi.spyOn(console, "info").mockImplementation(() => {
+        // 断言在下方
+      });
+      apply(ctx);
+      const svc = loopService(ctx);
+      await armingReport(svc, CATEGORY_GATE_FAILURE, "zero-1");
+      await armingReport(svc, CATEGORY_TRANSIENT_FAILURE, "zero-2");
+      const injected: unknown[] = [];
+      fireCreated(ctx, {
+        inject: (message: unknown) => {
+          injected.push(message);
+        },
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD } },
+      });
+      const first = injected[0] as { content: { text: string }[] } | undefined;
+      assert.ok(first);
+      const [block] = first.content;
+      assert.ok(block);
+      assert.doesNotMatch(block.text, /此处只列最近/u, "不设上限就没有省略说明");
+      assert.match(
+        String(info.mock.calls[0]?.[0]),
+        /injected 2 of 2 armed rule\(s\)/u,
+        "0 = 不设上限：shown 取 armedCount",
+      );
+      info.mockRestore();
     });
 
     it("无 armed 规则 / 子代理 / 开关关 → 不注入", async () => {
@@ -1553,6 +1686,8 @@ describe("host：lesson-loop 的宿主半", () => {
         // 手写字面值而不引常量——引常量就成了自证，常量改了该先红。
         digestTimeoutMs: 120_000,
         decayIntervalMs: 24 * 60 * 60_000,
+        // 注入条数上限的部署默认：宽松但有限，兜的是"零干净命中的卡永不自动收敛"。
+        maxInjectedRules: 50,
       });
     });
 

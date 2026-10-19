@@ -37,6 +37,8 @@ export interface LessonLoopMessages {
   readonly armedMetrics: string;
   /** armed 但有暴露无触发时的尾巴（{samples}）。 */
   readonly armedNoTrigger: string;
+  /** 条数超上限、只列了最近几条时的帧尾说明（{total} {shown}）。 */
+  readonly digestOmitted: string;
 
   // ── 规则状态标签与摘要行（describeRule）────────────────────────────────
   readonly statusCandidate: string;
@@ -168,6 +170,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     digestRuleLine: "{index}. {statement}（{day} 生效{metrics}）",
     armedMetrics: "，armed 后复发 {violation} 次 / 被遵守 {suppressed} 次 / 暴露 {samples} 次",
     armedNoTrigger: "，armed 后在场 {samples} 次会话但未触发（尚无可判定证据）",
+    digestOmitted:
+      "（本项目共 {total} 条生效规则，此处只列最近 {shown} 条；更早的未列出，可在本包设置卡的规则评审页归档或降级）",
 
     statusCandidate: "待确认",
     statusArmed: "生效中",
@@ -255,6 +259,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
       ", {violation} violations / {suppressed} followed / {samples} exposed since arming",
     armedNoTrigger:
       ", present in {samples} sessions since arming but never triggered (no evidence to judge yet)",
+    digestOmitted:
+      "({total} rules are armed for this project; only the newest {shown} are listed here — the older ones are omitted and can be archived or demoted on this package's rule-review card)",
 
     statusCandidate: "pending review",
     statusArmed: "armed",

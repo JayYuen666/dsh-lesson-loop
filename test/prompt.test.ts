@@ -5,6 +5,7 @@ import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import {
   renderRulesDigest,
+  armedRulesOf,
   renderSectionText,
   fenceUntrusted,
   SECTION_NAME,
@@ -72,6 +73,45 @@ describe("renderRulesDigest", () => {
     assert.match(digest!, /复发 1 次 \/ 被遵守 7 次/u);
     // t0 的 UTC 日期
     assert.match(digest!, /2023-11-14/u);
+  });
+
+  it("条数上限：只注入最新那几条，且帧尾明说还有更早的没列（不装作没少）", () => {
+    // armedAt 递增 ⇒ 尾部的两只是"最新"的；越老越可能已失效，故按时间取新。
+    const rules = [0, 1, 2, 3, 4].map((index) =>
+      card({
+        id: `r${index}`,
+        statement: `第 ${index} 条`,
+        armedAt: t0 + index * 1000,
+      }),
+    );
+    const digest = renderRulesDigest(rules, "p1", tZh, 2);
+    assert.ok(digest!.includes("第 4 条"), "最新的在");
+    assert.ok(digest!.includes("第 3 条"), "次新的在");
+    assert.ok(!digest!.includes("第 2 条"), "更早的不注入");
+    assert.match(digest!, /共 5 条生效规则，此处只列最近 2 条/u);
+  });
+
+  it("不超上限 / 0 = 不设上限：两者都不加那句省略说明", () => {
+    const rules = [0, 1, 2].map((index) => card({ id: `r${index}`, armedAt: t0 + index }));
+    const below = renderRulesDigest(rules, "p1", tZh, 5);
+    assert.equal(below!.split("\n").length, 4, "抬头 + 三条规则，没有第四行说明");
+    const unlimited = renderRulesDigest(rules, "p1", tZh, 0);
+    assert.equal(unlimited, below, "0 与「没超上限」走同一条路径");
+  });
+
+  it("armedRulesOf：只取本项目 armed，按 armedAt 升序，同值保持入参顺序", () => {
+    const rules = [
+      card({ id: "b", armedAt: t0 + 5 }),
+      card({ id: "candidate", status: "candidate" }),
+      card({ id: "other", project: "p2" }),
+      card({ id: "a", armedAt: t0 }),
+      card({ id: "same", armedAt: t0 }),
+    ];
+    assert.deepEqual(
+      armedRulesOf(rules, "p1").map((rule) => rule.id),
+      ["a", "same", "b"],
+      "候选与非本项目都不进；t0 那两张保持入参先后（toSorted 稳定）",
+    );
   });
 });
 

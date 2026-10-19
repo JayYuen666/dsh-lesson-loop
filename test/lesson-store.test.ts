@@ -606,6 +606,75 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(rules[0].occurrences, 2);
     });
 
+    it("两张 armed 碎片的度量逐张累加（每张都属于它自己那次升格，不能被只搬一张吞掉）", async () => {
+      // 旧写入侧按路径分片，同 project+category 下同时存在两张 armed 碎片是常态。
+      // 只搬第一张的 violation/suppressed/samples，等于把另一张真实被测到的证据抹掉：
+      // 复发率分母随之变小，一条本该校降级的规则会永远留在 armed 继续注入。
+      const store = seedStore([
+        armedFragmentRow({
+          id: "f-armed-1",
+          signature: SIGNATURE_PATH_A,
+          armedAt: 10,
+          violation: 4,
+          suppressed: 3,
+          samples: 9,
+        }),
+        armedFragmentRow({
+          id: "f-armed-2",
+          signature: SIGNATURE_PATH_B,
+          armedAt: 20,
+          violation: 7,
+          suppressed: 2,
+          samples: 5,
+        }),
+      ]);
+      assert.equal(store.rules().length, 2);
+      const merged = await store.migrateFragmentRules();
+      const rules = store.rules();
+      assert.equal(merged, 1);
+      assert.equal(rules.length, 1);
+      const [mergedRule] = rules;
+      assert.ok(mergedRule);
+      assert.equal(mergedRule.status, "armed");
+      assert.equal(mergedRule.violation, 11, "4 + 7");
+      assert.equal(mergedRule.suppressed, 5, "3 + 2");
+      assert.equal(mergedRule.samples, 14, "9 + 5");
+      assert.equal(mergedRule.armedAt, 20, "生效时间取更晚那张（锚点不拉早）");
+    });
+
+    it("主卡不是 armed 时：第一张整片继承、其余按度量累加（第一张只算一遍）", async () => {
+      // 已有稳定候选卡当主卡（`existing` 优先）：它自己的计数是 0，两张 armed 碎的
+      // 度量必须原样落到它身上，且不能因为「先继承再累加」把第一张算两遍。
+      const store = seedStore([
+        stableCandidateRow({ violation: 0, suppressed: 0, samples: 0 }),
+        armedFragmentRow({
+          id: "f-armed-1",
+          signature: SIGNATURE_PATH_A,
+          armedAt: 10,
+          violation: 4,
+          suppressed: 3,
+          samples: 9,
+        }),
+        armedFragmentRow({
+          id: "f-armed-2",
+          signature: SIGNATURE_PATH_B,
+          armedAt: 20,
+          violation: 7,
+          suppressed: 2,
+          samples: 5,
+        }),
+      ]);
+      await store.migrateFragmentRules();
+      const rules = store.rules();
+      assert.equal(rules.length, 1);
+      const [mergedRule] = rules;
+      assert.ok(mergedRule);
+      assert.equal(mergedRule.status, "armed", "碎片里有 armed ⇒ 归并后仍是 armed");
+      assert.equal(mergedRule.violation, 11);
+      assert.equal(mergedRule.suppressed, 5);
+      assert.equal(mergedRule.samples, 14);
+    });
+
     it("单条 rejected 碎片并入 rejected 汇总卡", async () => {
       const store = seedStore([
         diskRow({ id: "f-e", signature: "/repo/src/e.ts", status: "rejected" }),
@@ -1972,9 +2041,9 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(ruleById(store, id)?.status, "demoted");
     });
 
-    it("addCandidate 命中 armed/rejected/archived 键：只并回、不新建、不改状态", async () => {
+    it("addCandidate 命中候选卡才消费蒸馏产出；人工已定态的卡只并回、不追加证据、不改状态", async () => {
       const store = makeStore();
-      // 表外类别：三张卡要各自独立（登记类别会被折叠成一张）
+      // 表外类别：四张卡要各自独立（登记类别会被折叠成一张）
       const keepReceipt = await store.report(rawRec({ signature: "keep-me" }) as never);
       const { id } = keepReceipt.candidate!;
       await store.ruleAction(id, "arm", "人工规则");
@@ -1984,6 +2053,8 @@ describe("lesson-store：台账、规则库与度量", () => {
       const arcReceipt = await store.report(rawRec({ signature: "arc-me" }) as never);
       const archived = arcReceipt.candidate!;
       await store.ruleAction(archived.id, "archive");
+      const candReceipt = await store.report(rawRec({ signature: "cand-me" }) as never);
+      const candidate = candReceipt.candidate!;
       const armedReceipt = await store.addCandidate({
         project: PROJECT_KEY_FIXTURE,
         category: CATEGORY_GATE_FAILURE,
@@ -2006,6 +2077,13 @@ describe("lesson-store：台账、规则库与度量", () => {
         statement: "模型想改写的正文",
         detail: "蒸馏上下文",
       });
+      const candidateReceipt = await store.addCandidate({
+        project: PROJECT_KEY_FIXTURE,
+        category: CATEGORY_GATE_FAILURE,
+        signature: "cand-me",
+        statement: "模型补的正文",
+        detail: "蒸馏上下文",
+      });
       const armedCard = armedReceipt.card;
       const rejectedCard = rejectedReceipt.card;
       const archivedCard = archivedReceipt.card;
@@ -2016,11 +2094,24 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(rejectedCard.id, rejected.id);
       assert.equal(rejectedCard.status, "rejected");
       assert.equal(rejectedCard.occurrences, 1);
-      assert.equal(rejectedCard.evidence.at(-1)?.source, "manual");
       assert.equal(archivedCard.id, archived.id);
       assert.equal(archivedCard.status, "archived");
-      assert.equal(store.rules().length, 3);
-      assert.equal(archivedCard.evidence.length, 2);
+      assert.equal(store.rules().length, 4);
+      // 人工已定态的三张卡：蒸馏产出**一格都不许落**。旧断言恰恰钉的是反面
+      // （rejected 卡的 evidence.at(-1).source === "manual"、archived 卡 evidence.length === 2）
+      // ——那正是本次修掉的缺陷：证据落盘时 capEvidence 只留最近几条，模型连报几条同键条目
+      // 就能把人工卡此前的真实证据整批挤出，而状态与计数一格不动。
+      assert.equal(armedCard.evidence.length, 1, "armed 卡不接受蒸馏证据");
+      assert.equal(rejectedCard.evidence.length, 1, "rejected 卡不接受蒸馏证据");
+      assert.equal(rejectedCard.evidence.at(-1)?.source, SOURCE_DANGER_GUARD);
+      assert.equal(archivedCard.evidence.length, 1, "archived 卡不接受蒸馏证据");
+      // 反向一侧：候选卡照旧消费（occurrences + 证据），豁免面没有开得过宽。
+      const candidateCard = candidateReceipt.card;
+      assert.equal(candidateCard.id, candidate.id);
+      assert.equal(candidateCard.status, "candidate");
+      assert.equal(candidateCard.occurrences, 2);
+      assert.equal(candidateCard.evidence.length, 2);
+      assert.equal(candidateCard.evidence.at(-1)?.detail, "蒸馏上下文");
     });
   });
 
@@ -2466,8 +2557,10 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.deepEqual(await store.migrateProjectKeys(), { rewrites: 1, merged: 1 });
       const rules = store.rules();
       assert.equal(rules.length, 1);
-      assert.equal(rules[0]?.id, "a2");
-      assert.equal(rules[0].status, "armed");
+      const [mergedRule] = rules;
+      assert.ok(mergedRule);
+      assert.equal(mergedRule.id, "a2");
+      assert.equal(rules[0]?.status, "armed");
       assert.equal(rules[0].statement, "人工升格的规则");
       assert.equal(rules[0].occurrences, 10);
       assert.equal(rules[0].violation, 0);
