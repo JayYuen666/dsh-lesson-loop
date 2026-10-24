@@ -1,6 +1,25 @@
 // lesson-loop/tsconfig.json —— 编译选项全部继承 @jayyuen66/dsh-plugin-shared/config/tsconfig.base.json，这里只留本包与基线不同的部分。
+// 构建脚本（build-*.mjs）也进 include：它们都带 `// @ts-check`，但 `@ts-check` 只在编辑器里
+// 生效，tsc 看不见没进 include 的文件——不进这一行，那三个文件里的类型错误在 CI 里没有门。
+// 因此需要 allowJs/checkJs 把 .mjs 纳入检查（tsconfig.types.json 出声明时是另一份配置，
+// 不受这里影响）。
 {
   "extends": "@jayyuen66/dsh-plugin-shared/config/tsconfig.base.json",
-  "include": ["host.ts", "lib/**/*.ts", "test/**/*.ts", "vitest.config.ts", "build-client.mjs"],
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true
+  },
+  "include": [
+    "host.ts",
+    "lib/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts",
+    "oxlint.config.ts",
+    "oxfmt.config.ts",
+    "build-client.mjs",
+    "build-host.mjs",
+    "build-types.mjs",
+    "build-utils.mjs"
+  ],
   "exclude": ["test/client-*.test.ts"]
 }

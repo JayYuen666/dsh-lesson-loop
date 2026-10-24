@@ -18,6 +18,8 @@ import type {
 } from "../lib/lesson-store.ts";
 import { RULES_FIELD, SETTINGS_NAMESPACE, cardsOfValue } from "../lib/rules-layout.ts";
 import { MESSAGES, fill } from "../lib/messages.ts";
+import { UI_MESSAGES } from "../src/ui-messages.ts";
+import { loggedText } from "./setup-logs.ts";
 import { makeSettingsProvider } from "./rules-fake.ts";
 import type { SettingsProviderFake } from "./rules-fake.ts";
 import type { LlmService } from "../lib/digest.ts";
@@ -345,18 +347,22 @@ const SIGNATURE_GATE_COMMAND = "pnpm check";
 /** danger-guard 来源 + factgate-deny 分类：碎片行/迁移样本用的另一对生产者与分类。 */
 const SOURCE_DANGER_GUARD = "danger-guard";
 const CATEGORY_FACTGATE_DENY = "factgate-deny";
-/** 桶键夹具（project 键迁移用例的新旧键之一）。 */
-const PROJECT_KEY_FIXTURE = "proj-6b906b9c";
+/** 折叠类别的代表：卡上的签名是类别级稳定键，输入给的是命令原文，两者必然不同。 */
+const CATEGORY_DANGEROUS_BASH = "dangerous-bash";
+const BASH_COMMAND_FIXTURE = "git commit --no-verify";
+/** 桶键夹具：由被测别名按当前平台派生（Windows 的规范化结果带盘符，POSIX 字面量不能复用）。 */
+const PROJECT_KEY_FIXTURE = deriveProject(GATE_PROJECT_CWD);
 /** 官方 `StreamChunk` 的文本增量判别位（假 llm 回包用）。 */
 const CHUNK_TEXT_DELTA = "text-delta";
-/** HOME 兜底用例里假定的家目录（DSH_HOME 未设时 cache 应落在这里）。 */
-const TEST_HOME_DIR = "/home/tester";
+/** HOME 兜底用例里假定的家目录（DSH_HOME 未设时 cache 应落在这里）。
+ *  按宿主平台归一化；Windows 的 os.homedir() 读 USERPROFILE，用例同时注入两条。 */
+const TEST_HOME_DIR = path.resolve("/home/tester");
 /** 门禁命令的另一种形态：gate-failure 签名夹具（与 pnpm check 同位、不同值）。 */
 const SIGNATURE_CARGO_TEST = "cargo test";
 
 /** 规则库段落的存量行注入用（makeCtx({rules}) 与持久化断言都读它）。 */
 const rulesOf = (ctx: FakeCtx): RuleCard[] =>
-  cardsOfValue(ctx.rulesProvider.peek(SETTINGS_NAMESPACE));
+  cardsOfValue(ctx.rulesProvider.peek(SETTINGS_NAMESPACE)).cards;
 
 /** lessonLoop 服务面的动作名（与 host 的 ruleAction 参数同集）。 */
 type ActionName = "arm" | "reject" | "demote" | "archive" | "edit" | "revive";
@@ -820,6 +826,33 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(svc.rules()[0]?.suppressed, 1, "无 pass 的会话不记 observed");
     });
 
+    it("armed 命中日志带出原始签名：折叠类别能分辨是哪一条命令", async () => {
+      // 卡片签名是折叠后的稳定键（dangerous-bash 这一类全部折成类别名），同一张卡上
+      // 每条命中逐字相同；能区分单次的是这一条上报的原始签名。不写进日志的话，
+      // "74 次里的哪一次"在日志里问不出来。
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const lesson = {
+        source: SOURCE_DANGER_GUARD,
+        category: CATEGORY_DANGEROUS_BASH,
+        cwd: GATE_PROJECT_CWD,
+        signature: BASH_COMMAND_FIXTURE,
+      };
+      const seeded = await svc.report({ ...lesson, detail: "d1" });
+      await svc.ruleAction(seeded.candidate!.id, "arm");
+      const hit = await svc.report({ ...lesson, detail: "d2" });
+      assert.equal(
+        hit.violationOf?.signature,
+        CATEGORY_DANGEROUS_BASH,
+        "前置：卡上是折叠后的稳定键",
+      );
+      assert.ok(
+        loggedText().includes(`raw=${BASH_COMMAND_FIXTURE}`),
+        "原始签名必须出现在日志里，否则同一张卡的多次命中无法区分",
+      );
+    });
+
     it("插件先于 session/disposed 卸载（短命进程退出）→ 台账会话就地清算，samples 不丢", async () => {
       const ctx = makeCtx();
       apply(ctx);
@@ -1123,7 +1156,7 @@ describe("host：lesson-loop 的宿主半", () => {
       try {
         assert.equal(
           cacheFile(EVENTS_FILE_NAME),
-          path.join("/tmp/custom-dsh", "cache", PLUGIN_ID_FIXTURE, EVENTS_FILE_NAME),
+          path.join(path.resolve("/tmp/custom-dsh"), "cache", PLUGIN_ID_FIXTURE, EVENTS_FILE_NAME),
         );
       } finally {
         if (previousDshHome === undefined) {
@@ -1137,8 +1170,10 @@ describe("host：lesson-loop 的宿主半", () => {
     it("DSH_HOME 未设 → 回退 <HOME>/.dsh/cache/lesson-loop/<name>", () => {
       const previousDshHome = process.env["DSH_HOME"];
       const previousHome = process.env["HOME"];
+      const previousUserProfile = process.env["USERPROFILE"];
       delete process.env["DSH_HOME"];
       process.env["HOME"] = TEST_HOME_DIR;
+      process.env["USERPROFILE"] = TEST_HOME_DIR;
       try {
         assert.equal(
           cacheFile(EVENTS_FILE_NAME),
@@ -1154,6 +1189,11 @@ describe("host：lesson-loop 的宿主半", () => {
           delete process.env["HOME"];
         } else {
           process.env["HOME"] = previousHome;
+        }
+        if (previousUserProfile === undefined) {
+          delete process.env["USERPROFILE"];
+        } else {
+          process.env["USERPROFILE"] = previousUserProfile;
         }
       }
     });
@@ -1164,8 +1204,10 @@ describe("host：lesson-loop 的宿主半", () => {
     it("DSH_HOME 只有空白 → 按未设回退，绝不落进空白目录", () => {
       const previousDshHome = process.env["DSH_HOME"];
       const previousHome = process.env["HOME"];
+      const previousUserProfile = process.env["USERPROFILE"];
       process.env["DSH_HOME"] = "   ";
       process.env["HOME"] = TEST_HOME_DIR;
+      process.env["USERPROFILE"] = TEST_HOME_DIR;
       try {
         assert.equal(
           cacheFile(EVENTS_FILE_NAME),
@@ -1181,6 +1223,11 @@ describe("host：lesson-loop 的宿主半", () => {
           delete process.env["HOME"];
         } else {
           process.env["HOME"] = previousHome;
+        }
+        if (previousUserProfile === undefined) {
+          delete process.env["USERPROFILE"];
+        } else {
+          process.env["USERPROFILE"] = previousUserProfile;
         }
       }
     });
@@ -1326,45 +1373,51 @@ describe("host：lesson-loop 的宿主半", () => {
   });
 
   describe("衰减定时器", () => {
-    it("apply 立即跑一次；timer 缺失不炸", () => {
+    it("apply 立即跑一轮；timer 缺失不炸", async () => {
       const ctx = makeCtx();
       apply(ctx);
-      // 24h 周期
-      assert.equal(ctx.timerCallbacks.length, 1);
+      // 装载期那一轮先跑衰减，**结算之后**才武装下一轮：apply 返回时还没有定时器。
+      await flushAsync();
+      assert.equal(ctx.timerCallbacks.length, 1, "一轮结算后武装下一轮（24h）");
       const ctxNoTimer = makeCtx();
       delete ctxNoTimer.services["timer"];
       // 不抛
       apply(ctxNoTimer);
     });
 
-    it("周期 tick 再次执行 decay", () => {
+    it("上一轮结算后才排下一轮（不在起点就重排，避免两轮重叠）", async () => {
       vi.useFakeTimers();
       try {
         const ctx = makeCtx();
         apply(ctx);
+        // 衰减尚未结算：还没有定时器。这正是"不重叠"的判据——旧实现 apply 时就排了。
+        assert.equal(ctx.timerCallbacks.length, 0, "结算前不该有下一轮的定时器");
+        await flushAsync();
         assert.equal(ctx.timerCallbacks.length, 1);
+        // 触发这一轮 → 又进入"先衰减再排"的次序，仍然没有新的定时器
         ctx.timerCallbacks[0]?.();
-        // 重新武装下一轮
-        assert.equal(ctx.timerCallbacks.length, 2);
+        assert.equal(ctx.timerCallbacks.length, 1, "触发后到结算前仍是同一个数");
+        await flushAsync();
+        assert.equal(ctx.timerCallbacks.length, 2, "结算后才再武装一轮");
       } finally {
         vi.useRealTimers();
       }
     });
 
-    it("effect 卸载 → 停止周期衰减（stopped 防重入）", () => {
+    it("effect 卸载 → 停止周期衰减（在途那一轮结束后不再武装）", async () => {
       const ctx = makeCtx();
       apply(ctx);
-      assert.equal(ctx.timerCallbacks.length, 1);
-      // 规则读面迁到官方 Remote 之后，应用期最后一项 effect 就是 decay timer
-      //（旧的 webServer routes 子 fiber 已删除）。
+      await flushAsync();
       const decayDisposer = ctx.effects.at(-1);
       if (decayDisposer === undefined) {
         throw new Error("decay disposer 缺失");
       }
       decayDisposer();
-      // 已注册的 tick 再触发 → stopped 早退，不再武装下一轮
+      // 已注册的 tick 再触发 → 结算后 schedule 见 stopped 早退，不再武装
+      const armedBefore = ctx.timerCallbacks.length;
       ctx.timerCallbacks[0]?.();
-      assert.equal(ctx.timerCallbacks.length, 1);
+      await flushAsync();
+      assert.equal(ctx.timerCallbacks.length, armedBefore, "卸载后不再武装下一轮");
     });
   });
 
@@ -1968,12 +2021,34 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.deepEqual(ended.mock.calls[1]?.[2], new Set([id]));
     });
 
+    it("已清算集合也按上限修剪：溢出的旧会话不再计入「重复边」", async () => {
+      // 不修剪就是长驻进程里的无界增长；而修剪的一个可观测后果是：被丢出集合的会话
+      // 再次 dispose 时会被当成"首个边"重新计 exposure——这是有界内存换来的已知取舍。
+      const ctx = makeCtx();
+      apply(ctx);
+      await armedRule(ctx);
+      const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
+      // 灌满 200 个会话并各清算一次（首个边，计 exposure）
+      for (let index = 0; index <= 200; index += 1) {
+        fireDisposed(ctx, { id: `d${index}`, header: { cwd: GATE_PROJECT_CWD } });
+      }
+      const before = ended.mock.calls.length;
+      // d0 已被挤出去 → 再来一次时被当成首个边（exposure=true）
+      fireDisposed(ctx, { id: "d0", header: { cwd: GATE_PROJECT_CWD } });
+      assert.equal(ended.mock.calls.at(-1)?.[4], true, "被挤出集合的会话重新按首个边处理");
+      assert.equal(ended.mock.calls.length, before + 1);
+      // 末位那个仍在集合里 → 重复边（exposure=false）
+      fireDisposed(ctx, { id: "d200", header: { cwd: GATE_PROJECT_CWD } });
+      assert.equal(ended.mock.calls.at(-1)?.[4], false, "集合内的会话重复边不计 exposure");
+    });
+
     it("无台账且无 header → 按 default 项目清算（插件中途装载的兜底）", () => {
       const ctx = makeCtx();
       apply(ctx);
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
       fireDisposed(ctx, { id: "ghost" });
-      assert.deepEqual(ended.mock.calls[0], ["default", new Set(), new Set(), "ghost"]);
+      // 第五位是 exposure 开关：该会话的首个 dispose 边为 true，重复边为 false。
+      assert.deepEqual(ended.mock.calls[0], ["default", new Set(), new Set(), "ghost", true]);
     });
 
     it("sessionEnded 抛错 → 只记日志", async () => {
@@ -2367,10 +2442,61 @@ describe("host：lesson-loop 的宿主半", () => {
     });
   });
 
+  describe("配置行 hint 与 configSchema 对账（两处真值不许各自漂移）", () => {
+    const NUMERIC_HINT_FIELDS = [
+      "promoteThreshold",
+      "demoteThreshold",
+      "demoteMinSamples",
+      "demoteRatio",
+      "reviveThreshold",
+      "decayDays",
+    ] as const;
+
+    it("六个阈值字段的 hint 写着 schema 的区间与默认（zh/en 同查，期望从 schema 现量读）", () => {
+      for (const field of NUMERIC_HINT_FIELDS) {
+        const meta = plugin.Config.dict?.[field]?.meta;
+        assert.ok(meta !== undefined, `configSchema 里该有 ${field} 这一位`);
+        // meta 经 Dict<Schema> 索引出来是 any：先收 unknown 再逐位判形状，不整块解构
+        const shape = meta as unknown as { min?: number; max?: number; default?: unknown };
+        const { min, max, default: dfltValue } = shape;
+        assert.equal(typeof dfltValue, "number", `${field} 必须有数值默认`);
+        const dflt = String(dfltValue);
+        const tables = [
+          ["zh", UI_MESSAGES.zh, "默认"],
+          ["en", UI_MESSAGES.en, "default"],
+        ] as const;
+        for (const [locale, table, defaultWord] of tables) {
+          const hint = table[`${field}Hint`];
+          assert.ok(
+            hint.includes(`${String(min)}-${String(max)}`),
+            `${locale} 的 ${field}Hint 缺区间 ${String(min)}-${String(max)}：${hint}`,
+          );
+          assert.ok(
+            hint.includes(`${defaultWord} ${dflt}`),
+            `${locale} 的 ${field}Hint 缺「${defaultWord} ${dflt}」：${hint}`,
+          );
+        }
+      }
+    });
+
+    it("maxLessonsBytes 的 hint 写明 GiB 硬上限与 0 = 不设上限", () => {
+      const meta = plugin.Config.dict?.["maxLessonsBytes"]?.meta;
+      assert.ok(meta !== undefined);
+      assert.equal(meta.default, 0);
+      const gib = `${String((meta.max ?? 0) / 1024 ** 3)} GiB`;
+      for (const hint of [UI_MESSAGES.zh.maxLessonsBytesHint, UI_MESSAGES.en.maxLessonsBytesHint]) {
+        assert.ok(hint.includes(gib), `hint 缺硬上限 ${gib}：${hint}`);
+        assert.ok(hint.includes(String(meta.default)), `hint 缺默认 0：${hint}`);
+      }
+    });
+  });
+
   describe("部署值与退出清算静默", () => {
-    it("行 config 覆盖 decayIntervalMs → 周期衰减按配置时长武装（不再写死 24h）", () => {
+    it("行 config 覆盖 decayIntervalMs → 周期衰减按配置时长武装（不再写死 24h）", async () => {
       const ctx = makeCtx({ value: { decayIntervalMs: 60_000 } });
       apply(ctx);
+      // 装载期那一轮先结算，之后才武装下一轮——间隔取自行 config 而不是写死的默认值。
+      await flushAsync();
       assert.deepEqual(ctx.timerMs, [60_000], "衰减定时器是本包唯一的 timer.timeout 消费点");
     });
 
@@ -2407,6 +2533,128 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.deepEqual(settled, [], "await 之前不许声称已经静默（defensive-patterns:19-21）");
       await pending;
       assert.deepEqual(settled, ["s-w4"], "退出清算把这条会话的度量写完了才交回控制权");
+    });
+
+    it("会话已结束后命中的违规不得重建台账条目（否则退出时多算一次 exposure）", async () => {
+      // 审查点：`reportLesson` 在 `await store.report()` 之后补记 violationOf。若会话在这段
+      // 期间已经结束、台账被清掉，旧实现用 `?? {}` 重建条目 —— 那条目要等进程退出才清算，
+      // 等于把一场已结束的会话又算一次 exposure。
+      //
+      // 这里不 mock 时序（`store.report` 本身是同步落盘的，用假 await 制造窗口只会测出
+      // 假绿）：直接按真实事件顺序摆{"先结束会话，再让它收一条 armed 命中"}，
+      // 然后断言退出清算不会看到这个会话的条目。
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const seeded = await svc.report({
+        source: SOURCE_QUALITY_GATE,
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        signature: SIGNATURE_GATE_COMMAND,
+        detail: "seed",
+      });
+      assert.equal(await svc.ruleAction(seeded.candidate!.id, "arm"), "persisted");
+
+      const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
+      // 先让会话有台账（正常 start），再结束掉它——此后台账里没有这条会话。
+      fireCreated(ctx, { session: { id: "s-race", header: { cwd } } });
+      fireDisposed(ctx, { id: "s-race", header: { cwd } });
+      const settledCount = ended.mock.calls.length;
+      // 会话已经结束，这时来一条 armed 命中（带 sessionId 的那条）
+      const hit = await svc.report({
+        source: SOURCE_QUALITY_GATE,
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId: "s-race",
+        signature: SIGNATURE_GATE_COMMAND,
+        detail: "after-dispose",
+      });
+      assert.ok(hit.violationOf !== undefined, "前置：这次命中必须带 violationOf 才测到那段逻辑");
+      // 退出清算：若条目被重建，这里会多出一条 sessionEnded 调用。
+      await Promise.all(ctx.effects.map((dispose) => dispose()));
+      const exited = ended.mock.calls.slice(settledCount).filter((call) => call[3] === "s-race");
+      assert.equal(exited.length, 0, "已结束的会话不该因为一条迟到的命中而重新进台账");
+    });
+
+    it("会话已结束后命中的 pass 不得重建台账条目（否则收尾多记一次 suppressed）", async () => {
+      // 与上一条对称：`noteViolationForSettle` 与 `recordPass` 是两条写入口，判据必须同一份。
+      // 若 pass 侧仍用 `?? {}` 重建条目，条目要留到进程退出才清算：那一轮
+      // countExposure 为 false（已清算）而 passed 非空，于是给一条真实违反过的规则
+      // 记一次 suppressed —— 分母多一个，方向正好与去重相反。
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const id = await armedRule(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const sid = "s-pass-race";
+      const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
+      // 正常建台账 → 结束它，此后台账里没有这条会话，但它在已清算集合里。
+      fireCreated(ctx, { session: { id: sid, header: { cwd } } });
+      fireDisposed(ctx, { id: sid, header: { cwd } });
+      const settledCount = ended.mock.calls.length;
+      // 迟到的 pass：它命中的是已 armed 的规则，旧实现会在这里重建条目。
+      const receipt = svc.pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId: sid,
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      assert.ok(receipt.ok, "前置：这次 pass 必须走到记账那一段才测得到判据");
+      await Promise.all(ctx.effects.map((dispose) => dispose()));
+      const exited = ended.mock.calls.slice(settledCount).filter((call) => call[3] === sid);
+      assert.equal(exited.length, 0, "已清算的会话不该因为一条迟到的 pass 而重新进台账");
+      // 反面证据：suppressed 仍是 0（若条目被重建并清算，这里会变成 1）。
+      assert.equal(svc.rules().find((rule) => rule.id === id)?.suppressed, 0);
+    });
+
+    it("会话仍在台账时，armed 命中要记进本会话的 violated（供收尾抑制 exposure）", async () => {
+      // 与上一条互为反面：上一格钉"已结束不重建"，这一格钉"仍在时确实记进去"。
+      // 记进去的可观测后果：该会话结束时 samples 不涨（违规会话不算暴露）。
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const seeded = await svc.report({
+        source: SOURCE_QUALITY_GATE,
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        signature: SIGNATURE_GATE_COMMAND,
+        detail: "seed",
+      });
+      assert.equal(await svc.ruleAction(seeded.candidate!.id, "arm"), "persisted");
+      fireCreated(ctx, { session: { id: "s-live", header: { cwd } } });
+      // 会话仍在台账里时来一条 armed 命中
+      const hit = await svc.report({
+        source: SOURCE_QUALITY_GATE,
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId: "s-live",
+        signature: SIGNATURE_GATE_COMMAND,
+        detail: "while-live",
+      });
+      assert.ok(hit.violationOf !== undefined, "前置：这次命中必须带 violationOf");
+      // 收尾清算：违规过的规则不记 exposure
+      fireDisposed(ctx, { id: "s-live", header: { cwd } });
+      await flushAsync();
+      const samples = rulesOf(ctx).find((rule) => rule.id === hit.violationOf!.id)?.samples;
+      assert.equal(samples, 0, "违规会话不该给这条规则计 exposure");
+    });
+
+    it("退出清算与事件路径共用 exposure 去重：已清算过的会话不再计 exposure", async () => {
+      // 审查点：两个入口各判一次会让同一条会话被计两次 samples。
+      const ctx = makeCtx();
+      apply(ctx);
+      fireCreated(ctx, { session: { id: "s-dup", header: { cwd: GATE_PROJECT_CWD } } });
+      const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
+      // 事件路径先清算一次（首个边）
+      fireDisposed(ctx, { id: "s-dup", header: { cwd: GATE_PROJECT_CWD } });
+      assert.equal(ended.mock.calls[0]?.[4], true);
+      // 再让退出清算处理同一个会话：它已经被 markSettled 过，不该再计 exposure。
+      fireCreated(ctx, { session: { id: "s-dup", header: { cwd: GATE_PROJECT_CWD } } });
+      await Promise.all(ctx.effects.map((dispose) => dispose()));
+      const exitCall = ended.mock.calls.findLast((call) => call[3] === "s-dup");
+      assert.equal(exitCall?.[4], false, "退出清算必须沿用事件路径的去重结果");
     });
 
     it("退出清算交回的是异步 disposer（形状钉：不靠宏任务赌一拍）", async () => {

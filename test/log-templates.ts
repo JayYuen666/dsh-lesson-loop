@@ -1,10 +1,10 @@
-// test/log-templates.ts —— 本包算子可见日志的模板片段（由源码扫出，勿手改）。
+// test/log-templates.ts —— 本包算子可见日志的模板片段（与 lib 源码里的 console.* 逐条对账，手工维护）。
 // 账本用它判「这条日志是不是源码里现存的模板」；新增 console.* 若没有对应片段，
 // 跑测时那条日志就会被判未认领（见 test/setup-logs.ts）。这里不读盘：规则面
 // （node/no-sync 等）不该为了测试脚手架开口子，且模板漂移应当是一次显式的改动。
 export const LOG_TEMPLATES: readonly string[] = [
   '" 不可用（非空但超',
-  '.rules" is not an array — rule library reads empty and refuses writes (switches still work)',
+  " is unreadable (user layer or resolved value is not an array",
   ": session settled for project",
   "[lesson-loop] armed rule violated:",
   "[lesson-loop] candidate ready for review:",
@@ -12,15 +12,24 @@ export const LOG_TEMPLATES: readonly string[] = [
   "[lesson-loop] ctx.provide unavailable — lessonLoop service invisible to reporters",
   "[lesson-loop] decay failed:",
   "[lesson-loop] decay:",
+  "[lesson-loop] digest events payload is not an array",
+  "[lesson-loop] digest persist failed:",
   "[lesson-loop] fragment migration failed:",
+  "[lesson-loop] save failed:",
+  ": session settle for project",
+  "[lesson-loop] sessionEnded failed:",
+  "[lesson-loop] stats request failed:",
   "[lesson-loop] injected",
   "[lesson-loop] lesson append failed:",
+  "[lesson-loop] lesson ledger unreadable",
+  "[lesson-loop] lesson signature is not a string",
   '[lesson-loop] lesson source "',
   "[lesson-loop] migrated",
   "[lesson-loop] normalized",
   "[lesson-loop] pass failed:",
   "[lesson-loop] project key migration failed:",
   "[lesson-loop] report failed:",
+  "rule row(s) without a usable id dropped from",
   "[lesson-loop] rule-action handler failed:",
   '[lesson-loop] rules namespace rejected: "',
   "[lesson-loop] rules read failed:",

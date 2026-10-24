@@ -11,7 +11,7 @@
 // 插件侧的 `settings.register`/`get`/`installSection` 已整体移除——再开一段就等于再造
 // 一个插件条目。旧那条"分属两段"的理由（provider 用 `schema(mergeLayers(base, section))`
 // 校验，坏存量把 register 打回、连带打死另一段）在 0.2.1-alpha.2 换了一种触发方式，因此也换了
-// 一道闸门，见下面 RulesFieldSchema 的 `.loose()` 与 load() 的 user 层判定。
+// 一道闸门，见下面 RulesFieldSchema 的 `.loose()` 与 load() 的双层判定（user 原文 + 解析值）。
 //
 // 读写口径（LessonStore 的 RulesRepository 实现）：
 //   读 —— `describe()` 里本条目那一条：`value` 是 cordis 解析后的当前值（volatile 字段
@@ -31,7 +31,7 @@ import type { RuleCard, RulesRead, RulesRepository, RulesWriteOutcome } from "./
 // 段名与 `rules` 字段名（以及"解析值 → 卡数组"那一步投影）在 lib/rules-layout.ts：本文件是
 // 端口实现，坐标是另一端，两边各改各的就会长成"卡片绑的段 ≠ 这里读的段"。
 import { RULES_FIELD, SETTINGS_NAMESPACE, cardsOfValue, capEvidence } from "./rules-layout.ts";
-import { fieldOf } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 /**
  * 单字段声明：类型判定**不在这里**发生。
@@ -99,8 +99,8 @@ export const RulesFieldSchema = Schema.array(Schema.union([RuleCardSchema, cardF
  *   `SettingsNamespace` 只出现在 :43 的冲突错误与 types.d.ts:73 的事件载荷上），故本包不为它造品牌。
  * - `describe` 只把**入参**绑官方（:96 那个可选的 `SettingsDescribeOptions`，:21-23），
  *   返回域留 `readonly unknown[]`。这不是偷懒：本包对这一行的全部工作就是判"读不读得懂"
- *   （`value`/`user`/`revision` 三位分别对应"解析值 / 文档原文 / CAS 版本"，任一不合形状
- *   都要退成 unusable 而不是猜），而 test/lesson-store.test.ts 钉的正是**契约外交付**——
+ *   （`value`/`user`/`revision` 三位任一不合形状都退成 unusable，绝不拿空库去背书写回），
+ *   而 test/lesson-store.test.ts 钉的正是**契约外交付**——
  *   `revision: "3"`（字符串）、整段是字符串、看不见该命名空间那一行。把返回收成官方
  *   `SettingsDescriptor[]` 等于宣称"交付必然可信"，那几条用例就无法表达，而为过类型删用例
  *   是本仓红线。旧镜像的问题是另一头：它连 `describe` 的**入参**和 `update` 的签名都自己
@@ -111,11 +111,19 @@ export interface SettingsCasSurface {
   update: SettingsForms["update"];
 }
 
-/** 命名空间描述符的最小投影：value（解析值）+ user（文档原文）+ revision。 */
+/** 命名空间描述符的最小投影：value（解析值）+ user（文档原文）+ revision。
+ *  revision 是官方承诺的单调版本号，但跨边界交付不打包票：不合形状（非数字/负数/非整数）
+ *  记成 null，读面按 corrupt 处理——伪造 0 会拿一个并不成立的 CAS 条件去写，不同 provider
+ *  对 `expectedRevision: 0` 的处理也未必一致，与其猜不如当读不到。 */
 interface RulesDescriptor {
   readonly value: unknown;
   readonly user: unknown;
-  readonly revision: number;
+  readonly revision: number | null;
+}
+
+/** 官方承诺的 revision 形状：非负整数（单调版本号）。 */
+function isUsableRevision(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 /**
@@ -130,6 +138,19 @@ interface RulesDescriptor {
 function rulesCorrupted(user: unknown): boolean {
   const raw = fieldOf(user, RULES_FIELD);
   return raw !== undefined && !Array.isArray(raw);
+}
+
+/**
+ * value 层（cordis 解析后的当前值）是不是"读不懂的形状"。
+ *
+ * user 层判定兜不住的最后一类：provider 半解析、自定义 surface、volatile 投影异常——
+ * 文档原文完全正常，解析值却不是记录、或里面没有数组形的 `rules`。这时 `cardsOfValue`
+ * 会把空值折成空库，`usable: true` + 空卡会让下一次提交以当前 revision 把空数组整片
+ * 写回，替坏数据盖了章。按 {@link SettingsCasSurface} 的口径，三位里任一不合形状都退成
+ * unusable，不猜。
+ */
+function rulesValueCorrupted(value: unknown): boolean {
+  return !isRecord(value) || !Array.isArray(fieldOf(value, RULES_FIELD));
 }
 
 /** 不可用回执：读返回空、写一律拒绝（调用方按 persist-failed 语义处理）。 */
@@ -162,7 +183,7 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
     return {
       value: fieldOf(found, "value"),
       user: fieldOf(found, "user"),
-      revision: typeof revision === "number" ? revision : 0,
+      revision: isUsableRevision(revision) ? revision : null,
     };
   };
   // "坏存量"只在"从读得懂翻成读不懂"那一刻报一次。装载期报不了：apply 跑在自己那条
@@ -175,27 +196,54 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
     if (corrupt && !corruptReported) {
       corruptReported = true;
       console.error(
-        `[lesson-loop] rules namespace rejected: "${SETTINGS_NAMESPACE}.rules" is not an array — rule library reads empty and refuses writes (switches still work)`,
+        `[${SETTINGS_NAMESPACE}] rules namespace rejected: "${SETTINGS_NAMESPACE}.${RULES_FIELD}" is unreadable (user layer or resolved value is not an array, or the revision is not a non-negative integer) — rule library reads empty and refuses writes (switches still work)`,
       );
     } else if (!corrupt) {
       // 修好了就重新武装：下次再坏要再报（不依赖重启）。
       corruptReported = false;
     }
   };
+  // 缺 id 坏行的上报台账（每端口实例一份，不随 /stats 轮询刷屏）：条数变化才报一次。
+  // 丢弃必须留痕——save 用本次读出的卡整片覆盖 rules 数组，坏行会在下一次落盘时被
+  // 永久删除，人得能从日志看见。
+  let lastDroppedRows = 0;
+  const reportDroppedRows = (dropped: number): void => {
+    if (dropped > 0 && dropped !== lastDroppedRows) {
+      console.warn(
+        `[${SETTINGS_NAMESPACE}] ${String(dropped)} rule row(s) without a usable id dropped from "${SETTINGS_NAMESPACE}.${RULES_FIELD}" — the next save will drop them from the stored library`,
+      );
+    }
+    lastDroppedRows = dropped;
+  };
   return {
     load(): RulesRead {
       try {
         const found = findDescriptor();
-        // 条目被摘掉（热卸载竞态）= 看不见这一段，或 user 层的 rules 是人改坏的形状
-        // = 读不懂这一段：两种都按"不可用"处理，绝不退成空库再写回去——那等于替别的
-        // 进程刚写的规则库背书、或替那段等人修坏数据盖章。
-        const corrupt = found !== null && rulesCorrupted(found.user);
-        reportCorruption(corrupt);
-        return found === null || corrupt
-          ? UNUSABLE_READ
-          : { revision: found.revision, cards: cardsOfValue(found.value), usable: true };
+        // 条目被摘掉（热卸载竞态）= 看不见这一段：按"不可用"处理但**不当 corrupt 报**——
+        // apply 跑在自己那条 fiber 变 ACTIVE 之前 describe() 里就没有本条目的行（真实宿主
+        // 隔离实测），每次正常开机都会经过这一支，报了就是每次开机刷一条。真坏形状
+        // （revision 不是非负整数 / user 层或解析值不是数组形）才报，读面与写面都退
+        // unusable，绝不退成空库再写回去——那等于替别的进程刚写的规则库背书、或替那段
+        // 等人修坏数据盖章。
+        if (found === null) {
+          return UNUSABLE_READ;
+        }
+        const revisionInvalid = found.revision === null;
+        const shapeBroken = rulesCorrupted(found.user) || rulesValueCorrupted(found.value);
+        if (revisionInvalid || shapeBroken) {
+          reportCorruption(true);
+          return UNUSABLE_READ;
+        }
+        reportCorruption(false);
+        const projection = cardsOfValue(found.value);
+        reportDroppedRows(projection.dropped);
+        return {
+          revision: found.revision,
+          cards: projection.cards,
+          usable: true,
+        };
       } catch (error) {
-        console.error(`[lesson-loop] rules read failed: ${errorText(error)}`);
+        console.error(`[${SETTINGS_NAMESPACE}] rules read failed: ${errorText(error)}`);
         return UNUSABLE_READ;
       }
     },
@@ -210,7 +258,7 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
         if (isSettingsConflict(error)) {
           return "conflict";
         }
-        console.error(`[lesson-loop] rules write failed: ${errorText(error)}`);
+        console.error(`[${SETTINGS_NAMESPACE}] rules write failed: ${errorText(error)}`);
         return "rejected";
       }
     },

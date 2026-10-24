@@ -1,120 +1,208 @@
-# @jayyuen66/dsh-lesson-loop
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/JayYuen666/dsh-lesson-loop@main/icon.svg" width="96" height="96" alt="dsh-lesson-loop logo" />
+</p>
 
-[English](./README.md)
+<h1 align="center">dsh-lesson-loop</h1>
 
-### 它做什么
+<p align="center"><em>守卫拒绝、门禁失败与人工差评沉淀为项目教训；只有人工确认过的规则，才会在会话开始时注回模型。</em></p>
 
-- dsh 的自进化闭环插件：守卫拒绝、门禁失败、异常续跑、人工差评经一条总线沉淀为项目教训与规则卡，已确认的规则在会话开始注回模型。
-- Host 半 `provide` 出 `lessonLoop` 服务（其他插件经 `ctx.get("lessonLoop")` 可选读），client 半是 web 设置卡（开关 + 规则评审台，`dsh.client` 声明 `platform: web`、`immediately: true`）。
-- 机器永不自动升格：候选规则只有人在卡片上 `arm` 才生效。运行期依赖只有 `@deepseek-ai/schemastery`（宿主 fork，公共 `schemastery` 没有 `.volatile()`）、`@deepseek-ai/dsh-home-paths`、`@deepseek-ai/dsh-brand`、`@jayyuen66/dsh-plugin-shared`；版本要求的**读取口只有 `peerDependencies` 一处**（见下面「装机验收口径」），`engines.dsh` 写的是同一个值但宿主代码里没有它的读取方。
-  - 前三枚宿主包在产物 `host.js` 里都是**值导入**，因此声明为非 optional 的 `peerDependencies`，并在 `devDependencies` 里以同一枚精确版本再写一份给本包的编译与测试用——它们都**不进 `dependencies`**。这条不是风格偏好：消费侧 profile 的安装布局是 `nodeLinker: hoisted` 且 `autoInstallPeers: false`，宿主包一旦进了 `dependencies` 就会被落成真实目录，与宿主进程已加载的那份并存；而 `@deepseek-ai/dsh-tools` 的 `TOOL_RUNTIME_SCHEDULER` 是普通 `Symbol`（不是 `Symbol.for`），符号身份按模块实例计算，宿主 `dsh-agent-loop` 于是读到 `undefined`，每一次原生工具调用都抛 `Cannot read properties of undefined (reading 'prepare')`，整个 profile 的工具一起失效——本包的构建、类型检查与测试在这之前全部照绿。判据钉在 `test/publish-manifest.test.ts`。
+<p align="center">
+  <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/v/@jayyuen66/dsh-lesson-loop?style=flat-square&logo=npm&logoColor=white" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/dm/@jayyuen66/dsh-lesson-loop?style=flat-square" alt="npm downloads" /></a>
+  <a href="https://github.com/JayYuen666/dsh-lesson-loop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-lesson-loop/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
+  <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
+  <img src="https://img.shields.io/badge/node-%3E%3D22.12-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
+  <img src="https://img.shields.io/badge/dsh-%5E0.2.1--rc.3-658EFF?style=flat-square" alt="dsh" />
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/powered_by_dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white" alt="powered by dsh" /></a>
+</p>
 
-### 自进化闭环的四个阶段
+<p align="center">
+  <img src="https://skillicons.dev/icons?i=typescript,nodejs,react,vitest,githubactions" alt="tech stack" />
+</p>
 
-1. 观察与沉淀：`report()` 把教训整行追加进 `$DSH_HOME/cache/lesson-loop/events.jsonl`，同时按 (project, category, signature) 归并候选卡；同键累计到 `promoteThreshold` 次回 `ready`。
-2. 升格（只有人工）：动作 `arm` / `reject`，另有 `demote` / `archive` / `edit` / `revive`；`arm` 可带改写后的正文，并把 `violation` / `suppressed` / `samples` / `recurrences` 清零重测。状态机：`candidate` → `armed` → `demoted`，旁路 `rejected` / `archived`。
-3. 提醒：常驻 systemPrompt 段（名称 `lesson-loop`、order 1560，项目无关）+ `agent/created` 时把该项目 armed 规则全文经 `agent.inject` 注入根会话（子代理会话不注入）。
-4. 度量与衰减：`violation` = 场景触发且被违反；`suppressed` = 场景触发且被遵守（`pass` 信号驱动）；`samples` = 在场未违反的暴露数（永不进分母）。装载时立即跑一轮衰减，此后每 `decayIntervalMs`（默认 24 小时）一轮。
+<p align="center">
+  <a href="https://github.com/JayYuen666"><img src="https://img.shields.io/badge/GitHub-JayYuen666-181717?style=flat-square&logo=github&logoColor=white" alt="GitHub" /></a>
+  <a href="mailto:cqwkkj@gmail.com"><img src="https://img.shields.io/badge/Email-cqwkkj@gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white" alt="Email" /></a>
+  <a href="https://twitter.com/JayYuen666"><img src="https://img.shields.io/badge/Twitter-X%2FJayYuen666-000000?style=flat-square&logo=x&logoColor=white" alt="Twitter/X" /></a>
+  <a href="./README.md"><img src="https://img.shields.io/badge/lang-English-658EFF?style=flat-square" alt="English" /></a>
+</p>
 
-### 安装
+**一条用于 [dsh](https://github.com/deepseek-ai/deepseek-harness) 的自进化回路：守卫插件上报到同一条教训总线，规则库由人工裁定，armed 规则注入到所属项目的每个新会话。**
+
+## <img src="https://api.iconify.design/lucide/file-text.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 目录
+
+- [它做什么](#它做什么)
+- [安装](#安装)
+- [确认它真的在工作](#确认它真的在工作)
+- [它不提供什么](#它不提供什么)
+- [在 dsh 里启用](#在-dsh-里启用)
+- [教训总线](#教训总线)
+- [设置项](#设置项)
+- [对外接口](#对外接口)
+- [数据与隐私](#数据与隐私)
+- [已知边界](#已知边界)
+- [常见问题](#常见问题)
+- [开发](#开发)
+- [许可](#许可)
+
+## <img src="https://api.iconify.design/lucide/shield.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 它做什么
+
+- **一条总线，无耦合。** 兄弟插件经可选的 `lessonLoop` 服务上报；没装本包的 profile 只是丢掉这些上报。host 半提供这个服务，client 半渲染带开关与规则评审台的 web 设置卡。
+- **沉淀。** 每次上报往事件流追加一行，并按 (project, category, signature) 归并进一张候选卡；同键达到 `promoteThreshold` 时，这张卡被标为待评审。
+- **机器永不升格规则。** 状态 `armed` 只可能来自人工决定——卡片上的 `arm` 动作写它，启动时的迁移只是把既有的 armed 状态搬到归并后的主卡上。`reject` / `demote` / `archive` / `edit` / `revive` 同样是人工动作。
+- **提醒。** 一段与项目无关的常驻段让回路一直可见，每个根会话在 `agent/created` 时收到本项目 armed 规则的全文。子代理会话跳过。
+- **零模型工具，零自有 HTTP 路由。** 卡片的数据面是官方 Typert Remote 命名空间 `lessonLoopRules`，经宿主 `/api` 网关访问。
+
+### 规则如何判定
+
+- 三个计数器回答三个不同的问题：`violation`（场景触发且被违反）、`suppressed`（场景触发且被遵守，由 `pass` 驱动）、`samples`（规则在场且未被违反）。
+- 唯一的比值是 `violation / (violation + suppressed)`；`samples` 是暴露数，永不进分母。
+- `samples` 按 durable 会话计一次：同一会话被 resume 产生的重复 disposed 边会被去重，重开不会虚增暴露数。
+- 降级需要 `suppressed` 为正、`violation` 达到 `demoteThreshold`、真实证据达到 `demoteMinSamples`，且比值达到 `demoteRatio`。
+- 场景一直触发却零干净命中的规则是**不可判定**：比值与衰减都退不掉它，于是它一直保持 armed，等人工处置。一次 `pass` 即清除该标记。
+
+## <img src="https://api.iconify.design/lucide/package.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 安装
 
 ```sh
 dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 ```
 
-本包与运行期依赖 `@jayyuen66/dsh-plugin-shared` 都在公共 npm 上，安装侧不需要凭据；卸载用 `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`。
+卸载用 `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`。本包在公共 npm registry 上，所以安装不需要凭据。
 
+- **Node.js `>= 22.12`、宿主 `dsh` 在 `0.2.1-rc.3` 这条线上。** 宿主读取的版本要求是 `engines.dsh`（`^0.2.1-rc.3`），而且它**单独决定**——这个字段在时，`evaluatePluginCompatibility` 从不看 `@deepseek-ai/dsh*` 这批 peer。实测：`0.2.0-rc.2` 与 `0.2.1-rc.1` 被拒，`0.2.1-rc.3` 与 `0.2.2` 通过，`0.3.0` 被拒。
+- **按契约，`dependencies` 下不放任何 `@deepseek-ai/*`。** profile 以 `nodeLinker: hoisted` 与 `autoInstallPeers: false` 安装，那里放一个宿主包就会变成真实的第二份副本；`@deepseek-ai/dsh-tools` 用普通 `Symbol` 给调度器做键，于是那个 profile 里**每一次原生工具调用都抛错**，而构建、类型检查与覆盖率一直全绿。`host.js` 按值导入的四枚宿主包都是必需 peer，并在 `devDependencies` 里按同一个精确钉版再写一份，好让打包器把它们外部化，而不是内联官方函数体；`test/publish-manifest.test.ts` 把这两半都钉住。产物由 `prepack` 重建，从不提交。
 
-### shared 的版本下限
+### <img src="https://api.iconify.design/lucide/arrow-down-to-line.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> shared 的版本下限
 
-如果你的 profile 用 pnpm `overrides` 把 `@jayyuen66/dsh-plugin-shared` 钉在某个版本，那个钉住的值必须不低于本包声明的 `@jayyuen66/dsh-plugin-shared` 版本。钉得更低就会装到一份缺少本包运行期所导入的名字的产物，宿主起来时报 `N entries did not activate` 加 `does not provide an export named ...`——包装得上、永远不生效，而各仓单仓 CI 看不见这一类。
+如果你的 profile 用 pnpm `overrides` 把 `@jayyuen66/dsh-plugin-shared` 钉在某个版本，那个钉住的值必须不低于本包声明的版本。钉得更低就会装到一份缺少运行期所导入名字的副本，宿主起来时报 `N entries did not activate` 并附一句 `does not provide an export named ...`——包装得上、永远不加载，而任何单仓 CI 都看不见。
 
-### 在 dsh 里启用
+## <img src="https://api.iconify.design/lucide/circle-check.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 确认它真的在工作
 
-- 包内 `cordis.patch.yml`（由 `package.json` 的 `dsh.bundle.patch` 指向）里的注册行是 `- id: lesson-loop` + `name: "@jayyuen66/dsh-lesson-loop"`；必须按裸包名引用，client 半才会被装载。
-  - `dsh plugin --profile web add/remove` 维护这一层，`dsh --profile web --dump-config` 可验证。
-- 部署默认可写在注册行的 `config:` 上，优先级为设置卡运行时值 > 行 `config` > 包内置默认，配置不合法时加载失败（响亮报错）。
-- `settings` 是唯一插件级硬依赖（`default.inject = ["settings"]`）；设置卡的数据面是 `lessonLoopRules` 这枚官方 Typert Remote 命名空间上的四个方法，随 apply 无条件注册（它们不依赖任何可选宿主服务，所以不需要像旧路由那样等 webServer 到位）。其余服务（`timer` / `commands` / `systemPrompt` / `llm`）可选读：缺位只让对应能力不注册，装载照跑。
+1. **层已经进栈。** `dsh --profile web --dump-config` 末尾出现 `# == @jayyuen66/dsh-lesson-loop` 加 `- id: lesson-loop`。
+   - 那条命令是唯一被接受的判据，而且它**不是只读命令**——它会重写该 profile 的根装配文件。层行要从 stdout 读，**并且**单独检查 stderr：没匹配上的 patch 目标只出现在 stderr，只看退出码证明不了任何事。两种形态都要认：`# == <layer>` 与 `# == <layer>, patched by <path>`。
+2. **卡片渲染实时数据。** 它的标头带着当前的候选 / armed / 教训计数，打开后规则分组能填出内容。出现一行写着「stats unavailable」的错误提示，说明层进了栈，但 Remote 命名空间没到浏览器。
+3. **一条教训进得了规则库。** 用装好的上报方（danger-guard、quality-gate、session-rescue）触发一次拒绝或门禁失败，或在收集到人工负反馈的会话里跑 `/lessons-digest`；候选分组就会多出证据。
+4. **armed 规则回得来。** 把一张卡 arm，然后在那个项目里开一个新会话：注入的那段以 `[lesson-loop] Experience rules for this project` 开头。子代理会话按设计什么也收不到。
+5. **profile 里没有宿主副本。** 临时 profile 的 `node_modules/` 里只有 `@jayyuen66/`，没有 `@deepseek-ai/` 目录。
 
-### 装机验收口径
+## <img src="https://api.iconify.design/lucide/circle-slash.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 它不提供什么
 
-四条判据，本机对 `dsh 0.2.1-rc.2` 实测过（把 `DSH_HOME` 指到临时目录跑，别动日常那份）：
+- **没有模型工具。** 没有 `lesson_report` 工具；对外接口就是那个服务加上卡片的命名空间。
+- **没有自有 HTTP 路由。** 认证、Host / DNS 重绑定 / Origin 判据与请求体上限都是宿主网关的。
+- **没有 CLI 子命令。** 它贡献的唯一命令是会话内的 `/lessons-digest`。
+- **没有自有出网请求。** 蒸馏调用走宿主 `llm` 服务。
+- **没有自行重新启用的规则。** `rejected` 卡在达到 revive 阈值时可以回到 `candidate`；再次 arm 只能由人工做。
 
-- 装完 `dsh plugin --profile web add <tarball>` 之后，profile 的 `node_modules/` 顶层只该有 `@jayyuen66/` 一枚，**不该有 `@deepseek-ai/` 目录**——那正是「宿主包被写进 `dependencies`、profile 里物化出第二份宿主类型面」的指纹，`test/publish-manifest.test.ts` 的门禁防的就是它。
-- `dsh --profile web --dump-config` 末尾出现 `# == @jayyuen66/dsh-lesson-loop` 与 `- id: lesson-loop`，说明组合包层认领了这条目。
-- 宿主在安装期**强制**比对 peer：`@deepseek-ai/dsh` 与每一枚 `@deepseek-ai/dsh-*` peer 都按 `semver.satisfies(运行版本, 需求, { includePrerelease: true })` 判（`dsh-app-boot/src/plugin-compatibility.ts:61-86`；`add` 的预检与装后复查在 `dsh-plugin-manager/src/operations.ts:344`、`:479`）。实测一枚把 peer 写成 `@deepseek-ai/dsh: 0.1.0` 的探针包会得到 `dsh: installation rejected: … is incompatible with dsh 0.2.1-rc.2`，随后 `dsh: restored package.json, pnpm-lock.yaml, and node_modules.` 三项回滚。`engines.dsh` 写的也是同一个值，但宿主代码里**没有它的读取方**（`@deepseek-ai/dsh-package-manifest` 只给类型，其 README 明写安装器与载入器不执行它）。
-- 本包把 `dsh-*` peer **精确钉**（与同门九包同一条纪律），因此高于本下限的宿主同样判为不兼容，出路是逐条授权、且按宿主版本生效：`dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<版本> --dsh-version <宿主精确版本> --accept-risk`；核对与撤销分别是 `version-exemptions` 与 `revoke-version`（三条命令均实测）。
+## <img src="https://api.iconify.design/lucide/plug.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 在 dsh 里启用
 
-装载侧的同一批性质由 `test/integration/host-contract.test.ts` 在真实 cordis + loader 上钉住：服务经官方 reflect 交出、兄弟条目 `inject: ["lessonLoop"]` 解析得动、装载失败的那两条路径（`Config` 非法、`settings` 缺席）都在 webServer 探针上留下「一条路由也没注册」的读数、本包条目 `Config` 非法只把自己那条 fiber 置为 FAILED 而不外溢，以及 `settings` 缺席时不进 ACTIVE。
+- `dsh.bundle.patch` 指向 `cordis.patch.yml`，其中唯一的注册行是 `- id: lesson-loop`，带 `name: "@jayyuen66/dsh-lesson-loop"`。让宿主去扫描 client 半的是**裸包名**。
+- **一个条目，一份 `Config`。** 设置命名空间就是条目 id，于是开关、阈值与 `rules` 数组共用同一段、同一枚 revision。`rules` 带了 `.loose()`，读侧经 `describe().user` 检查原文形状（读不懂就拒写，而不是覆写），每次写都是一次 CAS 提交加重读重放。
+- `settings` 是唯一插件级硬依赖。`timer` / `commands` / `systemPrompt` / `llm` 可选：缺一个只让对应能力消失，插件照常装载。
+- 卡片的数据面在 apply fiber 上无条件安装，所以即使宿主的 web 层到得晚，它也在。
+- 部署默认值写在注册行的 `config:` 上（卡片值 > 行 `config` > schema 默认值）；配置不合法只让这个条目的 fiber 失败。
+- 不兼容的宿主按精确版本逐条授权，绝不靠放宽范围：
 
-### 总线接口（其他插件怎么上报）
+```sh
+dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --dsh-version <exact running host version> --accept-risk
+```
 
-- 服务方法：`report` / `pass` / `rules` / `ruleAction` / `recentLessons` / `stats`。
-  - `report({ source, category, cwd, sessionId, turn, signature, detail, evidence })` 回执 `{ ok, reason?, violationOf?, candidate?, ready? }`。
-  - `reason` 只有三种值：`disabled`（闸门关着）、`rules-not-persisted`（这一次没进规则库，该重试）、`error`（内部异常）。
-  - 总线任何故障都不外抛，因为上报方多在守卫热路径上。
-- `source` 是开放集：内置 `danger-guard` / `quality-gate` / `session-rescue` / `lessons-digest` / `manual`，第三方自报名字同样可入库与统计。
-  - 自报名的约束：trim 后非空且 ≤ 64 字符，否则按 `manual` 记账并留日志。
-- 宿主自带生产者：
-  - danger-guard 报 `factgate-deny` / `secret-path` / `dangerous-bash`，并在取证通过时发 `pass`。
-  - quality-gate 报 `gate-failure`（代码失败）与 `gate-not-run`（检查没跑成，不许被学成代码教训），签名是门禁命令串。
-  - session-rescue 报 `transient-failure` / `max-tokens` / `unfinished-turn`。
-- `factgate-deny` 与 `secret-path` 的签名折叠到类别级稳定键 `edit-before-factgate` / `edit-before-secret-path`，具体路径与命令留在证据的 `signature` 里。
-  - 于是一条通用教训不再按文件碎成几十张卡。
-  - 调用方建议经 `@jayyuen66/dsh-plugin-shared/lib/lesson-bus` 的 `settleLessonCall`，同步抛错与异步拒绝归到同一个出口。
+  `version-exemptions` 列出这些授权，`revoke-version` 撤销其中一条；`--dsh-version` 必须等于运行中宿主自报的版本。
 
-### 设置项
+## <img src="https://api.iconify.design/lucide/cable.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 教训总线
 
-设置命名空间 = profile 条目 id `lesson-loop`（运行时可改）。0.2.1-rc.2 的注册是隐式的（宿主按条目导出的 `Config` 反推命名空间与可编辑字段），一个条目只有这一段：`rules` 是它的一个 volatile 字段（用户可直接编辑），开关与阈值是同段的其余可编辑项，下面两枚部署值也落在这一段、只是不投影到卡片。旧版「开关与规则分属两段（`lesson-loop-rules`）」的隔离改由三处补回：`rules` 标了 `.loose()`（人把它改成非数组不会让整条条目装载失败）、读侧另看 `describe().user` 的原文形状（读不懂即拒写，绝不拿空库去覆写等人修的数据）、以及整段共用一枚 revision 的 CAS 重读重放。坏一条规则不会打死开关，反之亦然。四个布尔默认全为 `true`：`enabled`（总开关，关掉后不上报、不注入、不做退出清算）、`reportEnabled`（落盘与归并）、`injectEnabled`（会话开始注入）、`sectionEnabled`（常驻段）。
+| 方法 | 用途 |
+| --- | --- |
+| `report(input)` | 追加一条教训并归并进该键的卡片；返回 `{ ok, reason?, violationOf?, candidate?, ready?, justReady? }` |
+| `pass(input)` | 规则对应的场景触发且被遵守；会话结束时计为 `suppressed` |
+| `rules()` / `recentLessons(project?, limit?)` | 读规则库 / 读事件流 |
+| `ruleAction(id, action, statement?)` | 那六个人工动作 |
+| `stats()` | 卡片背后的计数器与配置摘要 |
 
-| 字段               | 默认       | 取值                    | 作用                                                    |
-| ------------------ | ---------- | ----------------------- | ------------------------------------------------------- |
-| `promoteThreshold` | `3`        | 1–20                    | 同键教训达此次数 → 候选卡待人工确认                     |
-| `demoteThreshold`  | `3`        | 1–50                    | 降级所需的 armed 后复发次数                             |
-| `demoteMinSamples` | `5`        | 1–100                   | 降级所需真实证据 `violation+suppressed` 下限            |
-| `demoteRatio`      | `0.5`      | 0.05–1（步长 0.05）     | 复发率 `violation/(violation+suppressed)` 红线          |
-| `decayDays`        | `30`       | 1–365                   | armed 超此天数仍无一次干净命中 → 「不可判定」（锚点是最近一次活动） |
-| `reviveThreshold`  | `3`        | 1–20                    | rejected 后再现此次数 → 自动转回候选待人重审            |
-| `maxLessonsBytes`  | `0`        | ≤ 1 GiB（0 = 不设上限） | 事件流水的磁盘保险丝，不为省上下文而截断内容            |
-| `digestTimeoutMs`  | `120000`   | ≥ 1000                  | 一次蒸馏的墙钟（ms），无卡片行、只在注册行 `config:` 给 |
-| `decayIntervalMs`  | `86400000` | ≥ 1000                  | 周期衰减的武装间隔（ms），同样无卡片行                  |
+- `reason` 是 `disabled`、`rules-not-persisted`（这次改动没进规则库——重试）或 `error` 三者之一。它是回执码，不是翻译过的文案。
+- `source` 是开放集：`danger-guard`、`quality-gate`、`session-rescue`、`lessons-digest` 与 `manual` 是内置的，第三方可以自报名字（trim 后非空、不超过 64 字符，否则按 `manual` 记账并留一行日志）。有两种上报值得点名：`gate-not-run` 标记一次从未跑成的检查，因为环境问题不许被学成代码教训；证据里的 `needsUserConfirmation: true` 标记上报方做不了的判断——是证据，但不是违反。
+- 路径形态的类别折叠到类别级键（`edit-before-factgate`、`edit-before-secret-path`、`dangerous-bash`），于是一条通用教训不会按文件碎成几十张卡。具体目标是哪个，证据里仍看得出来：`secret-path` 与 `dangerous-bash` 落在 `signature`，`factgate-deny` 落在 `target`（它上报的签名本身就是折叠后的键）。
+- 调用方应经 `@jayyuen66/dsh-plugin-shared/lib/lesson-bus` 的 `settleLessonCall`，它把同步抛错与异步拒绝归到同一个出口。
 
-末两行是两枚部署值：刻意不标 `.volatile()` ⇒ 宿主不投影它们，设置卡上没有对应的行，只在注册行的 `config:` 上给（cordis 交进 apply 的是值而不是引用，改值随重启生效）。
+## <img src="https://api.iconify.design/lucide/sliders-horizontal.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 设置项
 
-### 对外接口
+命名空间 = 条目 id `lesson-loop`。四个开关默认都是 `true`：`enabled`（总开关——关掉即不上报、不注入、不做退出清算、没有常驻段，且 `/lessons-digest` 拒绝执行）、`reportEnabled`、`injectEnabled`、`sectionEnabled`。
 
-设置卡的数据面是一枚**官方 Typert Remote 命名空间** `lessonLoopRules`（`lib/rules-shape.ts`）上的四个方法。没有 `/_dsh/*` 路由、没有 CSRF token、本包也不自带 body 上限：认证、Host / DNS 重绑定 / Origin 判据与请求体上限都由宿主 `/api` 网关承担，而它只把这枚命名空间暴露给同一 profile 的客户端。
+| 字段 | 默认值 | 取值范围 | 作用 |
+| --- | --- | --- | --- |
+| `promoteThreshold` | `3` | 1–20 | 同键教训达到此次数即把卡片标为待评审 |
+| `demoteThreshold` | `3` | 1–50 | 升格后被违反到此次数才降级 |
+| `demoteMinSamples` | `5` | 1–100 | 真实证据 `violation + suppressed` 的下限 |
+| `demoteRatio` | `0.5` | 0.05–1（步长 0.05） | 复发率红线 |
+| `decayDays` | `30` | 1–365 | armed 满这么久仍无干净命中，卡片转为不可判定；之后的复发不会重置窗口 |
+| `reviveThreshold` | `3` | 1–20 | 被拒的规则再见到此次数就回到候选 |
+| `maxLessonsBytes` | `0` | 0–1 GiB | 磁盘保险丝；`0` = 不设上限，内容绝不为了省上下文被截断 |
+| `digestTimeoutMs` | `120000` | ≥ 1000 | 一次蒸馏的墙钟（ms）；卡片上没有这一行 |
+| `decayIntervalMs` | `86400000` | ≥ 1000 | 周期衰减轮次的间隔（ms）；卡片上没有这一行 |
+| `maxInjectedRules` | `50` | 0–1000 | 每个会话注入的 armed 规则条数，最新的在前；`0` = 不设上限；卡片上没有这一行 |
+
+最后三行是部署值：不标 `.volatile()`，所以卡片上没有对应的行，只能在注册行的 `config:` 上给，重启后生效。
+
+## <img src="https://api.iconify.design/lucide/network.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 对外接口
+
+官方 Typert Remote 命名空间 `lessonLoopRules` 上的四个方法。
 
 | 方法 | 入参 | 回执 |
 | --- | --- | --- |
-| `stats()` | — | `{ ok: true, …计数, …配置摘要, rules }`；规则投影里带着派生态 `undeterminable`，且**不带** `evidence[]` 正文 |
-| `rules(request)` | `{ project? }` | `{ ok: true, rules }`；`project` 不是字符串就按缺省处理，也就是给全量库 |
-| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`；`limit` 不是有限数、≤ 0 或缺省都是全量，内容零截断 |
+| `stats()` | — | `{ ok: true, …counters, …config summary, rules }`；规则投影带着派生的 `undeterminable` 标记，且**不带** `evidence` 正文 |
+| `rules(request)` | `{ project? }` | `{ ok: true, rules }`；`project` 不是字符串就按缺省读，也就是全量规则库 |
+| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`；`limit` 不是有限数、≤ 0 或缺省都表示全量 |
 | `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`，或 `{ ok: false, error, status }` |
 
-- 写面只认那六个动作白名单（`arm` / `reject` / `demote` / `archive` / `edit` / `revive`），`statement` 也只由 `arm` 与 `edit` 读取——它会被 trim，空白串（空串或全空白）按「没给」处理：已存的正文原样保留。
-- 拒绝回执里的 `status` 是**保留下来的语义码，不是 HTTP 状态**：缺 `id` / `action` 或动作不在白名单是 400，规则查无此条是 404，库侧拒绝落盘是 500 且文案就是 `rules-not-persisted`。卡片渲染的是 `error`，那个数字的作用是让测试钉住是哪条判据拦的；405 与 413 那一档已经没有了——方法名对不对、body 大不大都是网关的判定。
-- 客户端（`src/rules-reader.ts`）持四条 descriptor，`$mount` 只做一次，然后按派生键 `remote.lessonLoopRules` 取。客户端上下文里没有 `remote` 服务时根本不构造读面，卡片退回它的 `statsUnavailable`；服务在、这枚命名空间没挂上时读面抛错——缺能力要明说，不能被渲染成「规则库是空的」。
-- 读数是被拉的，不是被推的：打开面板一次、保存之后一次、每次人工动作之后一次。这里**没有轮询循环也没有客户端墙钟**——一次调用允许跑多久由网关决定，卡片再设一枚就是「写得慢的那次被判成丢了，而它其实落了」。
-- `/lessons-digest [附加说明]` 这条命令把本会话的人工负反馈与该项目的近期教训一起交给模型，蒸馏出候选卡片（`origin` 为 `lessons-digest`）。
-### 数据与隐私
+- `action` 必须是那六个白名单值之一；`statement` 只由 `arm` 与 `edit` 读取，会被 trim，空白串按「没给」处理。
+- 拒绝回执里的 `status` 是**保留下来的语义码，不是 HTTP 状态**：缺字段或动作不在白名单是 400，未知的卡片是 404，规则库拒绝落盘是 500（带 `rules-not-persisted`）。
+- 读数是拉的，不是推的：打开面板时、保存之后、每次人工动作之后各一次。这里没有轮询循环，也没有客户端墙钟。
 
-- 派生数据只有两份：
-  - `$DSH_HOME/cache/lesson-loop/events.jsonl`（cache 是「可丢弃派生数据」定位，删掉后可由会话与规则库重建）。
-  - 未设 `$DSH_HOME` 时由官方 home-paths 退到用户主目录下的 `.dsh`。
-  - 设置文档里 `lesson-loop` 段的 `rules` 数组（与开关同段，用户可直接编辑）。
-- 一切留在本机：本包不向任何外部服务发数据，蒸馏的模型调用走宿主 `llm` 服务与当前默认模型选择。
-- 事件流水里的教训 `detail` 与规则正文全量存储、零截断，可能含路径、命令行与工具输出原文，备份或清理时按敏感数据对待。
-  - 规则卡的 `evidence` 是唯一例外，收敛发生在落盘那一刻：单条 `detail` 超过 400 字符（`lib/rules-layout.ts` 的 `MAX_EVIDENCE_DETAIL_CHARS`）截断并补省略号，每卡只留最近 5 条（`MAX_EVIDENCE_ENTRIES`）。`signature`（命中的具体路径或命令）、`occurrences` 与 `violation`/`suppressed`/`samples` 计数一律不动，卡片照样看得出管的是哪条命令。读侧 `cardsOfValue` 照旧全量解析、不做二次改写，所以截断一生只发生一次；存量库无需迁移，下一次写盘自然收敛。
-- 规则库读写带跨进程 CAS（provider 写锁 + revision 重读重放，最多 3 次），常驻 web 实例与短命 CLI 交替写同一份不会互相抹卡。
-- host 侧文案随官方 locale 偏好走（中/英，未注册即中文），已落库的规则正文是用户数据、切语言不改写。
+## <img src="https://api.iconify.design/lucide/lock.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 数据与隐私
 
-### 常见问题
+| 口径 | 内容 |
+| --- | --- |
+| 写盘 | 事件流写在 `$DSH_HOME/cache/lesson-loop/events.jsonl`（可丢弃的派生数据位置）与它瞬时的 `.lock` / `.tmp` 兄弟文件，以及设置文档 `lesson-loop` 段的 `rules` 数组 |
+| 网络 | 本包没有自己的网络调用。`/lessons-digest` 经宿主 `llm` 服务把本会话的人工差评与该项目的近期教训交给当前默认模型——那个模型在外网时，这些内容就出域了 |
+| 保留 | 事件流完整保留 detail 与规则正文，零截断；`maxLessonsBytes` 是磁盘保险丝，不是上下文上限 |
+| 证据收敛 | 规则卡的 `evidence` 是唯一例外：过长的 detail 截断并补省略号，每张卡只留最近的若干行，且只在落盘那一刻发生。`signature` 与计数器一律不裁 |
+| 并发 | 规则库写入带跨进程 CAS；事件流的追加与裁剪共用同一把锁 |
+| 语言 | host 侧文案随官方 locale 偏好走；已落库的规则正文是用户数据，永不改写 |
 
-- 规则会不会自己生效？不会。只有 `arm` 把状态写成 `armed`；`rejected` 卡复发达阈值也只回到 `candidate`，`demoted` / `archived` 的复活同样是人工动作。
-- 把 `reportEnabled` 关掉会怎样？`report()` 直接回 `{ ok: false, reason: "disabled" }`，既不写事件流水也不建卡（集成测试钉了这条负向路径）。
-  - `/lessons-digest` 同样拒绝执行；四个读面方法与设置卡照常可用。
-- 卡片上点 arm 提示失败？`rules-not-persisted` 意味着这一次没进库（端口拒写或 CAS 冲突用满），库里仍是旧状态，重试即可。
-  - 若段里的 `rules` 被手改成非数组，规则面降级为「读空、写拒」（坏内容原样留着等人修，本进程一次都不写这段），同段的开关照改照生效，修好那段设置即恢复。
-- 规则一直显示「不可判定」？说明机器**没有干净命中可作分母**：`suppressed` 仍为 0，且要么这条规则已静置超过 `decayDays`（锚点是它最近一次活动：arm / 最后一次复发 / 最后一次遵守），要么复发已达 `demoteThreshold` 却始终没有一次被遵守的会话。两种情况下 `violation/(violation+suppressed)` 结构上恒为 1.0，机器既不降级也不归档——保持 `armed` 由你停用或归档；出现一次 `pass` 命中即自动退出该态。
-- 别的插件收不到总线？未装本包或 `ctx.provide` 不可用（后者会打一条 error 日志点破）时，上报方只丢报告，自身功能不受影响。
+## <img src="https://api.iconify.design/lucide/triangle-alert.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 已知边界
+
+- **没有任何东西自动升格**——一条自行 arm 的规则会把一次噪音上报变成永久指令。
+- **不可判定的规则不收敛**：没有干净命中就没有分母，只有人工能退掉它，而注入上限让这一批规则不进上下文。
+- **子代理会话被跳过**——再注入一次会让子代理在一批没见过的规则上被计成暴露。
+- **卡片是拉取式的**，所以跨重连缓存下来的值按设计就是旧的。
+- **证据正文永不过线**；卡片看到的是签名与计数器。
+- **没有机器翻译**：规则正文与证据是用户数据。
+- **可选服务去掉的是能力，不是插件**：没有 `commands` 就没有 `/lessons-digest`，没有 `systemPrompt` 就没有常驻段，没有 `llm` 蒸馏会拒绝，没有 `timer` 就只剩人工评审；没有 `settings` 则条目永不被激活，启动诊断会点名它。
+- **一次蒸馏可以局部失败**：没进规则库的卡分开报，而回执绝不会对盘上没有的卡声称「已蒸馏」。模型输出里找不到可解析的 JSON 数组时按硬错误上报，不当成「零条候选」。
+
+## <img src="https://api.iconify.design/lucide/circle-help.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 常见问题
+
+| 问题 | 回答 |
+| --- | --- |
+| 规则会不会自己生效？ | 不会。只有 `arm` 写 `armed`；达到 revive 阈值只把被拒的卡送回 `candidate`。 |
+| 把 `reportEnabled` 关掉会怎样？ | `report()` 立刻回 `{ ok: false, reason: "disabled" }`，`/lessons-digest` 同样拒绝；Remote 读面与卡片照常工作。 |
+| 卡片上点 arm 报 `rules-not-persisted`。 | 这次改动没进规则库；库里仍是旧状态，重试即可。 |
+| 规则一直显示「不可判定」。 | `suppressed` 仍是零，没有干净命中可作分母：规则要么静置超过 `decayDays`，要么违反已达 `demoteThreshold` 却始终没有一次被遵守的会话。违反也为零时这个比值是未定义的，不是 1.0——两种情况机器都不会替你做决定。自行停用或归档；一次 `pass` 即清除该标记。 |
+| 我把 `rules` 手改成了非数组。 | 规则面降级为「读空、写拒」，本进程一次都不写那一段；开关在你修好该字段之前照常工作。 |
+| 别的插件收不到总线。 | 没装本包，或 `ctx.provide` 不可用（一条明确的 error）时，上报方只丢报告，自身功能不受影响。 |
+
+## <img src="https://api.iconify.design/lucide/wrench.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 开发
+
+```sh
+pnpm install
+pnpm run check   # 类型检查 → lint → client 构建 → host 构建 → 类型 → 测试 → 格式
+```
+
+- `test/` 按「桩看不见的那类缺陷」分层：单元测试驱动存储与纯函数；`test/integration/` 驱动真实的 cordis 与 loader，于是服务交出、兄弟条目 `inject` 的解析、激活顺序与舱壁隔离都是量出来的，不是打桩模拟的。
+- 两道产物门：`test/build-host.test.ts` 让跨包导入保持为外部裸说明符，`test/dist-size.test.ts` 守住体积预算，于是被内联的依赖不会悄悄过关。`test/publish-manifest.test.ts` 守住发布形态——入口目标都被 `files` 覆盖、没有源文件当入口、`dependencies` 里没有宿主包、`dsh-*` 钉版精确且统一、注释与文档里没有日期。
+- 覆盖率阈值是四项指标都 100%，所以新加一个分支就要有一条能走到它的用例。
+
+## <img src="https://api.iconify.design/lucide/scale.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 许可
+
+MIT。源码在 [github.com/JayYuen666/dsh-lesson-loop](https://github.com/JayYuen666/dsh-lesson-loop)。问题请提到那个仓库的 issue tracker。
+
+本包不含任何第三方源码：`host.js` 与 `client.js` 把所有跨包导入都保持为外部裸说明符。运行期依赖各自带自己的许可；[`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) 记录那条产物边界以及如何复查它。

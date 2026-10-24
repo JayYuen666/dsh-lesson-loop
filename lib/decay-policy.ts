@@ -7,9 +7,12 @@
 // 因此判成「只被测试养着的导出」。
 //
 // 复发率裁决只用真实证据（violation + suppressed）：样本量 samples 永不进分母（旧设计回避的
-// 分母灌水风险继续回避）。armed 超 decayDays 且 violation+suppressed 双零 → 判"不可判定"
-// （既非违规亦无一次干净命中，机器无从裁定），保留 armed 交人工，由 /stats 与卡片显式提示
-// ——不再静默归档（人工仍可手动归档）。
+// 分母灌水风险继续回避）。不可判定的两条触发路径（都以「从没有过一次干净命中」为前提）：
+//   1. armed 已挂满 decayDays（锚点是 armedAt，回退 createdAt——复发不改写这个锚点，
+//      否则每次复发都会重置窗口，"挂满多久"就永远量不出来）；
+//   2. armed 期复发已达 demoteThreshold（一直在犯、却从没被遵守过，同样无从判定）。
+// 命中即判"不可判定"，保留 armed 交人工，由 /stats 与卡片显式提示——不再静默归档
+// （人工仍可手动归档）。
 
 import type { RuleCard } from "./lesson-store.ts";
 
@@ -28,7 +31,8 @@ export const DEFAULT_DECAY: DecayPolicy = {
 };
 
 /** 单条 armed 规则的衰减裁决：'demote'（有真实证据的高复发率）| 'undeterminable'
- *  （armed 够久却既无复发也无一次干净命中，机器无从裁定）| 'keep'。 */
+ *  （armed 后从没有被遵守过，且要么已挂满 decayDays、要么复发已达门槛，机器无从
+ *  裁定）| 'keep'。 */
 export function decayVerdict(
   rule: RuleCard,
   policy: DecayPolicy,
@@ -41,20 +45,23 @@ export function decayVerdict(
   // 刻意不进来——它把"项目里什么都没发生"的无关会话也数进去，进分母只会稀释复发率、
   // 让一条其实没被测过的规则显得"表现良好"。
   const evidence = rule.violation + rule.suppressed;
-  const anchor = rule.lastViolationAt ?? rule.lastSuppressedAt ?? rule.armedAt ?? rule.createdAt;
+  // 不可判定的"挂满"锚定在升格那一刻：lastViolationAt 一类的最近证据时间戳一旦进来，
+  // 每次复发都会重置窗口——一条零星复发、又从未被遵守的规则就永远到不了"挂满"，
+  // 既降不了级也判不成不可判定，只能一直 keep。
+  const anchor = rule.armedAt ?? rule.createdAt;
   const matured = now - anchor > policy.decayDays * 86_400_000;
   // **分母必须含至少一次干净命中**：suppressed 为 0 时复发率结构上恒为 1.0（分母只剩
   // 违规自己），宿主不发 pass 的类别（典型是 transient-failure）会被自己的分子判有罪。
-  // 无分母即不可判定：既不降级也不归档，保留 armed 交人工——满 decayDays 或违规已达
+  // 无分母即不可判定：既不降级也不归档，保留 armed 交人工——挂满 decayDays 或违规已达
   // 门槛时点出来（后者说明"一直在犯、但从没验证过规则被遵守过"，同样无从判定）。
   if (rule.suppressed === 0 && (matured || rule.violation >= policy.demoteThreshold)) {
     return "undeterminable";
   }
   // 复发率裁决：armed 后复发 ≥ demoteThreshold、真实证据样本 ≥ demoteMinSamples、
   // 复发率 ≥ demoteRatio，且确有干净命中可比照 → 规则本身有问题（写错了/没被遵守/
-  // 无效），降级待人审。
+  // 无效），降级待人审。走到这里 suppressed 必然 > 0（为零的情形已被上面的守卫接走），
+  // 分母不再为零。
   if (
-    rule.suppressed > 0 &&
     rule.violation >= policy.demoteThreshold &&
     evidence >= policy.demoteMinSamples &&
     rule.violation / evidence >= policy.demoteRatio

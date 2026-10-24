@@ -19,7 +19,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** 指纹门禁的两份产物 + 包名与包根（消息里标身份与修复命令，两侧同源）。 */
 export interface FreshnessEvidence {
@@ -38,7 +38,7 @@ export async function clientFreshnessEvidence(testFileUrl: string): Promise<Fres
       readFileSync(path.resolve(pkgDir, "package.json"), "utf8"),
     )?.groups?.["pkgName"] ?? "unknown";
   // 动态导入 .mjs 对 TS 为 any，先收窄到调用面再 await（避免 no-unsafe-*）。
-  const mod = (await import(path.resolve(pkgDir, "build-client.mjs"))) as {
+  const mod = (await import(pathToFileURL(path.resolve(pkgDir, "build-client.mjs")).href)) as {
     buildClient: () => Promise<string>;
   };
   return {

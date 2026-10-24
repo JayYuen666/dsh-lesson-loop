@@ -54,12 +54,19 @@ class FakeSettingsConflictError extends Error {
   }
 }
 
-/** 值级深冻结（官方 resolve 后 deepFreeze）：读到别处对象就地改 = 立刻炸，不留隐性共享。 */
-function deepFreeze<Value>(value: Value): Value {
+/** 值级深冻结（官方 resolve 后 deepFreeze）：读到别处对象就地改 = 立刻炸，不留隐性共享。
+ *  递归路径记进 WeakSet（回退式）：坏夹具里的自引用在路径上再次遇到时原样跳过，
+ *  不以栈溢出的形态炸；共享的非环引用重复访问只是重复冻结（幂等）。 */
+function deepFreeze<Value>(value: Value, active: WeakSet<object> = new WeakSet<object>()): Value {
   if (typeof value === "object" && value !== null) {
-    for (const key of Object.keys(value)) {
-      deepFreeze(Reflect.get(value, key));
+    if (active.has(value)) {
+      return value;
     }
+    active.add(value);
+    for (const key of Object.keys(value)) {
+      deepFreeze(Reflect.get(value, key), active);
+    }
+    active.delete(value);
     Object.freeze(value);
   }
   return value;
@@ -80,7 +87,13 @@ function isUnknownArray(value: unknown): value is readonly unknown[] {
   return Array.isArray(value);
 }
 
-/** mergeLayers 的等价实现：普通对象递归合并，数组与其它值整体覆盖。 */
+/**
+ * mergeLayers 的等价实现：普通对象递归合并，数组与其它值整体覆盖。
+ * 自有键判定用 Object.hasOwn（`key in merged` 会把原型链上的继承键当成"本层已有"，
+ * 递归方向与真 merge 不同）；写入用 Object.defineProperty——对 `__proto__` 直接赋值
+ * 走的是 Object.prototype 的 setter，改的是 merged 的原型而不是落自有属性
+ * （structuredClone 把 JSON 里的 `__proto__` 保留成自有属性，这条路径真实可达）。
+ */
 function mergeLayers(under: unknown, over: unknown): unknown {
   if (over === undefined) {
     return under;
@@ -90,29 +103,58 @@ function mergeLayers(under: unknown, over: unknown): unknown {
   }
   const merged: Record<string, unknown> = { ...under };
   for (const [key, value] of Object.entries(over)) {
-    merged[key] = key in merged ? mergeLayers(merged[key], value) : value;
+    const next = Object.hasOwn(merged, key) ? mergeLayers(merged[key], value) : value;
+    Object.defineProperty(merged, key, {
+      value: next,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
   }
   return merged;
 }
 
-/** 摊平 volatile 引用（packages/settings/settings/src/schema.ts:10-17 plainConfig 同语义）：
- *  宿主 describe() 交给插件的 value 就是这样一份普通数据，引用本身不出这扇门。 */
-function plainConfig(value: unknown): unknown {
+/**
+ * 摊平 volatile 引用（packages/settings/settings/src/schema.ts:10-17 plainConfig 同语义）：
+ * 宿主 describe() 交给插件的 value 就是这样一份普通数据，引用本身不出这扇门。
+ * 引用形态判定收窄到官方 `Volatile` 的**形状**：自有字符串键只有 `get` 一枚
+ * （vendor/cosmokit/src/volatile.ts:9-11 的读面；写面挂在 symbol 键上，Object.keys
+ * 看不见）。仅凭「带 get 方法」判引用会把恰好有 get 字段的普通配置对象误摊平。
+ * 递归路径记进 WeakSet（回退式）：坏夹具里的自引用在路径上再次遇到时原样交回，
+ * 不以栈溢出的形态炸；共享的非环引用在每次出现处各自摊平。
+ */
+function plainConfig(value: unknown, active: WeakSet<object> = new WeakSet<object>()): unknown {
   const candidate = value as { get?: () => unknown };
-  if (isPlain(value) && typeof candidate.get === "function") {
-    // 引用形态判定：官方 `Volatile` 的**读面**只有 `get()`（vendor/cosmokit/src/volatile.ts:9-11），
-    // 写面另挂在 symbol 键 `[write]` 上（同文件 :14-16 的 WritableVolatile、:39-45 的
-    // createVolatile 返回值）。按 `get()` 判形状能同时覆盖只读与可写两种引用；
-    // 不值导入 cordis/cosmokit。
-    return plainConfig(candidate.get());
+  if (isPlain(value)) {
+    const keys = Object.keys(value);
+    // 引用形态：自有字符串键只有 `get` 一枚、且它真是函数（官方 Volatile 的读面形状）。
+    if (keys.length === 1 && keys[0] === "get" && typeof candidate.get === "function") {
+      if (active.has(value)) {
+        return value;
+      }
+      active.add(value);
+      const flattened = plainConfig(candidate.get(), active);
+      active.delete(value);
+      return flattened;
+    }
+    if (active.has(value)) {
+      return value;
+    }
+    active.add(value);
+    const flattened = Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, plainConfig(child, active)]),
+    );
+    active.delete(value);
+    return flattened;
   }
   if (Array.isArray(value)) {
-    return value.map((item: unknown) => plainConfig(item));
-  }
-  if (isPlain(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, child]) => [key, plainConfig(child)]),
-    );
+    if (active.has(value)) {
+      return value;
+    }
+    active.add(value);
+    const flattened = value.map((item: unknown) => plainConfig(item, active));
+    active.delete(value);
+    return flattened;
   }
   return value;
 }
@@ -201,13 +243,26 @@ export function makeSettingsProvider(
     for (const key of Object.keys(held)) {
       Reflect.deleteProperty(held, key);
     }
-    Object.assign(held, next);
+    // 与 mergeLayers 同一条守卫：Object.assign 走 [[Set]]，对 `__proto__` 键会触发
+    // 原型 setter（改掉 held 的原型而不是落自有属性）；defineProperty 才是自有属性。
+    for (const [key, value] of Object.entries(next)) {
+      Object.defineProperty(held, key, {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
   };
 
   const write = async (ns: string, input: object, expectedRevision?: number): Promise<void> => {
     if (knobs.conflicts > 0) {
       knobs.conflicts -= 1;
-      throw new FakeSettingsConflictError(ns, expectedRevision ?? -1, (revisions.get(ns) ?? 0) + 1);
+      // 真宿主那次冲突是「别处已经推进了 revision」：这里真的 bump，错误带着推进后的
+      // 真实 revision——于是拿同一个 expectedRevision 重放必再撞，测试侧的「重读 → 重放」
+      // 纪律才会被这条假件真正逼出来（编一个 actual 而不推进，等于放过坏重试）。
+      bump(ns);
+      throw new FakeSettingsConflictError(ns, expectedRevision ?? -1, revisions.get(ns) ?? 0);
     }
     if (knobs.failures > 0) {
       knobs.failures -= 1;
@@ -221,9 +276,11 @@ export function makeSettingsProvider(
       throw new FakeSettingsConflictError(ns, expectedRevision, revision);
     }
     const next = mergeLayers(current, detach(input)) as Record<string, unknown>;
-    // 解析不过的新段 = 真宿主那里条目不加载；假件同步炸，坏 rules 场景由 .loose() 吸收。
-    storeSection(ns, next);
+    // 先解析后落段：schema 拒绝时 document 保持原样（真宿主是"校验通过才落地、
+    // 解析失败该条目不生效且 revision 不前进"）；先落段再解析会在拒写的同时把文档
+    // 改写成非法内容，后续 describe()/resolvedOf() 才炸，难与"真的写坏了"区分。
     resolveSection(next);
+    storeSection(ns, next);
     bump(ns);
     counterFor(ns).writes += 1;
   };
@@ -245,7 +302,9 @@ export function makeSettingsProvider(
           autoGenerate: false,
           schema: null,
           value: resolveSection(sectionOf(document, ns)),
-          user: isPlain(raw) ? { ...raw } : raw,
+          // user/value 两侧都交深拷贝：读面隔离（写侧快照、读侧克隆）——调用方随手
+          // 改读回来的对象不许污染假件状态（真 provider 的读面同样不外借内部结构）。
+          user: isPlain(raw) ? detach(raw) : raw,
           revision: revisions.get(ns) ?? 0,
           applies: "live" as const,
         },
@@ -262,6 +321,11 @@ export function makeSettingsProvider(
     failWrites(times) {
       knobs.failures = times;
     },
+    /**
+     * 文档原文那一层（未写过的段 = undefined）。刻意交**活引用**：开关翻动测试靠它
+     * 原地改条目段（host.test 的 ctx.value 就来自这里），这与"读面隔离"是两回事——
+     * 隔离的对象是 describe()/rawRules() 那两个**断言用**读面（见各自实现）。
+     */
     peek(ns) {
       const raw = document[ns];
       return isPlain(raw) ? raw : undefined;
@@ -304,7 +368,7 @@ export interface RulesFacet {
   persisted: () => RuleCard[];
   /** 段落的 revision。 */
   revision: () => number;
-  /** 段落的 rules 原文（未归一）：坏数据路径要能证明没被空库覆写掉。 */
+  /** 段落的 rules 原文（未归一，深拷贝）：坏数据路径要能证明没被空库覆写掉。 */
   rawRules: () => readonly unknown[];
 }
 
@@ -322,12 +386,13 @@ export function makeRulesFacet(initialRows: readonly unknown[] = []): RulesFacet
     setExternally: (rows) => {
       provider.externalSet(SETTINGS_NAMESPACE, { [RULES_FIELD]: [...rows] });
     },
-    persisted: () => cardsOfValue(provider.peek(SETTINGS_NAMESPACE)),
+    persisted: () => cardsOfValue(provider.peek(SETTINGS_NAMESPACE)).cards,
     revision: () => provider.revisionOf(SETTINGS_NAMESPACE),
     rawRules: () => {
       const section = provider.peek(SETTINGS_NAMESPACE);
       const rows = section?.[RULES_FIELD];
-      return isUnknownArray(rows) ? rows : [];
+      // 深拷贝交出：读面隔离——调用方 push/splice 不许污染假件内部状态。
+      return isUnknownArray(rows) ? detach(rows) : [];
     },
   };
 }

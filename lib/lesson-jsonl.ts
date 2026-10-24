@@ -55,11 +55,14 @@ export function appendJsonl(file: string, row: object, maxBytes: number): void {
  *  那是把"这里出过事"变成日志噪声，读的人反而找不到真正变化的那一次。 */
 const lastBadCount = new Map<string, number>();
 
-/** 解析结果缓存：按 (size, mtimeMs) 判"这份文件自上次读以来没变"。
- *  流水是**追加写**的（appendJsonl 每次改 size；唯一的整文件重写是保险丝裁尾，也必然
- *  改 size），故 size+mtime 这对判据对追加语义足够灵敏。没有这一层，卡片轮询 /stats
- *  每轮都要把整份流水重新 readFileSync + 逐行 JSON.parse（recentLessons 与 lessonsCount
- *  各一次），而流水按用户口径不设上限。上限 8 份：一个进程只有本包这一份流水，
+/** 上次读失败（非 ENOENT）的错误摘要（按文件）：错误没变就不重复 warn。 */
+const lastReadError = new Map<string, string>();
+
+/** 解析结果缓存：流水是**追加写**的（appendJsonl 每次改 size；唯一的整文件重写是保险丝
+ *  裁尾，也必然改 size）。size 位存的是**实际解析那份文本**的字节数，不是读取前的
+ *  stat 读数——键即内容：两次调用之间若有并发追加或 fuse 裁尾，缓存键与内容不再对应的
+ *  话，下一次 stat 必然不匹配而白读一遍整份流水。mtimeMs 取读取前的 stat 读数（只做
+ *  "同字节长度不同内容"这一档的旁证）。上限 8 份：一个进程只有本包这一份流水，
  *  多出来的是测试里的临时文件，不随工程数增长。 */
 const parseCache = new Map<
   string,
@@ -83,42 +86,85 @@ function rememberParse(
   parseCache.set(file, { size, mtimeMs, rows });
 }
 
-/** 读整个 JSONL（容错；坏行跳过，计数变化时才 warn；未变则复用上一次的解析结果）。 */
-export function readJsonl(file: string): Record<string, unknown>[] {
-  try {
-    if (!existsSync(file)) {
-      return [];
-    }
-    const stats = statSync(file);
-    const cached = parseCache.get(file);
-    if (cached !== undefined && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) {
-      // 浅拷贝一份数组：缓存里的那份只许本层改，调用方拿到的是可自由处理的视图。
-      return [...cached.rows];
-    }
-    const text = readFileSync(file, "utf8");
-    const out: Record<string, unknown>[] = [];
-    let bad = 0;
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed.length > 0) {
-        const parsed = parseJsonLine(trimmed);
-        if (parsed === null) {
-          bad += 1;
-        } else {
-          out.push(parsed);
-        }
+/** 文件消失（或从未存在）时清掉按路径留下的全部状态：流水被删后若以同样的大小与
+ *  mtime 重新出现（cp -p、快照恢复、同一毫秒内的原地重写），残留的解析缓存与坏行
+ *  计数会把已删除/已替换的内容当成当前流水。 */
+function forgetFile(file: string): void {
+  parseCache.delete(file);
+  lastBadCount.delete(file);
+  lastReadError.delete(file);
+}
+
+/** 非 ENOENT 的读失败：按文件去重后 warn 一次（错误没变不重复刷）。权限不足、目录
+ *  被删、EBUSY、磁盘故障若与"确实没有流水"同形（都表现成 0 条），数据可见性事故
+ *  会被掩盖——"读不到"与"没有"必须分得开。 */
+function warnReadFailure(file: string, error: unknown): void {
+  const summary = errorText(error);
+  if (lastReadError.get(file) === summary) {
+    return;
+  }
+  lastReadError.set(file, summary);
+  console.warn(`[lesson-loop] lesson ledger unreadable (${summary}): ${file}`);
+}
+
+/** 整份文本 → 好行数组 + 坏行数（坏行跳过，逐行容错）。 */
+function parseLedger(text: string): { rows: Record<string, unknown>[]; bad: number } {
+  const rows: Record<string, unknown>[] = [];
+  let bad = 0;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) {
+      const parsed = parseJsonLine(trimmed);
+      if (parsed === null) {
+        bad += 1;
+      } else {
+        rows.push(parsed);
       }
     }
-    // 两个判据各求值一次（写成一条 && 表达式时，"没有坏行"的那次读会让第二个判据整条
-    // 短路掉，覆盖门禁 100% 的分支口径下会留一个永远不执行的操作数）。
-    const previousBad = lastBadCount.get(file);
-    if (bad > 0 && previousBad !== bad) {
-      console.warn(`[lesson-loop] ${bad} malformed lesson line(s) skipped in ${file}`);
+  }
+  return { rows, bad };
+}
+
+/**
+ * 读整个 JSONL（容错；坏行跳过，计数变化时才 warn；未变则复用上一次的解析结果）。
+ *
+ * 失败纪律：文件不存在（含读取途中被删的 ENOENT）静默返回空表并清掉该路径的缓存状态；
+ * 其余 IO 错误 warn 一次（按文件去重）后返回空表。返回的**数组**是本次的新拷贝，可自由
+ * 处置；行对象与缓存共享，调用方只读不写——改行会污染缓存，后续所有命中（recentLessons /
+ * lessonsCount / 其他调用方）都会读到被改脏的数据（此为公开边界上的约定，非实现细节）。
+ */
+export function readJsonl(file: string): readonly Readonly<Record<string, unknown>>[] {
+  let stats: ReturnType<typeof statSync>;
+  let text: string;
+  try {
+    if (!existsSync(file)) {
+      forgetFile(file);
+      return [];
     }
-    lastBadCount.set(file, bad);
-    rememberParse(file, stats.size, stats.mtimeMs, out);
-    return [...out];
-  } catch {
+    stats = statSync(file);
+    const cached = parseCache.get(file);
+    if (cached !== undefined && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) {
+      // 数组浅拷贝一份数组：缓存里的那份只许本层改，行对象共享（见函数 JSDoc）。
+      return [...cached.rows];
+    }
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    // 读取途中被删（existsSync 之后、readFileSync 之前）与"从未存在"同待遇。
+    if (isRecord(error) && error["code"] === "ENOENT") {
+      forgetFile(file);
+      return [];
+    }
+    warnReadFailure(file, error);
     return [];
   }
+  const { rows, bad } = parseLedger(text);
+  // 两个判据各求值一次（写成一条 && 表达式时，"没有坏行"的那次读会让第二个判据整条
+  // 短路掉，覆盖门禁 100% 的分支口径下会留一个永远不执行的操作数）。
+  const previousBad = lastBadCount.get(file);
+  if (bad > 0 && previousBad !== bad) {
+    console.warn(`[lesson-loop] ${bad} malformed lesson line(s) skipped in ${file}`);
+  }
+  lastBadCount.set(file, bad);
+  rememberParse(file, Buffer.byteLength(text, "utf8"), stats.mtimeMs, rows);
+  return [...rows];
 }

@@ -1,7 +1,14 @@
 node_modules/
-client.js
-.toolchain/
-host.js
 coverage/
-types/
 .tmp/
+# 构建产物只在包根（build-*.mjs 的落盘位置）：不锚定会把任意子目录的同名源码/夹具一并忽略。
+/client.js
+/host.js
+/types/
+.toolchain/
+# 误提交高发项：本机凭据/日志，一律不进库。
+.env
+.env.*
+*.pem
+*.key
+*.log

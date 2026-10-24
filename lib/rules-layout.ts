@@ -20,29 +20,59 @@ import { fieldOf } from "@jayyuen66/dsh-plugin-shared/lib/record";
  * 的裸 `- id:`）。0.2.1-alpha.2 的注册是隐式的：宿主按条目导出的 `Config` 反推命名空间与可编辑
  * 字段，插件侧不再登记任何段。与 lib/prompt.ts 的 PLUGIN_NAME 同源，防"卡片绑的段 /
  * 端点前缀 / 这里读的段"三处字面量漂移。
- * 类型标注不是装饰：它把"段名就是插件名那一枚字面量"钉成类型，PLUGIN_NAME 若从
- * `"lesson-loop"` 变成 `string`，这里当场编译不过（段名散成宽类型正是漂移的开始）。
+ * `satisfies` 把"段名必须是 `lesson-loop` 这个字面量"钉进编译期：`typeof PLUGIN_NAME`
+ * 是随 PLUGIN_NAME 推导的，PLUGIN_NAME 若被标注成 `string`，typeof 防护会跟着放宽、
+ * 段名静默散成宽类型；satisfies 直接对字面量判可赋值性，宽化当场编译不过。
  */
-export const SETTINGS_NAMESPACE: typeof PLUGIN_NAME = PLUGIN_NAME;
+export const SETTINGS_NAMESPACE = PLUGIN_NAME satisfies "lesson-loop";
 
 /** 规则数组在 `Config` 里的字段名（读写 `describe()` 的 value/user 都以它为键）。 */
 export const RULES_FIELD = "rules";
 
-/** 解析后的命名空间值 → 规则卡数组（逐行归一；非数组一律空库）。 */
-export function cardsOfValue(value: unknown): RuleCard[] {
+/** 解析后的命名空间值 → 规则卡数组的投影：cards 是逐行归一的结果（非数组一律空库），
+ *  dropped 是缺 id 被丢弃的行数——丢弃本身不留痕，谁消费这个投影谁负责上报（见
+ *  rules-namespace 的 load），否则 save 用本次读出的卡整片覆盖 `rules` 数组时，一条
+ *  手工改坏的存量记录会被永久删除而无人知晓。 */
+export interface CardsProjection {
+  readonly cards: RuleCard[];
+  readonly dropped: number;
+}
+
+/** 解析后的命名空间值 → 规则卡投影。 */
+export function cardsOfValue(value: unknown): CardsProjection {
   const out: RuleCard[] = [];
+  let dropped = 0;
   for (const row of unknownArray(fieldOf(value, RULES_FIELD))) {
     const card = normalizeRuleCardRow(row);
-    if (card !== null) {
+    if (card === null) {
+      dropped += 1;
+    } else {
       out.push(card);
     }
   }
-  return out;
+  return { cards: out, dropped };
 }
-/** 单条证据 detail 的字符上限。 */
+
+/** 单条证据 detail 的字符上限（按码点计，见 truncateByCodePoints）。 */
 export const MAX_EVIDENCE_DETAIL_CHARS = 400;
 /** 每规则保留的证据条数上限（只留最近这几条）。 */
 export const MAX_EVIDENCE_ENTRIES = 5;
+
+/** 按码点截断：detail 可能含代理对（emoji 等），按 UTF-16 码元切会把截断点落在
+ *  代理对中间，落盘成孤立代理项（非法 Unicode，读回即显示为替换符）。
+ *  for..of 按码点迭代（每格 1-2 码元），上限按码点数计。 */
+function truncateByCodePoints(text: string, max: number): string {
+  let end = 0;
+  let counted = 0;
+  for (const char of text) {
+    if (counted >= max) {
+      break;
+    }
+    end += char.length;
+    counted += 1;
+  }
+  return text.slice(0, end);
+}
 
 /**
  * 持久化前的证据收敛：detail 截断 + 只留最近 N 条。
@@ -64,7 +94,7 @@ export function capEvidence(cards: readonly RuleCard[]): RuleCard[] {
         source: row.source,
         detail:
           row.detail.length > MAX_EVIDENCE_DETAIL_CHARS
-            ? `${row.detail.slice(0, MAX_EVIDENCE_DETAIL_CHARS)}…`
+            ? `${truncateByCodePoints(row.detail, MAX_EVIDENCE_DETAIL_CHARS)}…`
             : row.detail,
       };
       if (row.signature !== undefined) {

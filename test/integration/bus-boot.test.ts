@@ -30,7 +30,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as flushAsync } from "node:timers/promises";
 
 import { buildHost } from "../../build-host.mjs";
@@ -191,11 +191,12 @@ async function mount(
   await ctx.plugin(dependencies);
   await ctx.plugin(Loader);
   if (options.sibling === true) {
-    await ctx.loader.create({ id: SIBLING_ID, name: FIXTURE_SIBLING });
+    await ctx.loader.create({ id: SIBLING_ID, name: pathToFileURL(FIXTURE_SIBLING).href });
   }
   const entryOptions: { id: string; name: string; config?: unknown } = {
     id: SWITCH_NS,
-    name: hostEntry,
+    // Loader 直接把 name 交给 `import()`：Windows 盘符会被当成 URL scheme，必须转成 file URL。
+    name: pathToFileURL(hostEntry).href,
   };
   if (options.config !== undefined) {
     entryOptions.config = options.config;

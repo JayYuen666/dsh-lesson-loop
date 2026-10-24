@@ -15,6 +15,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -23,13 +24,31 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { appendUnderFuse } from "../lib/jsonl-fuse.ts";
 
-/** statSync 拦截开关：`armed` 时对 `file` 的第 3 次起 stat 谎报尺寸。 */
-const statHook = vi.hoisted(() => ({ armed: false, file: "", calls: 0 }));
+/** statSync 拦截开关：`armed` 时对 `file` 的第 3 次起 stat 谎报尺寸；`mode = "throw"` 抛错。 */
+const statHook = vi.hoisted(() => ({
+  armed: false,
+  file: "",
+  calls: 0,
+  mode: "" as "" | "throw",
+}));
+/** renameSync 拦截开关：`armed` 时对目标为 `file` 的 rename 抛错；`anyFile` 时对任何源抛错。 */
+const renameHook = vi.hoisted(() => ({
+  armed: false,
+  file: "",
+  calls: 0,
+  anyFile: false,
+}));
+/** readFileSync 拦截开关：`mode = "throw"` 抛 ENOENT，`"truncate"` 返回截断后的正文。 */
+const readHook = vi.hoisted(() => ({ mode: "" as "" | "throw" | "truncate", file: "" }));
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   /** 只对"被瞄准的那个文件"计数并撒谎，其余路径一律穿透到真实实现。 */
   const statSync = (target: unknown, ...rest: unknown[]): { size: number } => {
+    if (statHook.armed && statHook.mode === "throw" && String(target) === statHook.file) {
+      statHook.calls += 1;
+      throw Object.assign(new Error("ENOENT: 锁在这一瞬被释放了"), { code: "ENOENT" });
+    }
     const real = (actual.statSync as (...args: unknown[]) => { size: number })(target, ...rest);
     if (!statHook.armed || String(target) !== statHook.file) {
       return real;
@@ -39,7 +58,24 @@ vi.mock("node:fs", async (importOriginal) => {
     // 只有第 3 次起撒谎，快照才是真的。
     return statHook.calls >= 3 ? { ...real, size: real.size + 1 } : real;
   };
-  return { ...actual, statSync };
+  const renameSync = (source: unknown, destination: unknown): void => {
+    if (renameHook.armed && (renameHook.anyFile || String(destination) === renameHook.file)) {
+      renameHook.calls += 1;
+      throw new Error("模拟 rename 失败");
+    }
+    (actual.renameSync as (from: unknown, to: unknown) => void)(source, destination);
+  };
+  const readFileSyncSpy = (target: unknown, ...rest: unknown[]): unknown => {
+    if (readHook.mode !== "" && String(target) === readHook.file) {
+      if (readHook.mode === "throw") {
+        throw Object.assign(new Error("ENOENT: 文件已被移走"), { code: "ENOENT" });
+      }
+      const text = (actual.readFileSync as (...args: unknown[]) => string)(target, "utf8");
+      return text.slice(0, Math.max(0, text.length - 1));
+    }
+    return (actual.readFileSync as (...args: unknown[]) => unknown)(target, ...rest);
+  };
+  return { ...actual, statSync, renameSync, readFileSync: readFileSyncSpy };
 });
 
 /** 与生产同形的单条流水行（前导换行 + 结尾换行）。 */
@@ -59,10 +95,19 @@ describe("jsonl-fuse", () => {
     statHook.armed = false;
     statHook.file = "";
     statHook.calls = 0;
+    statHook.mode = "";
+    renameHook.armed = false;
+    renameHook.file = "";
+    renameHook.calls = 0;
+    renameHook.anyFile = false;
+    readHook.mode = "";
+    readHook.file = "";
   });
 
   afterEach(() => {
     statHook.armed = false;
+    renameHook.armed = false;
+    readHook.mode = "";
     rmSync(scratch, { recursive: true, force: true });
   });
 
@@ -128,6 +173,99 @@ describe("jsonl-fuse", () => {
     assert.ok(!text.includes(OLD), "陈旧锁被接管：更旧的那段裁掉了");
     assert.ok(text.endsWith(payloadOf({ a: 1 })), "本次追加落在新文件尾");
     assert.ok(!existsSync(lock), "接管成功=我们成了持有者，临界区结束要释放");
+  });
+
+  it("裁剪写临时文件/rename 失败 → 临时文件被清掉、错因不上抛，本次追加照常落盘", () => {
+    const file = path.join(scratch, "rename-fail.jsonl");
+    writeFileSync(file, `${OLD}${NEW}`);
+    renameHook.armed = true;
+    renameHook.file = file;
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10);
+    // rename 失败 => 本轮裁剪放弃（旧段还在），临界区继续走完，追加不丢。
+    assert.equal(readFileSync(file, "utf8"), `${OLD}${NEW}${payloadOf({ a: 1 })}`);
+    // 唯一命名的临时文件被内层 catch 清掉：目录里只该剩数据文件（锁已释放）。
+    assert.deepEqual(
+      readdirSync(scratch).filter((name) => name.endsWith(".tmp")),
+      [],
+      "失败路径必须清掉自己的临时文件，别留给下一轮",
+    );
+  });
+
+  it("拿不到锁且回读发现这一行没落盘（被持有者 rename 覆盖）→ 补写一次", () => {
+    const file = path.join(scratch, "fuse-retry.jsonl");
+    const lock = `${file}.lock`;
+    writeFileSync(file, OLD);
+    // 别人的新锁：走裸追加那一路。
+    writeFileSync(lock, "");
+    readHook.mode = "truncate";
+    readHook.file = file;
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10);
+    // 断言面必须是真文件内容，别让钩子把自己也截了。
+    readHook.mode = "";
+    // 读取被截断 => 尾部比对判"不在" => 补写；于是这一行出现两次（宁可重复，绝不丢）。
+    assert.equal(
+      readFileSync(file, "utf8"),
+      `${OLD}${payloadOf({ a: 1 })}${payloadOf({ a: 1 })}`,
+      "尾部比对失败时补写一次",
+    );
+  });
+
+  it("拿不到锁且回读时文件已不存在（读抛错）→ 按「不在」处理并补写", () => {
+    const file = path.join(scratch, "fuse-vanish.jsonl");
+    const lock = `${file}.lock`;
+    writeFileSync(file, OLD);
+    // 别人的新锁：走裸追加那一路。
+    writeFileSync(lock, "");
+    readHook.mode = "throw";
+    readHook.file = file;
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10);
+    // 断言面必须是真文件内容，别让钩子把自己也挡了。
+    readHook.mode = "";
+    // 读不到就补写：补写那次是真 fs 写，所以文件末尾一定有这一行。
+    const tail = readFileSync(file, "utf8");
+    assert.ok(tail.endsWith(payloadOf({ a: 1 })), "读不到文件不等于这一行在，必须补写");
+  });
+
+  it("陈旧锁但 stat 不到（锁在这一瞬被释放）→ 这一轮让位，追加照常", () => {
+    const file = path.join(scratch, "stat-gone.jsonl");
+    const lock = `${file}.lock`;
+    writeFileSync(file, OLD);
+    writeFileSync(lock, "");
+    statHook.armed = true;
+    statHook.file = lock;
+    statHook.mode = "throw";
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10);
+    statHook.armed = false;
+    assert.equal(readFileSync(file, "utf8"), `${OLD}${payloadOf({ a: 1 })}`, "只跳过裁剪");
+  });
+
+  it("陈旧锁但搬不走（rename 失败）→ 这一轮不再抢锁，追加照常", () => {
+    const file = path.join(scratch, "rename-lock.jsonl");
+    const lock = `${file}.lock`;
+    writeFileSync(file, OLD);
+    writeFileSync(lock, "");
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(lock, past, past);
+    renameHook.armed = true;
+    renameHook.anyFile = true;
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10);
+    renameHook.armed = false;
+    assert.equal(readFileSync(file, "utf8"), `${OLD}${payloadOf({ a: 1 })}`, "接管失败只跳过裁剪");
+    assert.ok(existsSync(lock), "搬不走的锁保持原样");
+  });
+
+  it("归还锁时读到不匹配的令牌（锁已被别人接管）→ 不删那把锁", () => {
+    const file = path.join(scratch, "not-mine.jsonl");
+    const lock = `${file}.lock`;
+    writeFileSync(file, "keep\n");
+    // 本进程确实拿到了锁（createLock 成功），但临界区期间锁可能被按陈旧接管走了。
+    // 让 releaseLock 读到被截断一位的正文即等价于"这锁不是我的了"。
+    readHook.mode = "truncate";
+    readHook.file = lock;
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10_000);
+    readHook.mode = "";
+    assert.ok(existsSync(lock), "令牌不匹配时不许删锁");
+    assert.match(readFileSync(lock, "utf8"), /^\d+\./u, "锁里仍是那枚持有者令牌");
   });
 
   it("陈旧锁但接管失败（锁路径是目录）→ 跳过裁剪，本次追加不丢", () => {

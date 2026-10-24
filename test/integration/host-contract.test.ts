@@ -18,6 +18,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { Context } from "@deepseek-ai/cordis";
 import { Loader } from "@deepseek-ai/cordis-plugin-loader";
 import { RULES_FIELD, SETTINGS_NAMESPACE } from "../../lib/rules-layout.ts";
@@ -133,15 +134,19 @@ async function mount(
   await ctx.loader
     .create({
       id: ENTRY_ID,
-      name: FIXTURE_HOST,
+      name: pathToFileURL(FIXTURE_HOST).href,
       ...(options.config === undefined ? {} : { config: options.config }),
     })
     .catch(() => null);
   if (options.sibling === true) {
-    await ctx.loader.create({ id: SIBLING_ID, name: FIXTURE_SIBLING }).catch(() => null);
+    await ctx.loader
+      .create({ id: SIBLING_ID, name: pathToFileURL(FIXTURE_SIBLING).href })
+      .catch(() => null);
   }
   if (options.consumer === true) {
-    await ctx.loader.create({ id: CONSUMER_ID, name: FIXTURE_CONSUMER }).catch(() => null);
+    await ctx.loader
+      .create({ id: CONSUMER_ID, name: pathToFileURL(FIXTURE_CONSUMER).href })
+      .catch(() => null);
   }
   await ctx.loader.await().catch(() => null);
   await settle();

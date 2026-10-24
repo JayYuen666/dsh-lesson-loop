@@ -3,6 +3,7 @@
 // include 不含 test/** 与 src/**：types/ 整目录进 `files`，测试声明不该随包公开；
 // src/** 是客户端那半，与 danger-guard 的 `./client` 一样不带 types 条件。
 // 声明里残留的 `.ts` 后缀由 build-types.mjs 改写，rewriteRelativeImportExtensions 管不到声明。
+// removeComments：注释是给维护源码的人看的，不是发布物的一部分；消费方只读类型面。
 {
   "extends": "@jayyuen66/dsh-plugin-shared/config/tsconfig.base.json",
   "compilerOptions": {
@@ -11,6 +12,7 @@
     "outDir": "types",
     "declaration": true,
     "emitDeclarationOnly": true,
+    "removeComments": true,
     "noEmit": false
   },
   "include": ["host.ts", "lib/**/*.ts"]

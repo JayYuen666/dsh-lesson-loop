@@ -268,9 +268,11 @@ export interface ReportReceipt {
   reason?: string;
   /** 命中的 armed 规则（violation 已 +1）。 */
   violationOf?: RuleCard;
-  /** 归并到的候选卡（occurrences 已 +1；ready = 达到升格门槛待人工确认）。 */
+  /** 归并到的候选卡（occurrences 已 +1）。`ready` 是"已到升格门槛"的**电平**，
+   *  `justReady` 是"这一次刚推过门槛"的**边沿**——提示用边沿，否则每条上报都重复。 */
   candidate?: RuleCard;
   ready?: boolean;
+  justReady?: boolean;
 }
 
 /**
@@ -416,6 +418,18 @@ function evidenceRow(
   return { ts, source, detail, ...(raw === folded ? {} : { signature: raw }) };
 }
 
+/**
+ * 这条上报是不是「判据看不见、要人拍板」，而不是「已确认违规」。
+ *
+ * 只认上报方在 evidence 里显式打的布尔 `true`：缺这个键就是普通上报，其余取值
+ * （字符串 "true"、数字 1）一律不认。放宽成 truthy 会把"字段类型写错"读成"无需确认"，
+ * 而这条分支的全部作用就是让这类上报不进复发率——判据宁可漏认，不可误认。
+ */
+function needsUserConfirmationOf(rec: LessonRecord): boolean {
+  const { evidence } = rec;
+  return isRecord(evidence) && evidence["needsUserConfirmation"] === true;
+}
+
 /** 状态权威序（同键撞卡时谁当主卡）：人工决定 > 机器状态，与 migrateFragmentRules
  *  "人工升格/拒绝不被机器改写"的同一条红线；同级再看观察次数。 */
 const STATUS_AUTHORITY: Record<RuleStatus, number> = {
@@ -425,6 +439,15 @@ const STATUS_AUTHORITY: Record<RuleStatus, number> = {
   rejected: 2,
   armed: 3,
 };
+
+/** 归并时不能被机器复活的状态：人工否决（rejected / archived）与机器降级（demoted）。
+ *  三者的共同点是"这条规则已经不该注入"，要它重新注入只有一条合法路径 —— 人工
+ *  `ruleAction(id, "arm")`。与 `STATUS_AUTHORITY` 里这三档排在 armed 之下同源。 */
+const NON_REVIVABLE_STATUSES: ReadonlySet<RuleStatus> = new Set([
+  "rejected",
+  "archived",
+  "demoted",
+]);
 
 /**
  * 挑主卡：返回 [主卡, 被并卡]。人工状态优先（armed > rejected > archived > 候选/
@@ -600,6 +623,11 @@ type ReportPlanKind = "created" | "candidate" | "violation" | "settled";
 interface ReportPlan {
   readonly kind: ReportPlanKind;
   readonly card: RuleCard;
+  /** 本次改动前的累计观察数。`justReady` 的边沿判据要拿它比门槛，不能只看改完后的值：
+   *  一次上报可能把 occurrences 跳过多个格（rejected 转回候选时把复发段整段并进来），
+   *  等值比较会整段漏掉；而门槛本身是设置项，下调之后 occurrences 已经大于门槛，
+   *  等值比较永远不再成立。 */
+  readonly previousOccurrences?: number;
 }
 
 /** 新卡构造参数：阈值归并（report 首报）与蒸馏补录（addCandidate）共用。 */
@@ -960,6 +988,9 @@ export class LessonStore {
   /** 命中已有卡：补证据 + 按状态计复发/累积/复活。 */
   private accumulate(rule: RuleCard, obs: Observation): Planned<ReportPlan> {
     const { rec, now, rawSignature, signature } = obs;
+    // 改完之后的 occurrences 可能跳过好几格（rejected 转回候选时把复发段整段并进来），
+    // 边沿判据要拿改动前的这一位与门槛比。
+    const previousOccurrences = rule.occurrences;
     rule.lastSeenAt = rec.ts;
     rule.updatedAt = now;
     rule.evidence.push(evidenceRow(rec.ts, rec.source, rec.detail, rawSignature, signature));
@@ -973,6 +1004,14 @@ export class LessonStore {
     }
 
     if (rule.status === "armed") {
+      // 「需用户拍板」不是「已确认违规」：上报方把 `needsUserConfirmation: true` 打在
+      // evidence 里，表示它**判据看不见**这段内容（nestedShellUnconfirmed 一类），
+      // 既没确认危险也没有一次干净命中。把它计进复发率会让一条从不产生违规的规则
+      // 凭"问过几次"累积到降级门槛，且分母（suppressed）永远是 0，卡只会停在不可判定。
+      // 这类上报只补证据，不动任何度量位。
+      if (needsUserConfirmationOf(rec)) {
+        return { value: { kind: "settled", card: rule }, write: true };
+      }
       rule.violation += 1;
       rule.lastViolationAt = rec.ts;
       // 复发即裁决（不攒批）：达到复发率红线立即降级，规则失效要尽早停止注入。
@@ -985,7 +1024,7 @@ export class LessonStore {
     }
     if (rule.status === "candidate") {
       rule.occurrences += 1;
-      return { value: { kind: "candidate", card: rule }, write: true };
+      return { value: { kind: "candidate", card: rule, previousOccurrences }, write: true };
     }
     // rejected：计数 recurrences；达阈值自动转回候选待人工重审（原人工决定不覆盖——
     // 阈值到了 -> 说明拒绝后同类问题仍反复出现，需要重新审视，交还给人拍板）。
@@ -997,7 +1036,7 @@ export class LessonStore {
     // 本方法的任何计数都只改本次读取的副本：写失败（两类失败皆然）时端口里那行原样
     // 不动，于是"被人工拒掉的规则"不可能因为一次没存住的上报就活过来。
     if (rule.status === "rejected" && this.noteRecurrence(rule, now)) {
-      return { value: { kind: "candidate", card: rule }, write: true };
+      return { value: { kind: "candidate", card: rule, previousOccurrences }, write: true };
     }
     return { value: { kind: "settled", card: rule }, write: true };
   }
@@ -1022,15 +1061,26 @@ export class LessonStore {
   /** 组装 report() 回执：ready 只在确实落盘后才报（磁盘没存住就催人工审 = 点空）。 */
   private receiptFor(outcome: Committed<ReportPlan>): ReportReceipt {
     const { ok, value } = outcome;
-    const { kind, card } = value;
+    const { kind, card, previousOccurrences } = value;
     const threshold = this.threshold();
     // ready 必须同时看落盘：磁盘没存住就催人工审，人点下去是一张不存在的卡。
     const ready = ok && (kind === "created" ? threshold <= 1 : card.occurrences >= threshold);
+    // 刚越过门槛的那一次：这是**边沿**，与 ready 的**电平**不是一回事。
+    // 调用方拿 ready 打日志会在越过门槛之后每一条上报各打一次（上游持续复发时就是刷屏），
+    // 而"该来审这张卡了"这件事在每个门槛上只发生一次。门槛为 1 时建卡即越线。
+    // 判据是「改动前没过门槛、改动后过了」，不是「改动后恰好等于门槛」：一次上报可能把
+    // occurrences 跳过好几格（rejected 转回候选时把复发段整段并进来），等值比较会整段漏掉；
+    // 门槛又是设置项，下调之后 occurrences 已大于门槛，等值比较永远不再成立。
+    const justReady =
+      ready &&
+      (kind === "created"
+        ? true
+        : (previousOccurrences ?? 0) < threshold && card.occurrences >= threshold);
     return {
       ok,
       ...(ok ? {} : { reason: PERSIST_FAILED }),
       ...(kind === "violation" ? { violationOf: card } : {}),
-      ...(kind === "created" || kind === "candidate" ? { candidate: card, ready } : {}),
+      ...(kind === "created" || kind === "candidate" ? { candidate: card, ready, justReady } : {}),
     };
   }
 
@@ -1056,22 +1106,33 @@ export class LessonStore {
    * （测没测过这条规则的判据，与 pass 无关）；其中被 pass 过的（规则场景触发且被
    * 遵守）再计一次 suppressed=observed。被本会话违反的规则既不记 samples 也不记
    * observed（violation 已由 report() 计）。samples 只增暴露度，绝不进复发率分母。
+   *
+   * @param countExposure 首个 dispose 边计暴露；resume 出来的重复边只结算 suppressed。
    */
   public async sessionEnded(
     project: string,
     violatedRuleIds: ReadonlySet<string>,
     passedRuleIds: ReadonlySet<string>,
     sessionId?: string,
+    countExposure = true,
   ): Promise<void> {
     const now = this.now();
     const outcome = await this.commit((cards): Planned<boolean> => {
       let dirty = false;
       for (const rule of cards) {
-        if (rule.status === "armed" && rule.project === project && !violatedRuleIds.has(rule.id)) {
-          rule.samples += 1;
+        const counts = rule.status === "armed" && rule.project === project;
+        const passed = counts && passedRuleIds.has(rule.id);
+        // 两个计数器都不动就是没东西可写：重复的 dispose 边既不涨 samples（countExposure
+        // 为假）又没有新一轮的干净命中，写一笔只改 updatedAt 会把"这次上报了什么"变成
+        // "最后一次清算发生在何时"，而且每次 resume 都触发一轮 CAS 整片写。
+        const writes = counts && (countExposure || passed) && !violatedRuleIds.has(rule.id);
+        if (writes) {
+          if (countExposure) {
+            rule.samples += 1;
+          }
           rule.updatedAt = now;
           dirty = true;
-          if (passedRuleIds.has(rule.id)) {
+          if (passed) {
             rule.suppressed += 1;
             rule.lastSuppressedAt = now;
           }
@@ -1377,6 +1438,17 @@ export class LessonStore {
     }
     if (primary.status === "armed") {
       // 主卡自己就是 armed：它的度量已在卡上，只折叠被并的那几张。
+      for (const source of armedSources) {
+        LessonStore.foldMetrics(primary, source);
+      }
+      return;
+    }
+    if (NON_REVIVABLE_STATUSES.has(primary.status)) {
+      // 主卡已被人工否决（rejected / archived）或被降级（demoted）：只并入度量，不改状态。
+      // 归并是**机器**动作，它不能替人撤销一次决定 —— 与 accumulate() 那条「机器永不把
+      // rejected 写成 armed」是同一条红线，`STATUS_AUTHORITY` 也把这三档排在 armed 之后。
+      // 旧实现只看主卡「当前是不是 armed」，于是 existing 命中即当主卡、随后 inheritArmed
+      // 无条件写 armed，把一次人工否决整个翻掉，规则重新进入注入面。
       for (const source of armedSources) {
         LessonStore.foldMetrics(primary, source);
       }

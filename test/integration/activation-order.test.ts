@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as flushAsync } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { Context } from "@deepseek-ai/cordis";
 import { Loader } from "@deepseek-ai/cordis-plugin-loader";
 import { deriveProject } from "../../lib/lesson-store.ts";
@@ -167,7 +168,7 @@ describe("装载时序：开机迁移只在本条目 ACTIVE 之后读规则库",
     });
     await ctx.plugin(Loader);
     live = ctx;
-    await ctx.loader.create({ id: ENTRY_ID, name: FIXTURE_HOST });
+    await ctx.loader.create({ id: ENTRY_ID, name: pathToFileURL(FIXTURE_HOST).href });
     await ctx.loader.await().catch(() => null);
     // 迁移链是 apply 里 fire-and-forget 的异步链，多排几个宏任务边界让它跑完。
     await flushAsync(0);

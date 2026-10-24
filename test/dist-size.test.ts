@@ -17,13 +17,21 @@ const pkgDir = path.resolve(import.meta.dirname, "..");
 
 /** 产物文件名与预算的对照。 */
 const BUDGETS: readonly (readonly [string, number])[] = [
-  ["host.js", 153_000],
+  // 审查批次给 host 半补了四段行为面：蒸馏墙钟的本地化超时、模型产出解析的多候选
+  // 切片与取值域白名单、串行落库的单条容错、reasoningEffort 透传，外加双语字典里的
+  // 对应新条目——host.js 由 153 KB 预算对应的实测值涨到约 159 KB，预算按 25% 浮动口径跟着抬。
+  ["host.js", 199_000],
   // 规则读面迁到官方 Typert Remote 后，客户端多了一枚 descriptor/读取器（约 6 KB）。
   ["client.js", 55_000],
 ];
 
-/** `types/` 整目录的字节预算：`files` 里写的是整目录，声明体积就是下载成本。 */
-const DECLARATION_BUDGET_BYTES = 72_000;
+/**
+ * `types/` 整目录的字节预算：`files` 里写的是整目录，声明体积就是下载成本。
+ *
+ * 实测 21,809 B（`removeComments` 之后；带注释时约 71 KB，其中绝大部分是注释）。
+ * 取实测值上浮约 25%，与上面两行 JS 产物同口径——它挡的是"注释或大查表重新混进发布物"。
+ */
+const DECLARATION_BUDGET_BYTES = 28_000;
 
 /**
  * 目录（递归）下 `.d.ts` 的字节合计。

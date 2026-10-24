@@ -199,7 +199,15 @@ function buildRulesReader(ctx: RemoteHost, remote: RemoteMounter): RulesReader {
   let mounted: Promise<unknown> | undefined;
   const namespaceOf = async (): Promise<RulesNamespace> => {
     mounted ??= remote.$mount({ package: PACKAGE_NAME, descriptors: RULES_DESCRIPTORS });
-    await mounted;
+    // 挂载失败**不缓存**：网关的 $mount 走 ctx.effect + enqueue，失败是可恢复的（版本不匹配、
+    // 贡献注册时序未到、网关重连）。把 rejected 的 promise 留在 mounted 上，会把一次可恢复失败
+    // 钉成该卡片生命周期内的永久不可用 —— 之后每次读取都复读同一次拒绝，连网关都不再问。
+    try {
+      await mounted;
+    } catch (error) {
+      mounted = undefined;
+      throw error;
+    }
     const namespace = ctx.get?.(RULES_SERVICE_KEY, false);
     if (!isRulesNamespace(namespace)) {
       throw new Error(`${RULES_SERVICE_KEY} 未提供：宿主网关没有挂上这枚命名空间`);

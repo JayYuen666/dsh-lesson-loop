@@ -24,7 +24,9 @@ export type RuleOriginView = "threshold" | "lessons-digest" | "manual";
 
 /**
  * 一条规则卡的读面投影：证据正文**不在**线上（每条 detail 是整段工具输出，而卡片在轮询），
- * 另加派生态 `undeterminable`（armed 够久却零复发零遵守，机器无从裁定，等人处理）。
+ * 另加派生态 `undeterminable`——armed 后从没有过一次遵守（suppressed === 0），且要么
+ * 已挂满 decayDays、要么复发已达门槛（lib/decay-policy.ts 的裁决）；只在
+ * `status === "armed"` 的卡上可能为 true，出现即交人工停用或归档。
  */
 export interface RuleView {
   readonly id: string;
@@ -75,7 +77,12 @@ export interface LessonsRequest {
   readonly limit?: number;
 }
 
-/** 人工动作的入参。 */
+/**
+ * 人工动作的入参。`action` 刻意收 `string` 而不是 {@link RuleActionName}：请求侧保留
+ * 「可发送任意串、由宿主白名单拒回 400 并翻译文案」的语义（src/rules-reader.ts 的
+ * codec 同样按 string 解析）——拼错的动作名要在**回执**里显形，而不是在客户端编译期
+ * 消失成类型错误。白名单的编译期约束住在 lib/rules-remote.ts 的动作表上。
+ */
 export interface RuleActionRequest {
   readonly id: string;
   readonly action: string;
@@ -96,14 +103,16 @@ export interface LessonsResult {
 export interface RuleActionDone {
   readonly ok: true;
   readonly id: string;
-  readonly action: string;
+  /** 回显的动作名：宿主白名单校验通过后才返回，必落 {@link RuleActionName} 取值域。 */
+  readonly action: RuleActionName;
 }
 
-/** 拒绝回执：`status` 保留旧 HTTP 面的语义码（400/404/500），卡片只读 `error`。 */
+/** 拒绝回执：`status` 保留旧 HTTP 面的语义码（400/404/500，lib/rules-remote.ts 的四个
+ *  返回分支只产出这三个值），卡片只读 `error`。字面量联合把新增/改写状态码钉在编译期。 */
 export interface RuleActionRefused {
   readonly ok: false;
   readonly error: string;
-  readonly status: number;
+  readonly status: 400 | 404 | 500;
 }
 
 export type RuleActionReply = RuleActionDone | RuleActionRefused;

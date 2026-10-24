@@ -170,6 +170,9 @@ function configRows(translator: Translate): RowView[] {
   const nodes = buildConfigRows({
     t: translator,
     writable: true,
+    // 这一组读的是「可写、不在保存途中」的常态行；保存在途时的冻结行为由
+    // test/client-data.test.ts 的「保存是一次原子提交」专门覆盖。
+    busy: false,
     eff: (): unknown => undefined,
     setField: (field: string, value: unknown): void => {
       ignoreWrite(field, value);
