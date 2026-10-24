@@ -793,18 +793,22 @@ function NumberInputRow(props: NumberInputRowProps): ReactNode {
 function buildConfigRows(deps: {
   t: Translate;
   writable: boolean;
+  /** 一次保存正在途中：配置行必须一起冻结，否则用户在这段时间里改的值落不进本次提交，
+   *  却会在受理后被 save() 的清草稿一并抹掉（外观上像"已保存"，实际没写出去）。 */
+  busy: boolean;
   eff: (field: string) => unknown;
   setField: (field: string, value: SettingsValue) => void;
   clearField: (field: string) => void;
 }): ReactNode[] {
   const { t, writable, eff, setField, clearField } = deps;
+  const frozen = !writable || deps.busy;
   const toggle = (row: { field: string; label: string; hint: string }): ReactNode =>
     createElement(ToggleRow, {
       label: row.label,
       hint: row.hint,
       field: row.field,
       checked: eff(row.field) !== false,
-      disabled: !writable,
+      disabled: frozen,
       onToggle: () => {
         setField(row.field, eff(row.field) === false);
       },
@@ -821,7 +825,7 @@ function buildConfigRows(deps: {
       hint: row.hint,
       field: row.field,
       value: eff(row.field),
-      disabled: !writable,
+      disabled: frozen,
       onChange: setField,
       onEmpty: clearField,
       min: row.min,
@@ -903,7 +907,7 @@ export function sectionHeadingText(t: Translate, title: string, count: number): 
 
 /** 「已拒绝/归档」按钮：折叠态显示分组标题 + 条数，展开态显示"收起"。 */
 export function retiredToggleText(t: Translate, showAll: boolean, count: number): string {
-  return showAll ? t("showRetired") : sectionHeadingText(t, t("sectionRetired"), count);
+  return showAll ? t("hideRetired") : sectionHeadingText(t, t("sectionRetired"), count);
 }
 
 /** 卡片副标题（含实时计数；lessonsCount 未到达时显式占位，不虚报 0）。 */
@@ -1134,6 +1138,7 @@ function renderCardBody(view: CardView): ReactNode {
     ...buildConfigRows({
       t,
       writable: view.writable,
+      busy: view.busy,
       eff: view.eff,
       setField: view.setField,
       clearField: view.clearField,
@@ -1261,7 +1266,16 @@ function LlcCard(props: LlcCardProps): ReactNode {
         void reloadStats(reader, { t, setStats, setStatsError });
         return;
       }
-      setTouched({});
+      // 只清**本次提交**的那几个键：在途期间用户可能又动了别的字段（配置行此时已冻结，
+      // 但 onSubmit 的这一拍与用户操作之间仍有窗口），整块清空会把那些没写出去的草稿
+      // 一起抹掉，而界面同时显示"干净"——那正是"以为保存了"的另一种形态。
+      setTouched((entry) => {
+        const next = { ...entry };
+        for (const key of keys) {
+          Reflect.deleteProperty(next, key);
+        }
+        return next;
+      });
       void reloadStats(reader, { t, setStats, setStatsError });
     } catch (error) {
       setBusy(false);

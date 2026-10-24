@@ -239,18 +239,13 @@ function isHostCtx(value: unknown): value is HostCtx {
 // ── 结构类型（与宿主交互面的运行时形状；避免值导入 @deepseek-ai/*）────────
 
 /**
- * settings 服务面对本包剩下的三件事（`register`/`get`/`installSection` 已被 0.2.1-alpha.2 移除）：
- *   - `describe()`：唯一的读口——跨命名空间读 locale 走它，规则库读 value/user/revision 也走它
- *     （返回官方 `SettingsDescriptor`，`user`/`revision` 即规则库判"读不懂 vs 真的没有"的两位）；
- *   - `update(ns, patch, expectedRevision)`：规则库的 CAS 写，ns 现在必须是本包的条目 id；
- *   - `configure(presentation, owner)`：页面策略（本包自带卡片，别让宿主再生成一份自动表单页），
- *     只在 `ctx.inject` 给的子上下文里拿到，故不算进 isSettingsProvider 的判定。
- * = 官方 `SettingsForms` 的三位方法面投影（CAS 那两位与 `lib/rules-namespace.ts` 的
- * `SettingsCasSurface` 同一来源；`configure` 见 installed index.d.ts:80）。旧镜像自己写了
- * 一枚 `describe: () => SettingsDescriptor[]`（丢掉官方可选的 `SettingsDescribeOptions` 入参）
- * 并 extends 一枚手抄的 CAS 面，现在三位一律由官方成员交出。
+ * 主 ctx 上本包要用的 settings 面：`describe()`（跨命名空间读 locale，也是规则库
+ * value/user/revision 的来源）与 `update()`（规则库 CAS 写）。
+ *
+ * `configure` **不在这里**：它只在 `ctx.inject` 给的子上下文里被调用（见 InjectedCtx），
+ * 主 ctx 的实例从不调它。写进这份类型等于让 `isSettingsProvider` 承诺一件它没检查的事。
  */
-export type SettingsProvider = SettingsCasSurface & Pick<SettingsForms, "configure">;
+export type SettingsProvider = SettingsCasSurface;
 
 /**
  * `ctx.inject(deps, callback)` 回调收到的子上下文（本包只用到 settings + effect）。
@@ -581,6 +576,10 @@ interface SessionWatchEntry {
 /** sessionId → 台账行：会话内复发记账，session/disposed 时清算 suppressed。 */
 type SessionWatch = Map<string, SessionWatchEntry>;
 
+/** 已清算过的 durable session：`session/disposed` 按 store 条目发，同一会话 resume 一次
+ *  就多一条边，清算必须按 durable 身份去重（见 createSessionWatch 的说明）。 */
+type SettledSessions = Map<string, true>;
+
 /**
  * 消息表的取用口：每次现取，用户在「设置 → 常规」改语言偏好后，下一条回显/注入
  * 就是新文案（不重启、也不给本包加一个自己的 locale 设置项）。语言只由设置偏好决定：
@@ -809,8 +808,9 @@ function settleOpenSessionsOnDispose(args: {
   store: LessonStore;
   sessionWatch: SessionWatch;
   settingsOf: SettingsOf;
+  markSettled: (sessionId: string) => boolean;
 }): () => Promise<void> {
-  const { store, sessionWatch, settingsOf } = args;
+  const { store, sessionWatch, settingsOf, markSettled } = args;
   return async (): Promise<void> => {
     if (!settingsOf().enabled) {
       return;
@@ -819,12 +819,17 @@ function settleOpenSessionsOnDispose(args: {
     const pending: Promise<void>[] = [];
     for (const [sid, entry] of sessionWatch) {
       sessionWatch.delete(sid);
-      pending.push(
-        settleQuietly(
-          store.sessionEnded(entry.project, entry.violated, entry.passed, sid),
-          SESSION_ENDED_FAILURE_LABEL,
-        ),
+      // 与 session/disposed 那条路共用同一套 exposure 去重：两个入口各判一次就会让
+      // 同一条会话被两边各计一次 samples。`firstSettle` 先落成变量，不为省一行嵌套。
+      const firstSettle = markSettled(sid);
+      const settling = store.sessionEnded(
+        entry.project,
+        entry.violated,
+        entry.passed,
+        sid,
+        firstSettle,
       );
+      pending.push(settleQuietly(settling, SESSION_ENDED_FAILURE_LABEL));
     }
     await Promise.all(pending);
   };
@@ -964,6 +969,10 @@ interface ApplyRuntime {
   localeMessages: MessagesOf;
   sessionWatch: SessionWatch;
   pruneWatch: () => void;
+  /** 登记一次清算，重复会话返回 false（见 createSessionWatch）。 */
+  markSettled: (sessionId: string) => boolean;
+  /** 这条会话是否已清算；两处记账入口共用它决定要不要重建条目。 */
+  hasSettled: (sessionId: string) => boolean;
   syncStore: () => ResolvedSettings;
 }
 
@@ -1055,7 +1064,12 @@ function startBootMigrations(svc: HostCtx, store: LessonStore): void {
 /** 会话台账 + 它的容量修剪。
  *  sessionId → {project, violated}：会话内复发记账，session/disposed 时清算 suppressed。
  *  容量纪律同 ctx-observe（超 200 丢最旧，防长驻进程无界）。 */
-function createSessionWatch(): { sessionWatch: SessionWatch; pruneWatch: () => void } {
+function createSessionWatch(): {
+  sessionWatch: SessionWatch;
+  pruneWatch: () => void;
+  hasSettled: (sessionId: string) => boolean;
+  markSettled: (sessionId: string) => boolean;
+} {
   const sessionWatch: SessionWatch = new Map();
   /**
    * 每次插入后调用：超出上限时按插入序把多出的几条丢掉。
@@ -1074,7 +1088,43 @@ function createSessionWatch(): { sessionWatch: SessionWatch; pruneWatch: () => v
       sessionWatch.delete(key);
     }
   };
-  return { sessionWatch, pruneWatch };
+  /**
+   * 已经清算过的 durable session。
+   *
+   * 为什么需要：`session/disposed` 是**每次 store 条目生命周期**各发一次，不是每个 durable
+   * 会话一次——`dsh-session` 的 detach 实现按 entry 发（`enter` → `announce` → `detach`
+   * 一轮一条），而同一 durable 会话每被 resume 一次就重走一轮。只按 disposed 边数清算，
+   * samples 数出来的是"重开过几次"，而它的语义是"这条规则在场几场会话"。
+   *
+   * 容量与台账同口径：超上限丢最旧，防长驻进程无界。
+   */
+  const settledSessions: SettledSessions = new Map();
+  return {
+    sessionWatch,
+    pruneWatch,
+    /**
+     * 这条会话是否已经清算过。两处写入口（违规记账与 pass 记账）都要先问它：
+     * 会话已清算时任何一侧单独重建条目，那条目都要留到进程退出才清算，等于把一场
+     * 已结束的会话再算一次。
+     */
+    hasSettled: (sessionId: string): boolean => settledSessions.has(sessionId),
+    /**
+     * 登记一次清算；首次返回 `true`（该清算），重复返回 `false`（跳过）。
+     */
+    markSettled: (sessionId: string): boolean => {
+      if (settledSessions.has(sessionId)) {
+        return false;
+      }
+      settledSessions.set(sessionId, true);
+      const overflow = settledSessions.size - WATCH_MAX_SESSIONS;
+      if (overflow > 0) {
+        for (const key of [...settledSessions.keys()].slice(0, overflow)) {
+          settledSessions.delete(key);
+        }
+      }
+      return true;
+    },
+  };
 }
 
 /** settings → store 的阈值同步（pull：每次 report/decay 前执行）。 */
@@ -1092,12 +1142,35 @@ function syncStoreFrom(store: LessonStore, settingsOf: SettingsOf): ResolvedSett
   return cfg;
 }
 
+/**
+ * 把这次命中的 armed 规则记进会内台账，供收尾清算判"本会话违规过"。
+ *
+ * 条目已被清算时**不重建**：那说明会话在 report 的 await 期间结束了。重建出来的条目要
+ * 等到进程退出才清算，等于把一场已结束的会话又算一次 exposure。违规计数本身已在
+ * `store.report` 里落定，这里丢掉的只是"本会话违规过"这条标记。
+ */
+function noteViolationForSettle(
+  runtime: ApplyRuntime,
+  sessionId: string | undefined,
+  project: string,
+  ruleId: string | undefined,
+): void {
+  if (sessionId === undefined || ruleId === undefined) {
+    return;
+  }
+  const entry = runtime.sessionWatch.get(sessionId);
+  if (entry !== undefined) {
+    entry.project = project;
+    entry.violated.add(ruleId);
+  }
+}
+
 /** 记一条教训。全同步、容错：总线任何故障不外抛（报告方多在守卫热路径上）。 */
 async function reportLesson(
   runtime: ApplyRuntime,
   input: LessonReportInput,
 ): Promise<ReportReceipt> {
-  const { store, sessionWatch, pruneWatch, syncStore } = runtime;
+  const { store, syncStore } = runtime;
   try {
     const cfg = syncStore();
     if (!cfg.enabled || !cfg.reportEnabled) {
@@ -1116,25 +1189,20 @@ async function reportLesson(
       detail: input.detail,
       ...(input.evidence === undefined ? {} : { evidence: input.evidence }),
     });
-    // 会话内复发记账（供 suppressed 清算）：armed 命中即登记。
-    if (input.sessionId !== undefined && receipt.violationOf !== undefined) {
-      const watchEntry = sessionWatch.get(input.sessionId) ?? {
-        project,
-        violated: new Set<string>(),
-        passed: new Set<string>(),
-      };
-      watchEntry.project = project;
-      watchEntry.violated.add(receipt.violationOf.id);
-      sessionWatch.set(input.sessionId, watchEntry);
-      pruneWatch();
-    }
+    noteViolationForSettle(runtime, input.sessionId, project, receipt.violationOf?.id);
     if (receipt.violationOf !== undefined) {
+      // 日志要能分辨"哪一条命令、哪一类命中"。规则正文是**同一张卡共用**的长文案，
+      // 截断后每条都一模一样，读日志的人分不出这是 74 次里的哪一次；真正区分它们的是
+      // 这一条上报的原始签名（卡片上的签名是折叠后的稳定键，同键的每条都一样）。
+      const rawSignature =
+        input.signature === receipt.violationOf.signature ? "" : ` raw=${input.signature}`;
       console.warn(
-        `[lesson-loop] armed rule violated: ${receipt.violationOf.statement.slice(0, 80)}（violation=${receipt.violationOf.violation}）`,
+        `[lesson-loop] armed rule violated: ${receipt.violationOf.category} / ${receipt.violationOf.signature}（violation=${receipt.violationOf.violation}${rawSignature}）`,
       );
-    } else if (receipt.candidate !== undefined && receipt.ready === true) {
+    } else if (receipt.candidate !== undefined && receipt.justReady === true) {
+      // 边沿而不是电平：越过门槛之后的上报不再重复说同一句话。
       console.info(
-        `[lesson-loop] candidate ready for review: ${receipt.candidate.category} / ${receipt.candidate.signature}`,
+        `[lesson-loop] candidate ready for review: ${receipt.candidate.category} / ${receipt.candidate.signature}（occurrences=${receipt.candidate.occurrences}）`,
       );
     }
     return receipt;
@@ -1160,6 +1228,13 @@ function recordPass(runtime: ApplyRuntime, input: LessonPassInput): { ok: boolea
       return { ok: true };
     }
     if (input.sessionId !== undefined) {
+      // 已清算的会话不重建条目：那说明会话在 store.pass 之前就结束了。重建出来的条目要
+      // 等到进程退出才清算，那一轮 countExposure 为 false 而 passed 非空，会给一条
+      // 实际违反过的规则记一次 suppressed——分母多一个，与本次去重的目的相反。
+      // 与 noteViolationForSettle 共用同一个判据，避免两条写入口各行其是。
+      if (runtime.hasSettled(input.sessionId)) {
+        return { ok: true };
+      }
       const watchEntry = sessionWatch.get(input.sessionId) ?? {
         project,
         violated: new Set<string>(),
@@ -1264,9 +1339,12 @@ function onAgentCreated(runtime: ApplyRuntime, payloadRaw: AgentCreatedPayload):
 }
 
 /** 会话收尾清算：只对本会话 pass 过且未违规的 armed 规则计 suppressed（pass 信号
- *  驱动）。与上报同受 enabled 闸门：插件关闭期间不清算。 */
+ *  驱动）。与上报同受 enabled 闸门：插件关闭期间不清算。
+ *
+ *  按 durable session 身份去重：`session/disposed` 每条 store 条目生命周期各发一次，
+ *  同一个会话每被 resume 一次就多一条边；不去重则 samples 数的是"重开过几次"。 */
 function onDisposedSession(runtime: ApplyRuntime, sessionRaw: unknown): void {
-  const { store, settingsOf, sessionWatch } = runtime;
+  const { store, settingsOf, sessionWatch, markSettled } = runtime;
   if (!settingsOf().enabled) {
     return;
   }
@@ -1275,11 +1353,18 @@ function onDisposedSession(runtime: ApplyRuntime, sessionRaw: unknown): void {
   if (sid === undefined) {
     return;
   }
+  const firstSettle = markSettled(sid);
   const watchEntry = sessionWatch.get(sid);
   sessionWatch.delete(sid);
   if (watchEntry !== undefined) {
     void settleQuietly(
-      store.sessionEnded(watchEntry.project, watchEntry.violated, watchEntry.passed, sid),
+      store.sessionEnded(
+        watchEntry.project,
+        watchEntry.violated,
+        watchEntry.passed,
+        sid,
+        firstSettle,
+      ),
       SESSION_ENDED_FAILURE_LABEL,
     );
     return;
@@ -1288,7 +1373,7 @@ function onDisposedSession(runtime: ApplyRuntime, sessionRaw: unknown): void {
   const header = fieldOf(sessionRaw, "header");
   const headerCwd = isRecord(header) ? fieldOf(header, "cwd") : undefined;
   void settleQuietly(
-    store.sessionEnded(deriveProject(headerCwd), new Set(), new Set(), sid),
+    store.sessionEnded(deriveProject(headerCwd), new Set(), new Set(), sid, firstSettle),
     SESSION_ENDED_FAILURE_LABEL,
   );
 }
@@ -1318,7 +1403,11 @@ function registerPromptSection(runtime: ApplyRuntime): void {
     return spRaw.section({
       name: SECTION_NAME,
       order: SECTION_ORDER,
-      text: () => (settingsOf().sectionEnabled ? renderSectionText(localeMessages()) : ""),
+      // 总开关优先：README 承诺 enabled=false 时常驻段一并停用，故两位都要看。
+      text: () => {
+        const cfg = settingsOf();
+        return cfg.enabled && cfg.sectionEnabled ? renderSectionText(localeMessages()) : "";
+      },
     });
   }, "lesson-loop: systemPrompt section");
 }
@@ -1346,19 +1435,33 @@ function registerDecayTimer(runtime: ApplyRuntime): void {
     const timer = timerRaw;
     // 非 volatile 的部署值：装载期读一次即可（改值随重启生效），故不进 tick 现读。
     const intervalMs = settingsOf().decayIntervalMs;
-    void decayOnce(runtime);
     let stopped = false;
     let last: TimerDisposer | undefined;
-    const tick = (): void => {
-      if (stopped) {
+    // 退出位只经这个读口读：直接读 `stopped` 时，类型检查把它收窄成字面量 `false`
+    // （赋值发生在另一个闭包里，tsc 看不见），`if (stopped)` 会被判成恒假的分支；
+    // 经函数返回的 `boolean` 不再收窄，判据才真的是运行期的值。
+    const isStopped = (): boolean => stopped;
+    // 排下一轮而不是在起点就排：`runDecay` 要跨 provider 落盘，耗时可能超过间隔。
+    // 固定间隔重排会让两轮衰减重叠（两笔整片写互相撞 revision），改成上一轮结算后
+    // 再武装。自引用只在**调度那一刻**发生：`arm` 先跑完这一轮，再判退出位并武装下一轮。
+    // 这样"上一轮结算后才排下一轮"写在同一个函数里，读的人不必跨两处拼次序。
+    const arm = async (): Promise<void> => {
+      // 入口也读一次退出位：timer 回调已入队、disposer 先置位时，这一轮不该再起——
+      // 它会跨 provider 整片写盘，与退出清算的 CAS 写并发，输方按失败上报。
+      if (isStopped()) {
         return;
       }
-      // 衰减一轮是异步的（provider 写）：tick 本身仍是 timer 的同步回调，失败由
-      // decayOnce 内部 catch，故这里只 void 起链。
-      void decayOnce(runtime);
-      last = timer.timeout(tick, intervalMs);
+      await decayOnce(runtime);
+      // 这轮衰减等待期间 disposer 可能已置位。
+      if (isStopped()) {
+        return;
+      }
+      last = timer.timeout(() => {
+        void arm();
+      }, intervalMs);
     };
-    last = timer.timeout(tick, intervalMs);
+    // 装载期那一轮也走 arm：它与后续每一轮共用同一条"结算后再排"的次序。
+    void arm();
     return () => {
       stopped = true;
       last?.();
@@ -1424,7 +1527,7 @@ export function apply(ctx: Context, config: Config): void {
   startBootMigrations(svc, store);
 
   // sessionId → 台账：会话内复发记账，session/disposed 时清算 suppressed。
-  const { sessionWatch, pruneWatch } = createSessionWatch();
+  const { sessionWatch, pruneWatch, markSettled, hasSettled } = createSessionWatch();
 
   // settings → store 的阈值同步（pull：每次 report/decay 前执行）。
   const syncStore = (): ResolvedSettings => syncStoreFrom(store, settingsOf);
@@ -1437,6 +1540,8 @@ export function apply(ctx: Context, config: Config): void {
     localeMessages,
     sessionWatch,
     pruneWatch,
+    markSettled,
+    hasSettled,
     syncStore,
   };
 
@@ -1451,7 +1556,7 @@ export function apply(ctx: Context, config: Config): void {
   // 退出/热卸载兜底清算：headless 与 CLI 进程里 session/disposed 往往来不及送达，
   // 只挂事件的收尾在这些进程恒不执行（度量因此恒 0、规则永远不可判定）。
   svc.effect(
-    () => settleOpenSessionsOnDispose({ store, sessionWatch, settingsOf }),
+    () => settleOpenSessionsOnDispose({ store, sessionWatch, settingsOf, markSettled }),
     "lesson-loop: 退出清算",
   );
 

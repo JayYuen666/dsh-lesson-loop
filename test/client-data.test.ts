@@ -10,6 +10,7 @@
 /// <reference types="node" />
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ReactNode } from "react";
 import { LlcCard, NumberInputRow } from "../src/client-entry.ts";
@@ -624,6 +625,75 @@ describe("client 数据面：保存是一次原子提交", () => {
       "草稿没落盘，状态条不许回到干净态",
     );
     assert.equal(controlOf(card.tree(), "save").disabled, false, "仍可重试");
+  });
+
+  it("保存在途时配置行一起冻结（否则在途改动落不进本次提交，却会被受理后的清草稿抹掉）", async () => {
+    vi.stubGlobal("fetch", fetchStubOf(async () => jsonResponse(statsBody())).fetch);
+    // 闸门借 node:events 的 once 挂在 signal 上（promise/avoid-new：不手搓 Promise）。
+    const gate = new AbortController();
+    const card = mount(
+      LlcCard as never,
+      cardProps(READY, async () => {
+        await once(gate.signal, "abort");
+        return true;
+      }),
+    );
+    await card.settle();
+
+    (controlOf(card.tree(), "enabled").onClick as () => void)();
+    (controlOf(card.tree(), "save").onClick as () => void)();
+    await card.settle();
+
+    assert.equal(controlOf(card.tree(), "enabled").disabled, true, "在途时开关不许可编辑");
+    assert.equal(
+      controlOf(card.tree(), "promoteThreshold").disabled,
+      true,
+      "在途时数字输入不许可编辑",
+    );
+    gate.abort();
+    await card.settle();
+    assert.equal(controlOf(card.tree(), "enabled").disabled, false, "受理后恢复可编辑");
+  });
+
+  it("受理后只清本次提交的键：在途窗口里改的新草稿不许被抹成「已保存」", async () => {
+    vi.stubGlobal("fetch", fetchStubOf(async () => jsonResponse(statsBody())).fetch);
+    // 闸门借 node:events 的 once 挂在 signal 上（promise/avoid-new：不手搓 Promise）。
+    const gate = new AbortController();
+    const card = mount(
+      LlcCard as never,
+      cardProps(READY, async () => {
+        await once(gate.signal, "abort");
+        return true;
+      }),
+    );
+    await card.settle();
+
+    // 提交 enabled（进入在途），随后直接驱动数字控件改 promoteThreshold。
+    (controlOf(card.tree(), "enabled").onClick as () => void)();
+    (controlOf(card.tree(), "save").onClick as () => void)();
+    await card.settle();
+    // 直接调 onChange 绕过 disabled：这里要验的是"提交集合与清草稿集合必须一致"，
+    // DOM 面的冻结由上面那条用例覆盖。
+    (
+      controlOf(card.tree(), "promoteThreshold").onChange as (event: {
+        target: { value: string };
+      }) => void
+    )({
+      target: { value: "9" },
+    });
+    gate.abort();
+    await card.settle();
+
+    assert.equal(
+      controlOf(card.tree(), "promoteThreshold").value,
+      "9",
+      "没进本次提交的草稿必须留着",
+    );
+    assert.equal(
+      card.text().includes(UI_MESSAGES.zh.statusClean),
+      false,
+      "还有未提交草稿时不许显示干净态",
+    );
   });
 });
 

@@ -24,7 +24,6 @@ import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 
-import { PERSIST_FAILED } from "./lesson-store.ts";
 import type { LessonStore, RuleCard } from "./lesson-store.ts";
 import { fill } from "./messages.ts";
 import type { LessonLoopMessages } from "./messages.ts";
@@ -40,15 +39,21 @@ import type {
   RuleView,
 } from "./rules-shape.ts";
 
-/** 人工动作白名单：与卡片按钮、`LessonStore.ruleAction` 的取值域同集。 */
-const ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
-  "arm",
-  "reject",
-  "demote",
-  "archive",
-  "edit",
-  "revive",
-]);
+/**
+ * 人工动作白名单：`Record<RuleActionName, true>` 由类型联合派生——`RuleActionName`
+ * 新增/改名成员而这里漏改，会在编译期红，而不是运行期把合法动作静默判成 400。
+ * 与卡片按钮、`LessonStore.ruleAction` 的取值域同集。
+ */
+const ALLOWED_ACTIONS: ReadonlySet<string> = new Set(
+  Object.keys({
+    arm: true,
+    reject: true,
+    demote: true,
+    archive: true,
+    edit: true,
+    revive: true,
+  } satisfies Record<RuleActionName, true>),
+);
 
 function isRuleAction(value: unknown): value is RuleActionName {
   return typeof value === "string" && ALLOWED_ACTIONS.has(value);
@@ -172,9 +177,9 @@ export class LessonRulesService extends TypertRemoteService {
         return { ok: false, error: messages.errRuleNotFound, status: 404 };
       }
       if (outcome === "persist-failed") {
-        // PERSIST_FAILED 是回执码不是文案——它与 report() 的 receipt.reason 同一个值，
-        // 翻译它会让调用方的判等作用失效。
-        return { ok: false, error: PERSIST_FAILED, status: 500 };
+        // 回显走消息表（卡片直接显示 error 串）：PERSIST_FAILED 是 report() 回执的内部
+        // 判等码，不是给人读的文案——把它原样贴给用户，用户看到的是一句没有出处的话。
+        return { ok: false, error: messages.errRulePersistFailed, status: 500 };
       }
       return { ok: true, id, action };
     } catch (error) {
@@ -236,7 +241,15 @@ export function installRulesRemote(ctx: Context, deps: LessonRulesDeps): boolean
   if (!isRecord(reflect) || typeof reflect.provide !== "function") {
     return false;
   }
-  // oxlint-disable-next-line eslint/no-new -- 见函数文档：构造即注册，返回值无意义
-  new LessonRulesService(ctx, deps);
+  try {
+    // oxlint-disable-next-line eslint/no-new -- 见函数文档：构造即注册，返回值无意义
+    new LessonRulesService(ctx, deps);
+  } catch (error) {
+    // 构造期注册（super(ctx, namespace) 的 reflect.provide / provide 内部校验）仍可能
+    // 抛错（命名空间重复注册一类）：只该少掉卡片这一栏，绝不让 apply 当场炸掉；
+    // 静默缺席难定位，留一条日志。
+    console.error(`[lesson-loop] rules review service registration failed: ${errorText(error)}`);
+    return false;
+  }
   return true;
 }

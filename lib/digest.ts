@@ -32,15 +32,18 @@ import type { Session, SessionEvent, SessionHeader } from "@deepseek-ai/dsh-sess
 import type { AgentDefaultModelConfig } from "@deepseek-ai/dsh-agent-default-model";
 // 注入消息的 id 位是官方幻影品牌 `MessageId`，唯一合法构造口是官方 `brandString`（恒等函数；
 // 口径：dsh-brand 在 peerDependencies，产物留裸说明符，不再内联）。本文件与 host.ts 共用这
-// 同一条口径——两半各自自包含，谁也不 import 谁的运行时。
+// 同一条口径——两半各自自包含，谁也不 import 谁的运行时。`reasoningEffort` 的品牌同源
+// （`Branded` 原语与构造器都住在 dsh-brand，dsh-llm 只交出类型位），故透传它也只引类型。
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type {
-  FinishReason,
   LlmRuntime,
   MessageId,
+  ReasoningEffortId,
   StreamChunk,
   UserMessage,
 } from "@deepseek-ai/dsh-llm";
+import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
+import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { deriveProject } from "./lesson-store.ts";
 import type { LessonStore } from "./lesson-store.ts";
 import { fenceUntrusted, LESSON_SOURCE_KIND } from "./prompt.ts";
@@ -51,12 +54,12 @@ import {
   lessonsBackground,
   parseDigestOutput,
 } from "./digest-prompt.ts";
+import type { DigestParsedRule } from "./digest-prompt.ts";
 import { fill } from "./messages.ts";
 import type { LessonLoopMessages } from "./messages.ts";
 
 export type { SessionEvent } from "@deepseek-ai/dsh-session";
 
-/**
 /**
  * 会话的归因读取面 = **官方 `Session` 的键名投影**（installed
  * @deepseek-ai/dsh-session/lib/types/index.d.ts：`get id(): SessionId` :154、
@@ -107,7 +110,9 @@ export type AgentDefaultModel = Pick<AgentDefaultModelConfig, "currentSelection"
 /** 默认模型选择 = 官方 `ModelSelection` 的三位形状，但**可选性按交付面放宽**：`currentSelection()`
  *  是宿主服务交回来的值，官方声明里 `provider`/`model` 必选，而本包拿到的是跨边界交付——配置
  *  没落、Volatile 引用未解析时照样可能是缺位的半截对象。守卫留在 runDigest 入口，类型不再替
- *  宿主打包票。
+ *  宿主打包票。`reasoningEffort` 是官方选择保留的第三位，runDigest 会把它**原样透传**给
+ *  `llm.stream`（官方 `GenerateOptions` 受理该位）——类型面留着它却不用它，等于把用户选定
+ *  的推理强度静默丢给适配器默认档。
  *
  *  为什么不直接 import 官方类型：那会在 `types/lib/digest.d.ts` 里留下裸说明符
  *  `@deepseek-ai/dsh-agent`，而本包只把它当 devDependency——消费方按 manifest 装依赖，
@@ -154,18 +159,6 @@ export function digestCreatedLine(
 export const DEFAULT_DIGEST_TIMEOUT_MS = 120_000;
 
 /**
- * drain llm.stream → 全文。流块与终态就此是**官方判别联合**（installed
- * @deepseek-ai/dsh-llm/lib/types/index.d.ts 的 `StreamChunk` 与 `FinishReason`，
- * dir-prep-organize 同批绑定）：`switch/===` 比 `chunk.type` 即收窄载荷，块换名或换字段
- * 在本文件当场编译不过——旧镜像把三块形状手抄成 `{ type?: string; text?: unknown;
- * reason?: {...} }`，那份抄本既不允许编译器认识真实的块集合，也 let 本包把"缺 text"
- * 这种事写成合法形状。
- * 交付侧的宽容保留：`typeof chunk.text === "string"` 与 `typeof failed?.message === "string"`
- * 都不删。`kind` 的兜底走 kindLabel()：官方形状说的是适配器的**契约**，
- * 而 test/digest.test.ts 钉的是**实际吐出来的块**缺字段 / kind 非字符串那几档 ——
- * 声明里有没有，和运行时读不读得懂，是两件事，缺了后者就会把 `{kind}` 印给用户。
- */
-/**
  * 从终态块里取"结束原因"的**可打印标签**。
  *
  * 参数刻意是 `unknown` 而不是 `FinishReason`：官方判别联合声明每档必带 `kind`，
@@ -182,34 +175,56 @@ function kindLabel(reason: unknown): string {
   return typeof kind === "string" && kind !== "" ? kind : "unknown";
 }
 
+/**
+ * drain llm.stream → 全文。流块与终态就此是**官方判别联合**（installed
+ * @deepseek-ai/dsh-llm/lib/types/index.d.ts 的 `StreamChunk` 与 `FinishReason`，
+ * dir-prep-organize 同批绑定）：`switch/===` 比 `chunk.type` 即收窄载荷，块换名或换字段
+ * 在本文件当场编译不过——旧镜像把三块形状手抄成 `{ type?: string; text?: unknown;
+ * reason?: {...} }`，那份抄本既不允许编译器认识真实的块集合，也 let 本包把"缺 text"
+ * 这种事写成合法形状。
+ * 交付侧的宽容保留，且"finish 块有没有"与"reason 读不读得懂"分开记：`reason` 按官方
+ * 声明必在，但跨边界交付会漂移——把它直接塞进 `FinishReason` 变量，缺位时会被误判成
+ * "缺 finish 块"（errMissingFinishChunk 说的是另一件事），非对象时 `.kind` 会绕过全部
+ * 注入文案直接 TypeError。所以 `reason` 落 unknown，读侧经 isRecord/Reflect 收窄；
+ * `typeof chunk.text === "string"` 与 `typeof failed.message === "string"` 两道交付判据
+ * 同理保留。`kind` 的兜底走 kindLabel()：官方形状说的是适配器的**契约**，而
+ * test/digest.test.ts 钉的是**实际吐出来的块**缺字段 / kind 非字符串那几档——声明里
+ * 有没有，和运行时读不读得懂，是两件事，缺了后者就会把 `{kind}` 印给用户。
+ */
 async function drainStreamToText(
   stream: AsyncIterable<StreamChunk>,
   messages: LessonLoopMessages,
 ): Promise<string> {
   let text = "";
-  let finish: FinishReason | undefined;
+  let finishSeen = false;
+  let finishReason: unknown;
   for await (const chunk of stream) {
     if (chunk.type === "text-delta" && typeof chunk.text === "string") {
       text += chunk.text;
     } else if (chunk.type === "finish") {
-      finish = chunk.reason;
+      finishSeen = true;
+      finishReason = chunk.reason;
     }
   }
-  if (finish === undefined) {
+  if (!finishSeen) {
     throw new Error(messages.errMissingFinishChunk);
   }
-  if (finish.kind !== "stop") {
+  if (!isRecord(finishReason) || finishReason["kind"] !== "stop") {
     // 官方 `FinishReason` 只在 `aborted` / `error` 两档带 `failure`（installed
     // @deepseek-ai/dsh-llm/lib/types/types.d.ts:132-150），`tool-calls`/`max-tokens` 没有这一位。
     // 旧镜像写成"任何非 stop 都可能带 failure"，那是比契约更宽的声明：宽出来的一档
-    // 在渲染分支里长出测不到的路径。现在按官方判别联合收窄后再读，`typeof === "string"`
-    // 那道交付判据保留（适配器交来的 failure 形状不由本包决定）。
+    // 在渲染分支里长出测不到的路径。现在按官方判别联合收窄后再读，交付判据
+    // （failure 是否对象、message 是否字符串）保留——适配器交来的形状不由本包决定。
     const failed =
-      finish.kind === "aborted" || finish.kind === "error" ? finish.failure : undefined;
-    const detail = typeof failed?.message === "string" ? `: ${failed.message}` : "";
+      isRecord(finishReason) &&
+      (finishReason["kind"] === "aborted" || finishReason["kind"] === "error")
+        ? Reflect.get(finishReason, "failure")
+        : undefined;
+    const detail =
+      isRecord(failed) && typeof failed["message"] === "string" ? `: ${failed["message"]}` : "";
     throw new Error(
       fill(messages.errIncompleteFinish, {
-        kind: kindLabel(finish),
+        kind: kindLabel(finishReason),
         failure: detail,
       }),
     );
@@ -229,8 +244,8 @@ export interface DigestResult {
   feedbackCount: number;
   /** 真的落进规则库的候选。 */
   created: DigestCreatedRule[];
-  /** 模型提出了、但这一次没写进规则库的候选（规则库拒写 / CAS 重放耗尽）。
-   *  命令回显必须把它与 created 分开讲：库里的那张卡并不存在。 */
+  /** 模型提出了、但这一次没写进规则库的候选（规则库拒写 / CAS 重放耗尽 / 落库中途
+   *  抛错）。命令回显必须把它与 created 分开讲：库里的那张卡并不存在。 */
   dropped: DigestCreatedRule[];
   raw: string;
 }
@@ -253,34 +268,44 @@ export interface DigestRunOptions {
   timeoutMs: number;
 }
 
-/**
- * 执行一次蒸馏：差评收集 → LLM 归纳 → 建候选规则（origin 'lessons-digest'）。
- * 任何一步失败都抛错由调用方呈现（命令 handler / 端点）。
- */
-export async function runDigest(
-  store: LessonStore,
-  session: SessionLike,
-  llm: LlmService,
-  selection: ModelSelection | undefined,
-  options: DigestRunOptions,
-): Promise<DigestResult> {
-  const { messages, extra, events } = options;
-  if (selection?.provider === undefined || selection.model === undefined) {
-    throw new Error(messages.errNoModelSelection);
-  }
-  const feedbacks = collectNegativeFeedback(unknownArray(events));
-  const project = deriveProject(session.header?.cwd);
-  const background = lessonsBackground(store, project, messages);
-  const prompt = buildDigestPrompt(feedbacks, background, messages, extra);
+/** 守卫后的模型选择：provider / model 已在 runDigest 入口判过（必有、非空白）。 */
+interface ResolvedModelSelection {
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort?: string;
+}
 
+/**
+ * 发一次模型流并收取全文。墙钟只约束这一段（LLM 阶段）：串行落库不可中止，不该顶着
+ * 已无意义的定时器跑。超时与其他失败分开讲：适配器对 abort 的收场形态不一（AbortError、
+ * 流提前结束、finish kind=aborted），直接透出就是一句未本地化的底层错误文本，甚至会被
+ * 误报成"缺 finish 块"；流在 abort 后自己恢复并交出合法 finish 的情形不算失败
+ * （墙钟只保证不再干等，结果照收）。
+ */
+async function streamDigestText(
+  llm: LlmService,
+  selection: ResolvedModelSelection,
+  prompt: string,
+  messages: LessonLoopMessages,
+  timeoutMs: number,
+): Promise<string> {
   const controller = new AbortController();
+  // 用对象持窄化逃不掉的"跨回调改写"标记：裸 let 的字面量初始化会被流程分析钉成
+  // 恒 false（回调里的赋值不进它的图），对象属性不参与那个窄化。
+  const timeoutState = { fired: false };
   const timer = setTimeout(() => {
+    timeoutState.fired = true;
     controller.abort();
-  }, options.timeoutMs);
+  }, timeoutMs);
   try {
     const stream = llm.stream({
       provider: selection.provider,
       model: selection.model,
+      // 官方选择里的第三位原样透传（GenerateOptions 受理 `reasoningEffort`）：品牌构造
+      // 走 dsh-brand 的 brandString（恒等函数），不为此引 dsh-llm 的运行时。
+      ...(selection.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: brandString<ReasoningEffortId>(selection.reasoningEffort) }),
       // 帧走 `DigestRequestMessage`（官方 `RequestMessage` 的 `Message` 那一臂，见文件顶部）：
       // 稳定 `id` 与 producer 归属都是这一臂的形状要求。这帧从不落任何持久消息位（runDigest
       // 只把 prompt 送进适配器、结果经 store 写进设置段），但形状仍按 `Message` 交，
@@ -298,50 +323,152 @@ export async function runDigest(
       system: digestSystemPrompt(messages),
       signal: controller.signal,
     });
-    const raw = await drainStreamToText(stream, messages);
-    if (raw.length === 0) {
-      throw new Error(messages.errEmptyDigest);
-    }
-    const parsed = parseDigestOutput(raw);
-    // 建卡是 provider 写（异步）：一条条**串行**跑，避免同一命名空间上 N 条并发 CAS
-    // 互相撞车。写成递归而不是 for + await：循环里的 await 会被 lint 判成"该并发"，
-    // 这里恰恰并发不了（并发只会撞 revision，见 lib/lesson-store.ts 的 commit 注释）。
-    // 落库失败（CAS 耗尽 / 端口拒写）**不计进 created**：卡片列表里没有的规则不能回显成
-    // "已蒸馏"，那是让人去卡片上找一张不存在的卡（见 CandidateReceipt 的注释）。
-    const acc: { created: DigestCreatedRule[]; dropped: DigestCreatedRule[] } = {
-      created: [],
-      dropped: [],
-    };
-    const addInOrder = async (index: number): Promise<void> => {
-      const entry = parsed[index];
-      if (entry === undefined) {
-        return;
+    try {
+      return await drainStreamToText(stream, messages);
+    } catch (error) {
+      if (timeoutState.fired) {
+        // 超时的一档把底层错误拴在 cause 上（排障可见），给人看的是本地化文案。
+        throw new Error(fill(messages.errDigestTimeout, { ms: timeoutMs }), { cause: error });
       }
-      const { card, persisted } = await store.addCandidate({
-        project,
+      throw error;
+    } finally {
+      // 墙钟只约束 LLM 阶段：落库在 timer 清掉之后才跑。
+      clearTimeout(timer);
+    }
+  } finally {
+    // stream 构造即同步抛错的那条路走这里兜底；已清过的定时器再清一次是幂等的。
+    clearTimeout(timer);
+  }
+}
+
+/** 单条候选的落库回执：null = 落库抛 I/O 异常（已记日志），调用方记 dropped。 */
+type CandidateAttempt = Awaited<ReturnType<LessonStore["addCandidate"]>> | null;
+
+/** 单条落库（异常折成 null）：单条失败不拖垮整次蒸馏，否则"前面已落库的候选"
+ *  会随整体失败一起从回执里消失——用户以为一条都没写，库里却留下了无处对账的卡。 */
+async function attemptCandidate(
+  store: LessonStore,
+  project: string,
+  entry: DigestParsedRule,
+  prompt: string,
+): Promise<CandidateAttempt> {
+  try {
+    return await store.addCandidate({
+      project,
+      category: entry.category,
+      signature: entry.signature,
+      statement: entry.statement,
+      detail: prompt,
+      source: "lessons-digest",
+    });
+  } catch (error) {
+    console.error(`[lesson-loop] digest persist failed: ${errorText(error)}`);
+    return null;
+  }
+}
+
+/** 候选规则串行落库：一条条跑，避免同一命名空间上 N 条并发 CAS 互相撞车。写成递归
+ *  而不是 for + await：循环里的 await 会被 lint 判成"该并发"，这里恰恰并发不了
+ *  （并发只会撞 revision，见 lib/lesson-store.ts 的 commit 注释）。落库失败
+ *  （CAS 耗尽 / 端口拒写 / 抛错）**不计进 created**：卡片列表里没有的规则不能回显成
+ *  "已蒸馏"，那是让人去卡片上找一张不存在的卡（见 CandidateReceipt 的注释）。 */
+async function persistCandidates(
+  store: LessonStore,
+  project: string,
+  parsed: readonly DigestParsedRule[],
+  prompt: string,
+): Promise<{ created: DigestCreatedRule[]; dropped: DigestCreatedRule[] }> {
+  const acc: { created: DigestCreatedRule[]; dropped: DigestCreatedRule[] } = {
+    created: [],
+    dropped: [],
+  };
+  const addInOrder = async (index: number): Promise<void> => {
+    const entry = parsed[index];
+    if (entry === undefined) {
+      return;
+    }
+    const receipt = await attemptCandidate(store, project, entry, prompt);
+    if (receipt === null) {
+      // 这一档没有 card，回执带上报原文。
+      acc.dropped.push({
         category: entry.category,
         signature: entry.signature,
         statement: entry.statement,
-        detail: prompt,
-        source: "lessons-digest",
       });
-      const line = {
-        category: card.category,
-        signature: card.signature,
-        statement: card.statement,
-      };
-      (persisted ? acc.created : acc.dropped).push(line);
-      await addInOrder(index + 1);
-    };
-    await addInOrder(0);
-    return {
-      project,
-      feedbackCount: feedbacks.length,
-      created: acc.created,
-      dropped: acc.dropped,
-      raw,
-    };
-  } finally {
-    clearTimeout(timer);
+    } else {
+      // 回显用卡片上真实存下的字段（签名可能已被折叠成类别级稳定键），不是上报原文。
+      acc[receipt.persisted ? "created" : "dropped"].push({
+        category: receipt.card.category,
+        signature: receipt.card.signature,
+        statement: receipt.card.statement,
+      });
+    }
+    await addInOrder(index + 1);
+  };
+  await addInOrder(0);
+  return acc;
+}
+
+/**
+ * 执行一次蒸馏：差评收集 → LLM 归纳 → 建候选规则（origin 'lessons-digest'）。
+ * 任何一步失败都抛错由调用方呈现（命令 handler / 端点）。
+ */
+export async function runDigest(
+  store: LessonStore,
+  session: SessionLike,
+  llm: LlmService,
+  selection: ModelSelection | undefined,
+  options: DigestRunOptions,
+): Promise<DigestResult> {
+  const { messages, extra, events, timeoutMs } = options;
+  const provider = selection?.provider;
+  const model = selection?.model;
+  const reasoningEffort = selection?.reasoningEffort;
+  if (
+    provider === undefined ||
+    model === undefined ||
+    provider.trim().length === 0 ||
+    model.trim().length === 0
+  ) {
+    throw new Error(messages.errNoModelSelection);
   }
+  // 交付面守卫：events 非数组（host 取数失败交回了别的形状）退空表继续跑，但必须留下
+  // 一条诊断——"零证据蒸馏"与"真的没有差评"在回执上同形（feedbackCount: 0），没有这条
+  // 日志，取数侧的集成故障会长期隐形。
+  if (!Array.isArray(events)) {
+    console.warn(
+      `[lesson-loop] digest events payload is not an array (${typeof events}); digesting without feedback`,
+    );
+  }
+  const feedbacks = collectNegativeFeedback(unknownArray(events));
+  const project = deriveProject(session.header?.cwd);
+  const background = lessonsBackground(store, project, messages);
+  const prompt = buildDigestPrompt(feedbacks, background, messages, extra);
+
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(messages.errDigestTimeoutInvalid);
+  }
+  const resolved: ResolvedModelSelection = {
+    provider,
+    model,
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+  };
+  const raw = await streamDigestText(llm, resolved, prompt, messages, timeoutMs);
+  if (raw.length === 0) {
+    throw new Error(messages.errEmptyDigest);
+  }
+  const { rules: parsed, parsed: readable } = parseDigestOutput(raw);
+  if (!readable) {
+    // 模型给了读不懂的输出：不能走成"蒸馏出 0 条"的正常路径，那会让人以为模型
+    // 确实没提出任何条目。
+    throw new Error(messages.errUnreadableDigest);
+  }
+  const { created, dropped } = await persistCandidates(store, project, parsed, prompt);
+  return {
+    project,
+    feedbackCount: feedbacks.length,
+    created,
+    dropped,
+    raw,
+  };
 }

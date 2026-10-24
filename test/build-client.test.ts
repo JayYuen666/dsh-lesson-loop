@@ -2,7 +2,7 @@
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildClient, clientExternals } from "../build-client.mjs";
+import { buildClient, clientExternals, singleEntryChunk } from "../build-client.mjs";
 import { clientFreshnessEvidence } from "./client-freshness.ts";
 import { bundleSlotKeyFacts } from "./profile-bundle.ts";
 import { schemaCoverageProblems } from "./schema-coverage.ts";
@@ -50,7 +50,7 @@ describe("buildClient", () => {
   it("生成 UMD 外壳（id=包名）并包含卡片代码", async () => {
     const out = await buildClient();
     assert.match(out, /window\.__ModuleLoader__\.load\(/u);
-    assert.ok(out.includes(`id: '${PKG_NAME}'`));
+    assert.ok(out.includes(`  id: ${JSON.stringify(PKG_NAME)},`));
     assert.match(out, /factory: \(require\)/u);
     // 卡片代码被打进去（React createElement 与端点路径）
     assert.match(out, /plugins\.bundle\.config/u);
@@ -98,16 +98,23 @@ describe("buildClient", () => {
 // **问题清单**、不登记用例（vitest/require-hook 不收 hook 外的 setup，隔层断言
 // vitest/expect-expect 也看不见），故断言写在本文件的用例体内。
 // 本包 11 项 volatile 设置字段全部有卡面控件（buildConfigRows 的 ToggleRow/NumberInputRow
-// 行，field props 写字面量），只三项非 volatile 部署值声明豁免；helper 会反向校验
-// 豁免项确实未绑定，所以豁免表不能用来藏本该上卡的东西。
-// ⚠ 门禁看不见 `rules`：host.ts 那一位写的是 `rules: RulesFieldSchema`（引用而不是
-// `Schema.` 内联式），正则不认；它的写入面在规则卡（webServer 动作 + lib/rules-namespace.ts
-// 的 RULES_FIELD），不由这张表管。
+// 行，field props 写字面量），另两项声明豁免；helper 会反向校验豁免项确实未绑定，所以
+// 豁免表不能用来藏本该上卡的东西。
+//
+// `rules` 是**整片规则库对象**而非一个可填的行式值：它的读面走 Typert remote 的
+// `lessonLoopRules` 命名空间，写面是 lib/rules-namespace.ts 里以计算键
+// `{ [RULES_FIELD]: … }` 调 surface.update，界面上由规则卡（renderRuleSection）按
+// 状态分组呈现。它没有、也不该有一个 ToggleRow/NumberInputRow，故在此显式豁免。
 describe("卡片字段覆盖 host schema（test/schema-coverage.ts）", () => {
   it("除三项部署值外，host 设置字段全部绑定到卡面控件", () => {
     assert.deepEqual(
       schemaCoverageProblems(import.meta.url, {
         allowUnbound: [
+          {
+            field: "rules",
+            reason:
+              "整片规则库对象（不是行式设置值）：读面走 Typert remote 的 lessonLoopRules 命名空间，写面是 lib/rules-namespace.ts 的计算键写入，界面由规则卡按状态分组渲染，没有也不该有 ToggleRow/NumberInputRow",
+          },
           {
             field: "digestTimeoutMs",
             reason:
@@ -127,5 +134,54 @@ describe("卡片字段覆盖 host schema（test/schema-coverage.ts）", () => {
       }),
       [],
     );
+  });
+});
+
+/** 输出守卫测试用的最小 chunk 正文。 */
+const CHUNK_CODE = "export {};";
+/** 输出守卫测试用的产物文件名。 */
+const ARTIFACT_FILE = "artifact.js";
+
+/**
+ * 造一个最小输出项；判据只看 type/fileName/isEntry/code。
+ * @param type - rolldown 输出项类型
+ * @param fileName - 产物文件名
+ * @param extra - 该类型需要的其余字段
+ * @returns 可交给 singleEntryChunk 的输出项
+ */
+function outputItem(
+  type: string,
+  fileName: string,
+  extra: Partial<{ isEntry: boolean; code: string }> = {},
+): { type: string; fileName: string } & Partial<{ isEntry: boolean; code: string }> {
+  return { type, fileName, ...extra };
+}
+
+describe("单文件产物的输出守卫", () => {
+  it("拒绝多个 chunk：单文件产物不能静默丢掉第二个", () => {
+    const output = [
+      outputItem("chunk", ARTIFACT_FILE, { isEntry: true, code: CHUNK_CODE }),
+      outputItem("chunk", "chunk-abc.js", { isEntry: false, code: CHUNK_CODE }),
+    ];
+    assert.throws(() => singleEntryChunk(output, "entry.ts"), /2 项输出/u);
+  });
+
+  it("拒绝 asset：单文件产物没有落盘 asset 的位置", () => {
+    const output = [
+      outputItem("chunk", ARTIFACT_FILE, { isEntry: true, code: CHUNK_CODE }),
+      outputItem("asset", "x.css"),
+    ];
+    assert.throws(() => singleEntryChunk(output, "entry.ts"), /2 项输出/u);
+  });
+
+  it("拒绝非 entry 的单个 chunk", () => {
+    const output = [outputItem("chunk", "chunk-abc.js", { isEntry: false, code: CHUNK_CODE })];
+    assert.throws(() => singleEntryChunk(output, "entry.ts"), /entry chunk/u);
+  });
+
+  it("接受唯一的 entry chunk", () => {
+    const output = [outputItem("chunk", ARTIFACT_FILE, { isEntry: true, code: CHUNK_CODE })];
+    const chunk = singleEntryChunk(output, "entry.ts");
+    assert.equal(chunk.code, CHUNK_CODE);
   });
 });

@@ -29,39 +29,108 @@ export interface AllowUnbound {
   reason: string;
 }
 
-/** 从 host.ts 抽取 `Schema.object({...})` 块内的字段名。 */
-function hostSchemaFields(hostTs: string): string[] {
+/** 从引号处跳到它的配对引号（返回闭合引号的下标）；未闭合则到文末。 */
+function skipString(src: string, quoteAt: number): number {
+  const quote = src[quoteAt] ?? "";
+  for (let i = quoteAt + 1; i < src.length; i += 1) {
+    const char = src[i] ?? "";
+    if (char === "\\") {
+      i += 1;
+    } else if (char === quote) {
+      return i;
+    }
+  }
+  return src.length;
+}
+
+/** 若 `at` 处起是一段字符串或注释，返回它最后一个字符的下标；否则 -1。
+ *  抽成这条"跳过一段"的判据而不是在循环里写 continue，是因为括号深度只能靠
+ *  **一次一次往前挪**来数，而字符串/注释里的括号必须整段跳过。 */
+function skipNonCode(src: string, at: number): number {
+  const char = src[at] ?? "";
+  if (char === '"' || char === "'" || char === "`") {
+    return skipString(src, at);
+  }
+  if (char !== "/") {
+    return -1;
+  }
+  if (src[at + 1] === "/") {
+    const stop = src.indexOf("\n", at);
+    return stop === -1 ? src.length : stop;
+  }
+  if (src[at + 1] === "*") {
+    const stop = src.indexOf("*/", at + 2);
+    return stop === -1 ? src.length : stop + 1;
+  }
+  return -1;
+}
+
+/** 从 `open` 处（指向 `(`）起找到与它配对的右括号下标；字符串与注释里的括号不计。
+ *  只按字符深度数括号会被 `default("x)y")` 这类字面量骗到：那个 `)` 让深度提前归零，
+ *  块在字符串中间被截断，其后的字段全部读不到（假绿 —— 门禁以为字段集就这么多）。 */
+function matchParen(src: string, open: number): number {
+  let depth = 0;
+  let at = open;
+  while (at < src.length) {
+    const skipped = skipNonCode(src, at);
+    if (skipped === -1) {
+      const char = src[at] ?? "";
+      if (char === "(") {
+        depth += 1;
+      } else if (char === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          return at;
+        }
+      }
+      at += 1;
+    } else {
+      at = skipped + 1;
+    }
+  }
+  return -1;
+}
+
+/** 从 host.ts 抽取 `Schema.object({...})` 块内的字段名。
+ *
+ *  两条判据都不能省：① 深度匹配要跳过字符串，否则值里的括号会把块截断；
+ *  ② 字段值的写法**不限于 `Schema.`** —— `rules: RulesFieldSchema` 引用的是另一枚
+ *  schema 常量，按 `\s*Schema\.` 匹配就会把它当"不存在"，于是这个字段永远不上卡也
+ *  不会被门禁点名（假绿）。改为按**块内基准缩进**取顶层键：缩进必须与块内第一个
+ *  字段行一致，这样嵌套对象的内部键不会被误当成顶层字段。 */
+export function hostSchemaFields(hostTs: string): string[] {
   const marker = "Schema.object(";
   const start = hostTs.indexOf(marker);
   if (start === -1) {
     return [];
   }
-  // 从 Schema.object( 的左括号起做深度匹配，取到对应右括号
   const open = hostTs.indexOf("(", start);
   if (open === -1) {
     return [];
   }
-  let depth = 0;
-  let end = -1;
-  for (let i = open; i < hostTs.length; i += 1) {
-    const char = hostTs[i] ?? "";
-    if (char === "(") {
-      depth += 1;
-    } else if (char === ")") {
-      depth -= 1;
-      if (depth === 0) {
-        end = i;
-        break;
-      }
-    }
-  }
+  const end = matchParen(hostTs, open);
   if (end === -1) {
     return [];
   }
   const block = hostTs.slice(open + 1, end);
-  return [...block.matchAll(/^(?<indent>\s{2,})(?<field>[A-Za-z_$][\w$]*):\s*Schema\./gmu)].map(
-    (match) => match.groups?.["field"] ?? "",
-  );
+  const fields = new Map<string, string>();
+  let baseIndent: string | null = null;
+  for (const line of block.split("\n")) {
+    const match = /^(?<indent>\s*)(?<field>[A-Za-z_$][\w$]*)\s*:/u.exec(line);
+    if (match !== null && !line.trim().startsWith("//") && !line.trim().startsWith("/*")) {
+      const indent = match.groups?.["indent"] ?? "";
+      const field = match.groups?.["field"] ?? "";
+      if (field !== "" && indent !== "") {
+        // 基准缩进就是块内第一个字段行的缩进：只收严格等于它的行，
+        // 嵌套对象的内部键（更深一层）因此不会被误当成顶层字段。
+        baseIndent ??= indent;
+        if (indent === baseIndent) {
+          fields.set(field, field);
+        }
+      }
+    }
+  }
+  return [...fields.keys()];
 }
 
 /** 捕获组取值（严格模式下 matchAll 捕获为 `string | undefined`，这里收口为 string）。 */

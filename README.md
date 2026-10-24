@@ -1,124 +1,208 @@
-# @jayyuen66/dsh-lesson-loop
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/JayYuen666/dsh-lesson-loop@main/icon.svg" width="96" height="96" alt="dsh-lesson-loop logo" />
+</p>
 
-[中文](./README.zh-CN.md)
+<h1 align="center">dsh-lesson-loop</h1>
 
-### What it does
+<p align="center"><em>Guard denials, gate failures and human thumb-downs become project lessons; only a rule a human confirmed is injected back into the model at session start.</em></p>
 
-- A self-evolution loop plugin for dsh: guard denials, gate failures, abnormal resumptions and human negative feedback go through one bus, sink into project lessons and rule cards, and confirmed rules get injected back into the model at session start.
-- The host half `provide`s the `lessonLoop` service (other plugins read it optionally via `ctx.get("lessonLoop")`); the client half is a web settings card (switches + rule review desk, declared in `dsh.client` as `platform: web`, `immediately: true`).
-- A machine never promotes a rule: a candidate takes effect only after a human presses `arm` in the card.
-- Runtime dependencies are only `@deepseek-ai/schemastery` (the host's fork - public `schemastery` has no `.volatile()`), `@deepseek-ai/dsh-home-paths`, `@deepseek-ai/dsh-brand` and `@jayyuen66/dsh-plugin-shared`.
-  - `peerDependencies` is the **only** place the host reads a version requirement from; `engines.dsh` carries the same value but has no reader in the host (see the install acceptance checks below).
-  - The three host packages are **value** imports in the shipped `host.js`, so they are declared as required `peerDependencies` and repeated at the same exact pin in `devDependencies` for this repository's own typecheck/build/tests - never in `dependencies`. That is not a style preference: consumer profiles install with `nodeLinker: hoisted` and `autoInstallPeers: false`, so a host package listed under `dependencies` is written into the profile as a **real directory**, coexisting with the copy the host process already loaded. `@deepseek-ai/dsh-tools` keys its `TOOL_RUNTIME_SCHEDULER` with a plain `Symbol` (not `Symbol.for`), so symbol identity is per module instance: the host's `dsh-agent-loop` gets `undefined` and **every native tool call throws** `Cannot read properties of undefined (reading 'prepare')` - the whole profile loses its tools. Build, typecheck and tests all stay green right up to that point, so the invariant is pinned in `test/publish-manifest.test.ts`.
+<p align="center">
+  <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/v/@jayyuen66/dsh-lesson-loop?style=flat-square&logo=npm&logoColor=white" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/dm/@jayyuen66/dsh-lesson-loop?style=flat-square" alt="npm downloads" /></a>
+  <a href="https://github.com/JayYuen666/dsh-lesson-loop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-lesson-loop/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
+  <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
+  <img src="https://img.shields.io/badge/node-%3E%3D22.12-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
+  <img src="https://img.shields.io/badge/dsh-%5E0.2.1--rc.3-658EFF?style=flat-square" alt="dsh" />
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/powered_by_dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white" alt="powered by dsh" /></a>
+</p>
 
-### The four stages of the loop
+<p align="center">
+  <img src="https://skillicons.dev/icons?i=typescript,nodejs,react,vitest,githubactions" alt="tech stack" />
+</p>
 
-1. Observe and sink: `report()` appends the lesson as one line to `$DSH_HOME/cache/lesson-loop/events.jsonl` and merges it into a candidate card keyed by (project, category, signature); the receipt says `ready` once that key reaches `promoteThreshold` reports.
-2. Promotion (human only): actions `arm` / `reject`, plus `demote` / `archive` / `edit` / `revive`; `arm` may carry a rewritten statement and zeroes `violation` / `suppressed` / `samples` / `recurrences` so the new lifecycle is measured clean. State machine: `candidate` → `armed` → `demoted`, with `rejected` / `archived` as side exits.
-3. Remind: a permanent systemPrompt section (name `lesson-loop`, order 1560, project-agnostic) plus the full armed rules of that project injected into the root session via `agent.inject` on `agent/created` (subagent sessions are skipped).
-4. Measure and decay: `violation` = scenario triggered and violated; `suppressed` = scenario triggered and followed (`pass`-signal driven); `samples` = exposure where the rule was present and not violated (never in a denominator). One decay pass runs at load, then every `decayIntervalMs` (24 hours by default).
+<p align="center">
+  <a href="https://github.com/JayYuen666"><img src="https://img.shields.io/badge/GitHub-JayYuen666-181717?style=flat-square&logo=github&logoColor=white" alt="GitHub" /></a>
+  <a href="mailto:cqwkkj@gmail.com"><img src="https://img.shields.io/badge/Email-cqwkkj@gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white" alt="Email" /></a>
+  <a href="https://twitter.com/JayYuen666"><img src="https://img.shields.io/badge/Twitter-X%2FJayYuen666-000000?style=flat-square&logo=x&logoColor=white" alt="Twitter/X" /></a>
+  <a href="./README.zh-CN.md"><img src="https://img.shields.io/badge/lang-简体中文-658EFF?style=flat-square" alt="简体中文" /></a>
+</p>
 
-### Install
+**A self-evolution loop for [dsh](https://github.com/deepseek-ai/deepseek-harness): one lesson bus the guard plugins report to, one rule library a human curates, and armed rules injected into every new session of their project.**
+
+## <img src="https://api.iconify.design/lucide/file-text.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Contents
+
+- [What it does](#what-it-does)
+- [Install](#install)
+- [Verify it is live](#verify-it-is-live)
+- [What it does not provide](#what-it-does-not-provide)
+- [Enabling it in dsh](#enabling-it-in-dsh)
+- [The lesson bus](#the-lesson-bus)
+- [Settings](#settings)
+- [Public interface](#public-interface)
+- [Data and privacy](#data-and-privacy)
+- [Known boundaries](#known-boundaries)
+- [FAQ](#faq)
+- [Development](#development)
+- [License](#license)
+
+## <img src="https://api.iconify.design/lucide/shield.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> What it does
+
+- **One bus, no coupling.** Sibling plugins report through the optional `lessonLoop` service; a profile without this package only drops those reports. The host half provides the service, the client half renders a web card holding the switches and the rule review desk.
+- **Sink.** Each report appends one line to the event stream and merges into a candidate card keyed by (project, category, signature); at `promoteThreshold` that key is marked ready for review.
+- **A machine never promotes a rule.** Status `armed` is only ever a human decision — the card's `arm` action writes it, and the startup migration merely carries an existing armed state onto a merged card. `reject` / `demote` / `archive` / `edit` / `revive` are human actions too.
+- **Remind.** A project-agnostic standing section keeps the loop visible, and each root session receives the full text of its project's armed rules at `agent/created`. Subagent sessions are skipped.
+- **Zero model tools, zero HTTP routes of its own.** The card's data plane is the official Typert Remote namespace `lessonLoopRules`, reached through the host `/api` gateway.
+
+### How a rule is judged
+
+- Three counters answer three different questions: `violation` (the scenario fired and was broken), `suppressed` (the scenario fired and was followed, driven by `pass`), `samples` (the rule was present and not violated).
+- The only ratio is `violation / (violation + suppressed)`; `samples` is exposure and never a denominator.
+- `samples` counts a durable session once even when it is resumed: duplicate disposal edges are deduplicated, so reopening a session does not inflate exposure.
+- Demotion needs a positive `suppressed`, `violation` at `demoteThreshold`, real evidence at `demoteMinSamples`, and the ratio at `demoteRatio`.
+- A rule with zero clean hits whose scenario keeps firing is **undeterminable**: neither the ratio nor the decay can retire it, so it stays armed for a human. One `pass` clears the flag.
+
+## <img src="https://api.iconify.design/lucide/package.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Install
 
 ```sh
 dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 ```
 
-Both this package and its runtime dependency `@jayyuen66/dsh-plugin-shared` are on the public npm registry, so installs need no credentials; remove it with `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`.
+Remove with `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`. The package is on the public npm registry, so installation needs no credentials.
 
+- **Node.js `>= 22.12`, host `dsh` on the `0.2.1-rc.3` line.** The requirement the host reads is `engines.dsh` (`^0.2.1-rc.3`), and it **decides alone** — with that field present, `evaluatePluginCompatibility` never looks at the `@deepseek-ai/dsh*` peers. Measured: `0.2.0-rc.2` and `0.2.1-rc.1` are refused, `0.2.1-rc.3` and `0.2.2` pass, `0.3.0` is refused.
+- **No `@deepseek-ai/*` under `dependencies`, by contract.** Profiles install with `nodeLinker: hoisted` and `autoInstallPeers: false`, so a host package there becomes a real second copy; `@deepseek-ai/dsh-tools` keys its scheduler with a plain `Symbol`, so **every native tool call throws** in that profile while build, typecheck and coverage stay green. The four host packages `host.js` imports for value are required peers and repeated under `devDependencies` at the same exact pin, so the bundler externalizes them instead of inlining the official function bodies; `test/publish-manifest.test.ts` enforces both halves. Artifacts are rebuilt by `prepack`, never committed.
 
-### Shared version floor
+### <img src="https://api.iconify.design/lucide/arrow-down-to-line.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Shared version floor
 
-If your profile pins `@jayyuen66/dsh-plugin-shared` with a pnpm `overrides` entry, that pin must be at least the `@jayyuen66/dsh-plugin-shared` version this package declares. A lower pin installs a copy without the names this package imports at runtime, and the host then reports `N entries did not activate` with `does not provide an export named ...` when it boots -- the package installs fine and never loads, and no per-repo CI run can see it.
+If your profile pins `@jayyuen66/dsh-plugin-shared` with a pnpm `overrides` entry, that pin must be at least the version this package declares. A lower pin installs a copy without the names imported at runtime, and the host then reports `N entries did not activate` together with `does not provide an export named ...` at boot — the package installs fine and never loads, and no per-repository CI run can see it.
 
-### Enabling it in dsh
+## <img src="https://api.iconify.design/lucide/circle-check.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Verify it is live
 
-- The in-package `cordis.patch.yml`, pointed at by `dsh.bundle.patch` in `package.json`, carries the registration line `- id: lesson-loop` + `name: "@jayyuen66/dsh-lesson-loop"`; the bare package name is what makes the client half load.
-  - `dsh plugin --profile web add/remove` maintains that layer, and `dsh --profile web --dump-config` verifies it.
-- Deployment defaults may go on the registration line's `config:`; precedence is runtime value in the settings card > line `config` > built-in default, and invalid config fails the load loudly.
-- `settings` is the only plugin-level hard dependency (`default.inject = ["settings"]`). Every other service (`timer` / `commands` / `systemPrompt` / `llm`) is read optionally: a missing one only skips that capability, the plugin still loads.
-  - The card's data plane is four methods on one official Typert Remote namespace, installed unconditionally on the apply fiber — they depend on no optional host service, so unlike the old route surface they exist even on a host whose web layer arrives late or never arrives at all.
+1. **The layer is mounted.** `dsh --profile web --dump-config` ends with `# == @jayyuen66/dsh-lesson-loop` plus `- id: lesson-loop`.
+   - That command is the only accepted signal, and it is **not read-only** — it rewrites the profile's root assembly file. Read layer lines from stdout **and** check stderr separately: an unmatched patch target appears only on stderr, so the exit code alone proves nothing. Accept both `# == <layer>` and `# == <layer>, patched by <path>`.
+2. **The card renders live data.** Its header carries the current candidate / armed / lesson counts and opening it fills the rule groups. An error row reading "stats unavailable" means the layer is mounted but the Remote namespace did not reach the browser.
+3. **A lesson reaches the library.** Trigger one denial or gate failure from an installed reporter (danger-guard, quality-gate, session-rescue), or run `/lessons-digest` in a session with negative feedback; the candidate group gains evidence.
+4. **An armed rule comes back.** Arm a card, then start a new session in that project: the injected frame begins with `[lesson-loop] Experience rules for this project`. Subagent sessions receive nothing, by design.
+5. **The profile carries no host copy.** `node_modules/` in a scratch profile holds `@jayyuen66/` and no `@deepseek-ai/` directory.
 
-### Install acceptance checks
+## <img src="https://api.iconify.design/lucide/circle-slash.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> What it does not provide
 
-Four checks, all run locally against `dsh 0.2.1-rc.2` with `DSH_HOME` pointed at a temporary directory so the day-to-day profile stays untouched:
+- **No model tools.** There is no `lesson_report` tool; the surface is the service plus the card's namespace.
+- **No HTTP route of its own.** Authentication, Host / DNS-rebinding / Origin checks and body limits are the host gateway's.
+- **No CLI subcommand.** The only command it contributes is the in-session `/lessons-digest`.
+- **No outbound request of its own.** The distillation call goes through the host `llm` service.
+- **No self-re-enabling rules.** A `rejected` card may return to `candidate` at the revive threshold; only a human can arm it again.
 
-- After `dsh plugin --profile web add <tarball>`, the profile's `node_modules/` should contain exactly one scope directory, `@jayyuen66/`, and **no `@deepseek-ai/` directory**. That directory is the fingerprint of host packages leaking into `dependencies` and materializing a second copy of the host type surface in the profile - the invariant `test/publish-manifest.test.ts` guards.
-- `dsh --profile web --dump-config` ends with `# == @jayyuen66/dsh-lesson-loop` plus `- id: lesson-loop`, which is the bundle layer claiming the entry.
-- The host **enforces** peers at install time: `@deepseek-ai/dsh` and every `@deepseek-ai/dsh-*` peer go through `semver.satisfies(runtime, requirement, { includePrerelease: true })` (`dsh-app-boot/src/plugin-compatibility.ts:61-86`; preflight on `add` at `dsh-plugin-manager/src/operations.ts:344`, re-check after install at `:479`). A probe package whose peer said `@deepseek-ai/dsh: 0.1.0` came back as `dsh: installation rejected: … is incompatible with dsh 0.2.1-rc.2`, followed by `dsh: restored package.json, pnpm-lock.yaml, and node_modules.` - all three rolled back. `engines.dsh` carries the same value but **nothing in the host reads it**: `@deepseek-ai/dsh-package-manifest` only declares the type, and its own README states that installers and loaders do not enforce it.
-- Because this package pins its `dsh-*` peers exactly (the discipline shared by all nine sibling packages), a host **newer** than this floor mismatches the same way and needs an explicit, per-runtime-version grant: `dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --dsh-version <exact host version> --accept-risk`. `version-exemptions` lists grants and `revoke-version` removes them (all three commands measured).
+## <img src="https://api.iconify.design/lucide/plug.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Enabling it in dsh
 
-The same properties on the loading side are pinned against a real cordis + loader in `test/integration/host-contract.test.ts`: the service is handed out through the official reflect face, a sibling entry declaring `inject: ["lessonLoop"]` resolves it, a load that fails — whether the `Config` is invalid or `settings` is missing — registers **no** route on the webServer stub and provides no bus, an invalid `Config` fails **only** this entry's fiber, and a missing `settings` keeps the entry out of ACTIVE.
+- `dsh.bundle.patch` points at `cordis.patch.yml`, whose single registration line is `- id: lesson-loop` with `name: "@jayyuen66/dsh-lesson-loop"`. The **bare package name** is what makes the host scan the client half.
+- **One entry, one `Config`.** The settings namespace is the entry id, so switches, thresholds and the `rules` array share one section and one revision. `rules` carries `.loose()`, the read side checks the raw shape through `describe().user` (unreadable means it refuses to write rather than overwriting), and every write is one CAS commit with re-read and replay.
+- `settings` is the only plugin-level hard dependency. `timer` / `commands` / `systemPrompt` / `llm` are optional: a missing one removes that capability, the plugin still loads.
+- The card's data plane is installed unconditionally on the apply fiber, so it exists even on a host whose web layer arrives late.
+- Deployment defaults go on the registration line's `config:` (card value > row `config` > schema default); an invalid config fails this entry's fiber alone.
+- An incompatible host is granted per exact version, never by widening a range:
 
-### Bus interface (how other plugins report)
+```sh
+dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --dsh-version <exact running host version> --accept-risk
+```
 
-- Service methods: `report` / `pass` / `rules` / `ruleAction` / `recentLessons` / `stats`.
-  - `report({ source, category, cwd, sessionId, turn, signature, detail, evidence })` returns `{ ok, reason?, violationOf?, candidate?, ready? }`.
-  - `reason` has exactly three values: `disabled` (a switch is off), `rules-not-persisted` (this change did not reach the rule library — retry), `error` (internal failure).
-  - The bus never throws outward, because its reporters sit on guard hot paths.
-- `source` is an open set: `danger-guard` / `quality-gate` / `session-rescue` / `lessons-digest` / `manual` are built in, and a third-party plugin may name itself freely and still gets stored and counted.
-  - Constraint on self-naming: non-empty after trim and ≤ 64 characters, otherwise it falls back to `manual` with a log line.
-- Built-in producers:
-  - danger-guard reports `factgate-deny` / `secret-path` / `dangerous-bash` and emits `pass` when evidence gathering succeeds.
-  - quality-gate reports `gate-failure` (real code failure) and `gate-not-run` (the check never ran — an environment or policy problem that must not be learned as a code lesson), signed with the gate command string.
-  - session-rescue reports `transient-failure` / `max-tokens` / `unfinished-turn`.
-- Signatures of `factgate-deny` and `secret-path` fold into the category-level stable keys `edit-before-factgate` / `edit-before-secret-path`, while the concrete path or command stays in the evidence `signature`.
-  - One general lesson therefore no longer shatters into dozens of per-file cards.
-  - Callers should go through `settleLessonCall` from `@jayyuen66/dsh-plugin-shared/lib/lesson-bus`, which routes sync throws and async rejections to one exit.
+  `version-exemptions` lists the grants and `revoke-version` removes one; `--dsh-version` must equal the version the running host reports.
 
-### Settings
+## <img src="https://api.iconify.design/lucide/cable.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> The lesson bus
 
-Settings namespace = the profile entry id `lesson-loop` (changeable at runtime). Registration is implicit under 0.2.1-rc.2 - the host derives the namespace and its editable fields from the `Config` the entry exports - and one entry has exactly one section: `rules` is one of its `.volatile()` fields (directly user-editable), the switches and thresholds are the section's other editable fields, and the two deployment-only values below share the section without being projected into the card. What the old two-namespace split (`lesson-loop-rules`) used to guarantee is now recovered in three places: `rules` carries `.loose()` (a human editing it into a non-array cannot make the whole entry fail to load), the read side additionally checks the raw shape in `describe().user` (unreadable means it refuses to write rather than overwriting the data with an empty library), and the section is mutated under one shared revision with CAS re-read/replay. One broken rule never takes the switches down, and vice versa. The four booleans all default to `true`: `enabled` (master switch: no reporting, no injection, no exit settlement when off), `reportEnabled` (sink and merge), `injectEnabled` (session-start injection), `sectionEnabled` (permanent section).
+| Method | Purpose |
+| --- | --- |
+| `report(input)` | Append a lesson, merge it into that key's card; returns `{ ok, reason?, violationOf?, candidate?, ready?, justReady? }` |
+| `pass(input)` | The rule's scenario fired and was followed; counted as `suppressed` when the session ends |
+| `rules()` / `recentLessons(project?, limit?)` | Read the rule library / the event stream |
+| `ruleAction(id, action, statement?)` | The six human actions |
+| `stats()` | Counters and the config summary behind the card |
 
-| Field              | Default    | Range                  | Purpose                                                                   |
-| ------------------ | ---------- | ---------------------- | ------------------------------------------------------------------------- |
-| `promoteThreshold` | `3`        | 1–20                   | Same-key lessons reaching this count mark the card for human review       |
-| `demoteThreshold`  | `3`        | 1–50                   | Violations after arming required to demote                                |
-| `demoteMinSamples` | `5`        | 1–100                  | Minimum real evidence `violation+suppressed` required                     |
-| `demoteRatio`      | `0.5`      | 0.05–1 (step 0.05)     | Recurrence ratio `violation/(violation+suppressed)` red line              |
-| `decayDays`        | `30`       | 1–365                  | Armed this long without a single clean hit → undeterminable (anchor: last activity) |
-| `reviveThreshold`  | `3`        | 1–20                   | A rejected rule seen this often returns to candidates for human re-review |
-| `maxLessonsBytes`  | `0`        | ≤ 1 GiB (0 = no limit) | Disk fuse for the event stream, never to save context                     |
-| `digestTimeoutMs`  | `120000`   | ≥ 1000                 | Wall clock for one digest run (ms); no card row, line `config:` only      |
-| `decayIntervalMs`  | `86400000` | ≥ 1000                 | Interval arming the periodic decay pass (ms); likewise no card row        |
+- `reason` is one of `disabled`, `rules-not-persisted` (this change did not reach the library — retry) or `error`. It is a receipt code, not translated text.
+- `source` is an open set: `danger-guard`, `quality-gate`, `session-rescue`, `lessons-digest` and `manual` are built in, and a third party may name itself freely (trimmed, non-empty, ≤ 64 characters, else `manual` with a log line). Two report kinds carry meaning worth naming: `gate-not-run` marks a check that never ran, because an environment problem must not be learned as a code lesson, and `needsUserConfirmation: true` in the evidence marks a judgement the reporter could not make — evidence, but no violation.
+- Path-shaped categories fold into category-level keys (`edit-before-factgate`, `edit-before-secret-path`, `dangerous-bash`), so one general lesson does not shatter into per-file cards. The concrete target stays in the evidence: `signature` for `secret-path` and `dangerous-bash`, `target` for `factgate-deny` (which reports the folded key as its signature).
+- Callers should go through `settleLessonCall` from `@jayyuen66/dsh-plugin-shared/lib/lesson-bus`, which routes sync throws and async rejections to one exit.
 
-The last two rows are the deployment values: deliberately not `.volatile()`, so the host does not project them, the card has no row for them, and they are given only on the registration line's `config:` (cordis hands apply plain values, so a change takes effect on restart).
+## <img src="https://api.iconify.design/lucide/sliders-horizontal.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Settings
 
-### Public surface
+Namespace = the entry id `lesson-loop`. Four switches default to `true`: `enabled` (master — off means no reporting, injection, exit settlement or standing section, and `/lessons-digest` refuses), `reportEnabled`, `injectEnabled`, `sectionEnabled`.
 
-The card's data plane is four methods on one **official Typert Remote namespace**, `lessonLoopRules` (`lib/rules-shape.ts`). There is no `/_dsh/*` route, no CSRF token and no body cap of ours: the namespace reaches clients of this profile through the host `/api` gateway, and authentication plus the Host / DNS-rebinding / Origin checks and the request-size limit are the gateway's own. What the methods enforce is unchanged from the HTTP version — the six-action whitelist and "no such rule ⇒ refused" guard the action, not the transport.
+| Field | Default | Range | Purpose |
+| --- | --- | --- | --- |
+| `promoteThreshold` | `3` | 1–20 | Same-key lessons reaching this count mark the card for review |
+| `demoteThreshold` | `3` | 1–50 | Violations after arming required to demote |
+| `demoteMinSamples` | `5` | 1–100 | Minimum real evidence `violation + suppressed` |
+| `demoteRatio` | `0.5` | 0.05–1 (step 0.05) | Recurrence-ratio red line |
+| `decayDays` | `30` | 1–365 | Armed this long without a clean hit turns the card undeterminable; later violations do not reset the window |
+| `reviveThreshold` | `3` | 1–20 | A rejected rule seen this often returns to candidates |
+| `maxLessonsBytes` | `0` | 0–1 GiB | Disk fuse; `0` = no cap, content never truncated to save context |
+| `digestTimeoutMs` | `120000` | ≥ 1000 | Wall clock for one digest run (ms); no card row |
+| `decayIntervalMs` | `86400000` | ≥ 1000 | Interval arming the periodic decay pass (ms); no card row |
+| `maxInjectedRules` | `50` | 0–1000 | Armed rules injected per session, newest first; `0` = no cap; no card row |
+
+The last three rows are deployment values: not `.volatile()`, so the card has no row for them and they are given only on the registration line's `config:`, taking effect on restart.
+
+## <img src="https://api.iconify.design/lucide/network.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Public interface
+
+Four methods on one official Typert Remote namespace, `lessonLoopRules`.
 
 | Method | Input | Reply |
 | --- | --- | --- |
-| `stats()` | — | `{ ok: true, …counters, …config summary, rules }`; the rule projection carries the derived `undeterminable` flag and **no** `evidence[]` bodies |
-| `rules(request)` | `{ project? }` | `{ ok: true, rules }`; a `project` that is not a string is read as absent, i.e. the whole library |
-| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`; a `limit` that is not a finite number, is ≤ 0, or is absent means everything — the event feed is never truncated |
+| `stats()` | — | `{ ok: true, …counters, …config summary, rules }`; the rule projection carries the derived `undeterminable` flag and **no** `evidence` bodies |
+| `rules(request)` | `{ project? }` | `{ ok: true, rules }`; a non-string `project` reads as absent, i.e. the whole library |
+| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`; a non-finite, ≤ 0 or absent `limit` means everything |
 | `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`, or `{ ok: false, error, status }` |
 
-- `action` must be one of the six whitelisted values, and `statement` is read by `arm` and `edit` only — it is trimmed, and a blank string (empty or whitespace-only) counts as "not given": the stored statement stays as it is.
-- A refusal's `status` is a **retained semantic code, not an HTTP status**: a missing `id` / `action` or an off-whitelist action is 400, an unknown card is 404, and a change the library refused to persist is 500 with the text `rules-not-persisted`. The card renders `error`; the number exists so the tests can pin which rule fired. There is no 405 or 413 arm any more — whether the method exists and how big the body is, are the gateway's verdicts now.
-- The client (`src/rules-reader.ts`) holds the four descriptors, `$mount`s them once and then reads the derived key `remote.lessonLoopRules`. With no `remote` service in the client context there is no reader at all and the card shows its `statsUnavailable` line; with the service present but this namespace unmounted, the read throws — a missing capability is said out loud instead of being rendered as "the library is empty".
-- Reads are pulled, not pushed: once when the panel opens, once after a save, once after each manual action. There is **no polling loop and no client-side wall clock**; how long a call may take is the gateway's decision, and a second deadline inside the card is how a slow write gets reported as lost while it actually landed.
-- The evidence bodies stay on the host deliberately: each detail can run to 400 characters, and `undeterminable` — armed long enough with zero recurrence and zero compliance — is a machine's way of saying "this one needs a human".
-- The `/lessons-digest [additional note]` command sends this session's human negative feedback plus the project's recent lessons to the model and distils candidate cards (`origin` `lessons-digest`).
-### Data and privacy
+- `action` must be one of the six whitelisted values; `statement` is read by `arm` and `edit` only, trimmed, and a blank string counts as "not given".
+- A refusal's `status` is a **retained semantic code, not an HTTP status**: 400 for a missing field or an off-whitelist action, 404 for an unknown card, 500 for a change the library refused to persist (carrying `rules-not-persisted`).
+- Reads are pulled, not pushed: on panel open, after a save, and after each manual action. There is no polling loop and no client-side wall clock.
 
-- Two derived-data stores only:
-  - `$DSH_HOME/cache/lesson-loop/events.jsonl` — cache is the discardable derived-data location, it can be rebuilt from sessions and the rule library after deletion.
-  - With `$DSH_HOME` unset the official home-paths package falls back to `.dsh` in the user's home directory.
-  - The `rules` array inside the `lesson-loop` section of the settings document, which the user may edit directly.
-- Everything stays on this machine: the package sends data to no external service, and the distillation call goes through the host `llm` service with the current default model selection.
-- Event-stream lesson `detail` and rule statements are stored in full with zero truncation and may contain paths, command lines and raw tool output — treat them as sensitive when backing up or cleaning.
-  - Rule-card `evidence` is the only exception, and it converges at the moment of writing: a `detail` longer than 400 characters (`MAX_EVIDENCE_DETAIL_CHARS` in `lib/rules-layout.ts`) is truncated with an ellipsis, and only the 5 most recent rows per card are kept (`MAX_EVIDENCE_ENTRIES`). The `signature` (the concrete path or command that hit), `occurrences` and the `violation`/`suppressed`/`samples` counters are never trimmed, so a card still shows which command it guards. Reads (`cardsOfValue`) parse what is on disk without rewriting it, so truncation happens exactly once; an existing library needs no migration and converges on its next write.
-- Rule-library reads and writes carry cross-process CAS (provider write lock plus re-read/replay against the revision, at most 3 attempts), so a long-running web instance and a short-lived CLI cannot wipe each other's cards.
-- Host-side wording follows the official locale preference (Chinese / English, Chinese when unregistered); stored rule statements are user data and are never rewritten by a language switch.
+## <img src="https://api.iconify.design/lucide/lock.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Data and privacy
 
-### FAQ
+| Aspect | Content |
+| --- | --- |
+| Written to disk | The event stream at `$DSH_HOME/cache/lesson-loop/events.jsonl` (a discardable derived-data location) plus its transient `.lock` / `.tmp` siblings, and the `rules` array in the `lesson-loop` section of the settings document |
+| Network | No call of its own. `/lessons-digest` sends this session's negative feedback and the project's recent lessons to the current default model through the host `llm` service, so that content leaves the machine when that model is remote |
+| Retention | The event stream keeps details and rule statements in full, with zero truncation; `maxLessonsBytes` is a disk fuse, not a context cap |
+| Evidence convergence | Rule-card `evidence` is the one exception: an over-long detail is truncated with an ellipsis and only the most recent rows per card are kept, at write time only. `signature` and the counters are never trimmed |
+| Concurrency | Rule-library writes carry cross-process CAS; event-stream appends share one lock with trimming |
+| Language | Host-side wording follows the official locale preference; stored rule statements are user data and are never rewritten |
 
-- Do rules ever enable themselves? No. Only `arm` writes status `armed`; a `rejected` card that hits the revive threshold goes back to `candidate`, and reviving `demoted` / `archived` is a human action too.
-- What happens with `reportEnabled` off? `report()` returns `{ ok: false, reason: "disabled" }` immediately — no event line, no card (the integration test pins this negative path).
-  - `/lessons-digest` refuses as well; the Remote reads and the settings card keep working.
-- The arm button reports failure? `rules-not-persisted` means this change never reached the library (the port refused the write or CAS retries ran out); the library still holds the old state, so retry.
-  - If the `rules` field is hand-edited into a non-array, the rule side degrades to "reads empty, refuses writes" (the bad content is left untouched for a human to fix, and this process never writes that section) while the switches in the same section keep working; repairing the field restores the rule side.
-- A rule keeps showing "undeterminable"? The machine has no clean hit to divide by: `suppressed` is still zero, and either the rule has been sitting unchanged for `decayDays` (the anchor is its most recent activity — armed / last violation / last pass) or it has already hit `demoteThreshold` violations without a single followed-through session. In both cases the ratio `violation/(violation+suppressed)` would be 1.0 by construction, so the machine neither demotes nor archives it: it stays armed for you to disable or archive. A single `pass` hit clears the flag.
-- Another plugin cannot see the bus? Without this package installed, or when `ctx.provide` is unavailable (which logs one explicit error), reporters just drop their lessons and their own functionality is unaffected.
+## <img src="https://api.iconify.design/lucide/triangle-alert.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Known boundaries
+
+- **Nothing is promoted automatically** — a rule that armed itself would turn one noisy report into a permanent instruction.
+- **Undeterminable rules do not converge**: with no clean hit there is no denominator, so only a human retires them, and the injection cap keeps that population out of the context.
+- **Subagent sessions are skipped** — a second injection would count as exposure for a rule they never saw.
+- **The card is pull-based**, so a value cached across a reconnect would be stale by design.
+- **Evidence bodies never cross the wire**; the card sees the signature and the counters.
+- **No machine translation**: rule statements and evidence are user data.
+- **Optional services remove capabilities, not the plugin**: no `commands` means no `/lessons-digest`, no `systemPrompt` means no standing section, no `llm` means the digest refuses, no `timer` leaves manual review only; without `settings` the entry never activates and the startup diagnostic names it.
+- **A digest run can partially fail**: cards that did not reach the library are reported separately, and the receipt never claims "distilled" for a card that is not on disk. A response that contains no parseable JSON array is a hard error, not "zero candidates".
+
+## <img src="https://api.iconify.design/lucide/circle-help.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> FAQ
+
+| Question | Answer |
+| --- | --- |
+| Do rules ever enable themselves? | No. Only `arm` writes `armed`; reaching the revive threshold only returns a rejected card to `candidate`. |
+| What happens with `reportEnabled` off? | `report()` returns `{ ok: false, reason: "disabled" }` immediately and `/lessons-digest` refuses; the Remote reads and the card keep working. |
+| The arm button reports `rules-not-persisted`. | That change never reached the library; the old state still holds, so retry. |
+| A rule keeps showing "undeterminable". | `suppressed` is still zero, so there is no clean hit to divide by: the rule either sat past `decayDays` or hit `demoteThreshold` violations without one followed session. With zero violations too the ratio is undefined, not 1.0 — either way the machine will not decide for you. Disable or archive it yourself; one `pass` clears the flag. |
+| I hand-edited `rules` into a non-array. | The rule side degrades to "reads empty, refuses writes" and this process never writes that section; the switches keep working until you repair the field. |
+| Another plugin cannot see the bus. | Without this package, or when `ctx.provide` is unavailable (one explicit error), reporters drop their reports and their own functionality is unaffected. |
+
+## <img src="https://api.iconify.design/lucide/wrench.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Development
+
+```sh
+pnpm install
+pnpm run check   # typecheck → lint → client build → host build → types → tests → format
+```
+
+- `test/` splits by the class of defect a stub cannot see: unit tests drive the store and the pure helpers; `test/integration/` drives a real cordis and loader, so service hand-out, sibling `inject` resolution, activation order and bulkhead isolation are measured rather than mocked.
+- Two artifact gates: `test/build-host.test.ts` holds the cross-package imports external as bare specifiers, `test/dist-size.test.ts` a size budget, so an inlined dependency cannot pass unnoticed. `test/publish-manifest.test.ts` guards the published shape — entry targets covered by `files`, no source file as an entry point, host packages absent from `dependencies`, `dsh-*` pins exact and uniform, no dates in comments or documents.
+- Coverage thresholds are 100% across four metrics, so a new branch needs a case that reaches it.
+
+## <img src="https://api.iconify.design/lucide/scale.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> License
+
+MIT. Source at [github.com/JayYuen666/dsh-lesson-loop](https://github.com/JayYuen666/dsh-lesson-loop). Issues go to that repository's tracker.
+
+This package contains no third-party source code: `host.js` and `client.js` keep every cross-package import external as a bare specifier. Runtime dependencies carry their own licenses; [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) records that artifact boundary and how to re-check it.

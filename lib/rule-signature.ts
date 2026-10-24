@@ -13,15 +13,28 @@
 // 键：同一类教训汇聚成一张规则卡，armed 规则按类别命中，violation/suppressed
 // 恢复有效。目标路径信息移入 evidence.signature，不丢。
 
+/** 归档汇总签名的固定后缀（`${稳定签名}:rejected`）：lesson-store 的 rejected 碎片
+ *  归并与本包的正文起草两侧共用，避免两侧各自硬编码后漂移。 */
+export const REJECTED_SUMMARY_SUFFIX = ":rejected";
+
+/** 归一签名里出现的非字符串（缺字段/类型漂移）：留一条日志，否则多个缺失签名
+ *  会被拼成完全相同的键、悄悄归并成同一张卡。 */
+function warnNonStringSignature(value: unknown): void {
+  console.warn(
+    `[lesson-loop] lesson signature is not a string (${typeof value}); treating as empty`,
+  );
+}
+
 /** 规则归并键。签名归一：trim + 内部空白折叠（大小写保留——路径/命令大小写有意）。 */
 export function normalizeSignature(signature: unknown): string {
   if (typeof signature !== "string") {
+    warnNonStringSignature(signature);
     return "";
   }
   return signature.trim().replaceAll(/\s+/gu, " ");
 }
 
-export const CATEGORY_SIGNATURES: Record<string, string> = {
+export const CATEGORY_SIGNATURES: Readonly<Record<string, string>> = Object.freeze({
   "factgate-deny": "edit-before-factgate",
   // 密钥路径与 factgate 同类：一张卡代表"这类文件不要碰"，具体是哪个 .env 落在
   // 证据里。旧形态下每个凭据文件一张 occurrences=1 的卡，永远够不到升格门槛。
@@ -32,11 +45,22 @@ export const CATEGORY_SIGNATURES: Record<string, string> = {
   // 看不出该审什么。折叠到类别级稳定键后，**命令原文落进 evidence.signature**
   // （见 lesson-store 的 evidenceRow：raw ≠ folded 才写该键），一张卡既收敛又可审。
   "dangerous-bash": "dangerous-bash",
-};
+});
 
 /** 查表用 Map：Object 字面量的索引会带出原型链上的同名成员（`toString`/
  *  `constructor` 当 category 时拿到的是函数），Map 没有这个洞。 */
 const STABLE_SIGNATURES: ReadonlyMap<string, string> = new Map(Object.entries(CATEGORY_SIGNATURES));
+
+/** 该 (category, signature) 是否就是这一类的稳定签名（正文起草按它选通用模板）。 */
+export function isStableSignature(category: string, signature: string): boolean {
+  return STABLE_SIGNATURES.get(category) === signature;
+}
+
+/** 该 (category, signature) 是否是这一类的 rejected 归档汇总签名。 */
+export function isRejectedSummarySignature(category: string, signature: string): boolean {
+  const stable = STABLE_SIGNATURES.get(category);
+  return stable !== undefined && signature === `${stable}${REJECTED_SUMMARY_SUFFIX}`;
+}
 
 /**
  * 签名归一（写入侧唯一入口）：登记表内的类别一律折叠到类别级稳定签名，表外类别
@@ -54,7 +78,6 @@ export function looksLikePathSignature(signature: string): boolean {
   return (
     signature.includes("/") ||
     signature.includes("\\") ||
-    /^\.{1,2}[/\\]/u.test(signature) ||
     /\.(?:tsx?|jsx?|mjs|cjs|rs|py|go|java|kt|swift|vue|svelte|json|ya?ml|css|scss|html|md|sh|sql|toml|c|cpp|h|hpp|lock)$/iu.test(
       signature,
     )
@@ -69,12 +92,23 @@ const ANY_SIGNATURE_FRAGMENTS: ReadonlySet<string> = new Set(["dangerous-bash"])
  * 文件路径）；dangerous-bash 例外：它的碎片是**命令原文**（`git commit --no-verify` 这类既
  * 无斜杠也无扩展名），路径判据只偶然命中（`curl https://… | sh` 里的那个斜杠），照它筛会把
  * 大多数存量碎片留在库外——而写入侧早已把命令一律折到类别级稳定签名，这些旧卡既不再增长、
- * 也永远命中不了度量，只会一直占着列表。非稳定签名的卡即碎片。
+ * 也永远命中不了度量，只会一直占着列表。非稳定签名的卡即碎片；稳定签名自身（以及 rejected
+ * 归档汇总签名）在这里就返回 false，调用方不必再各自加前置判断——判据长在函数里，"已收敛
+ * 的稳定卡被当碎片反复归并"这类迁移不收敛才真正结构性堵死。
  */
 export function isFragmentSignatureOf(category: string, signature: string): boolean {
+  if (isStableSignature(category, signature) || isRejectedSummarySignature(category, signature)) {
+    return false;
+  }
   return ANY_SIGNATURE_FRAGMENTS.has(category) || looksLikePathSignature(signature);
 }
 
+/**
+ * 归并键拼接。**前置条件：调用方已先经 stableSignatureFor 折叠**（report / pass /
+ * addCandidate 都满足），本函数刻意不在内部折叠——rejected 归档汇总签名
+ * `${stable}:rejected` 若在这里再查一次表会原样退回（表外值保留自身），于是汇总卡与
+ * armed 稳定卡撞成同一个键，人工拒绝记录会被活卡吞掉。
+ */
 export function ruleKey(project: string, category: string, signature: string): string {
   return `${project}\u0000${category}\u0000${normalizeSignature(signature)}`;
 }

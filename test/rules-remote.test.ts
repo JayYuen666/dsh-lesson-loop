@@ -113,6 +113,25 @@ describe("规则读面（官方 Typert Remote 源模式）", () => {
       action: "arm",
     });
     assert.deepEqual([failed.ok, failed.ok ? 0 : failed.status], [false, 500]);
+    // 卡片直接显示 error 串：落库失败那档回消息表里的本地化文案，
+    // 不是 report() 回执上的内部判等码
+    assert.equal(failed.ok ? "" : failed.error, MESSAGES.zh.errRulePersistFailed);
+  });
+
+  it("注册口探过但构造期注册抛错 → 记日志返回 false（不让 apply 当场炸）", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {
+      // 断言在下方
+    });
+    const ctx = {
+      reflect: {
+        provide: () => {
+          throw new Error("命名空间已注册");
+        },
+      },
+    };
+    assert.equal(installRulesRemote(ctx as never, depsOf()), false);
+    assert.match(String(error.mock.calls[0]?.[0]), /registration failed: 命名空间已注册/u);
+    error.mockRestore();
   });
 
   it("畸形入参走保守分支：非记录请求、非串字段、非记录 ctx", async () => {

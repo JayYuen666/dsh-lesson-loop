@@ -56,8 +56,8 @@ export interface LessonLoopMessages {
   // feedback-digest 分类不在这里：它的 signature 就是模型产出的正文，属数据，原样透传。
   /** factgate-deny 折叠到类别级稳定签名后的通用正文（无占位）。 */
   readonly statementFactgateStable: string;
-  /** factgate-deny 的 rejected 汇总容器正文（{signature}）。 */
-  readonly statementFactgateRejected: string;
+  /** 各分类通用的 rejected 归档汇总容器正文（{signature}，签名即 `${稳定签名}:rejected`）。 */
+  readonly statementRejectedSummary: string;
   /** factgate-deny 未折叠（表外类别同形态）签名的正文（{signature}）。 */
   readonly statementFactgatePath: string;
   /** dangerous-bash 正文（{signature} 是危险 shell 形态）。 */
@@ -132,25 +132,39 @@ export interface LessonLoopMessages {
   /** 非 stop 收尾（{kind} 结束原因、{failure} 失败摘要前缀）。 */
   readonly errIncompleteFinish: string;
   readonly errEmptyDigest: string;
+  /** 模型输出读不出 JSON 数组（区别于"合法的空数组"）。 */
+  readonly errUnreadableDigest: string;
+  /** 蒸馏墙钟到点（{ms} 毫秒）。 */
+  readonly errDigestTimeout: string;
+  /** 墙钟配置本身不合法（非有限正数）。 */
+  readonly errDigestTimeoutInvalid: string;
 
   // ── 端点里回显给人的 error（卡片直接显示这些串）────────────────────────
   readonly errIdAndActionRequired: string;
   /** 白名单外的动作（{action} 原样回显，便于定位是谁发的）。 */
   readonly errUnknownAction: string;
   readonly errRuleNotFound: string;
+  /** 落库失败（拒写 / CAS 冲突耗尽）——库里还是旧状态，必须与"已生效"分开讲。 */
+  readonly errRulePersistFailed: string;
   readonly errRuleActionFailed: string;
 }
 
 /**
  * host 半的整行模板插值：`{name}` 取参数，取不到的占位符**原样留着**
  * （少传一个参数是编程错误，不该让文案里凭空多出空白；官方 client locale 同语义）。
+ * 值**原样插入、不做任何转义或换行归一**：本表里带 `{signature}` 的 statement* 模板
+ * （signature 是命令/路径原文）与 digestRuleLine / ruleSummary 的产物都会注入 systemPrompt、
+ * 常驻段或落盘后回注模型——注入模型的调用点必须自行对不可信值做 fence/换行定界
+ * （lib/prompt.ts 的 fenceUntrusted；规则卡正文的定界发生在渲染那一刻，见 draftStatement
+ * 与 renderRulesDigest 的注释）。占位符名只认 `params` 的自有属性，原型链上的同名成员
+ * （`{constructor}` / `{toString}` 一类）不取。
  * @param template - 字典里的整行模板。
  * @param params - 占位符对应的值。
  * @returns 插值完成的文本。
  */
 export function fill(template: string, params: MessageParams): string {
   return template.replaceAll(/\{(?<name>\w+)\}/gu, (matched: string, name: string): string => {
-    const value = params[name];
+    const value = Object.hasOwn(params, name) ? params[name] : undefined;
     return value === undefined ? matched : String(value);
   });
 }
@@ -184,8 +198,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
 
     statementFactgateStable:
       "编辑文件之前，必须先成功 read 该文件，并做项目级引用检索（grep/glob/zg_search 覆盖引用面）确认改动波及面（调用方/依赖方/测试），再动手。",
-    statementFactgateRejected:
-      "已拒绝的历史路径碎片归档汇总（{signature}）：编辑文件前先取证的要求由上方生效规则承载；本条仅保留拒绝记录与证据，不注入、不度量。",
+    statementRejectedSummary:
+      "已拒绝的历史碎片归档汇总（{signature}）：同类要求由生效规则承载；本条仅保留拒绝记录与证据，不注入、不度量。",
     statementFactgatePath:
       "编辑 {signature} 之前，必须先成功 read 该文件，并做项目级引用检索（grep/glob/zg_search 覆盖引用面），按证据档位补齐 test/e2e/docs 层探查后再动手。",
     statementDangerousBash:
@@ -237,10 +251,14 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     errMissingFinishChunk: "模型返回流缺少 finish 块",
     errIncompleteFinish: "模型整理未正常完成（{kind}{failure}）",
     errEmptyDigest: "模型整理结果为空",
+    errUnreadableDigest: "模型输出无法解析为 JSON 数组，请重试",
+    errDigestTimeout: "蒸馏超时：{ms} 毫秒内模型请求没有完成，可重试或在行配置调大 digestTimeoutMs",
+    errDigestTimeoutInvalid: "蒸馏墙钟配置不合法：digestTimeoutMs 必须是正数",
 
     errIdAndActionRequired: "缺少 id 或 action",
     errUnknownAction: "未知操作：{action}",
     errRuleNotFound: "找不到该规则",
+    errRulePersistFailed: "规则库拒绝了这次写入，改动未生效，请重试",
     errRuleActionFailed: "规则操作失败",
   },
   en: {
@@ -273,8 +291,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
 
     statementFactgateStable:
       "Before editing a file, read it successfully first and run a project-wide reference search (grep/glob/zg_search over the referencing surface) to confirm the blast radius — call sites, dependents, tests — before touching anything.",
-    statementFactgateRejected:
-      "Archived summary of the rejected historical path fragments ({signature}): the requirement to gather evidence before editing is carried by the armed rule above; this entry only keeps the rejection record and the evidence — it is never injected and never measured.",
+    statementRejectedSummary:
+      "Archived summary of rejected historical fragments ({signature}): the requirement of this kind is carried by the armed rule; this entry only keeps the rejection record and the evidence — it is never injected and never measured.",
     statementFactgatePath:
       "Before editing {signature}, read that file successfully first and run a project-wide reference search (grep/glob/zg_search over the referencing surface); close the test/e2e/docs evidence tiers before making the change.",
     statementDangerousBash:
@@ -335,10 +353,16 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     errMissingFinishChunk: "The model stream is missing its finish chunk",
     errIncompleteFinish: "The model digest did not finish normally ({kind}{failure})",
     errEmptyDigest: "The model digest result is empty",
+    errUnreadableDigest: "The model output is not a parseable JSON array — retry",
+    errDigestTimeout:
+      "Distillation timed out: the model request did not finish within {ms} ms — retry, or raise digestTimeoutMs in the entry config",
+    errDigestTimeoutInvalid:
+      "The distillation wall clock is invalid: digestTimeoutMs must be a positive number",
 
     errIdAndActionRequired: "id and action required",
     errUnknownAction: "unknown action: {action}",
     errRuleNotFound: "rule not found",
+    errRulePersistFailed: "The rule library refused this write — nothing was applied, retry",
     errRuleActionFailed: "rule action failed",
   },
 };

@@ -87,6 +87,10 @@ export function renderSectionText(messages: LessonLoopMessages): string {
  */
 const QUOTE_MARK = "│ ";
 
+/** 行终止符：Markdown 与多数渲染器把裸 CR (U+000D)、LS (U+2028)、PS (U+2029) 也当换行，
+ *  只按 `\n` 切行会让它们之间的内容拿不到引用标记（定界在那里断掉）。 */
+const LINE_TERMINATOR = /\r\n|[\n\r\u2028\u2029]/u;
+
 /** 行首结构符：编号（1. / 1）/ 1、）、分隔线、标题、标签、列表与引用符。 */
 const STRUCTURAL_LEAD =
   /^[│\s]*(?:\d{1,9}[.)、]|-{3,}|\*{3,}|_{3,}|={3,}|#{1,6}|\[lesson-loop\]|[-*+>](?=[ \t]))/iu;
@@ -100,10 +104,14 @@ function defuseLead(line: string): string {
  * 把不可信文本嵌入注入帧/蒸馏提示前的定界改写（零截断：只做前缀与包括号，
  * 原文字符一个不丢）。逐行加引用标记 + 改写行首结构符，双向保证嵌入内容
  * 伪造不出新的编号条目、分节标题或分隔线。
+ *
+ * 切行按 LINE_TERMINATOR 认全部行终止符，不能只认 `\n`：渲染器把裸 CR / LS / PS
+ * 也当换行时，只按 `\n` 切会让 `\r` 之后的 `2. …` 留在同一"行"内、拿不到引用标记，
+ * 渲染出来就是一条真的编号规则。归一成 `\n` 是定界的一部分，不是丢字。
  */
 export function fenceUntrusted(text: string): string {
   return text
-    .split("\n")
+    .split(LINE_TERMINATOR)
     .map((line) => `${QUOTE_MARK}${defuseLead(line)}`)
     .join("\n");
 }

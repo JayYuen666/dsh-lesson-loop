@@ -25,6 +25,7 @@ import { fenceUntrusted } from "../lib/prompt.ts";
 import { LessonStore } from "../lib/lesson-store.ts";
 import { makeRulesFacet, scriptedRulesRepository } from "./rules-fake.ts";
 import type { RulesFacet } from "./rules-fake.ts";
+import { loggedText } from "./setup-logs.ts";
 
 /** 本文件默认语言（zh = host 未读到 locale 偏好时的取值）；runDigest 走 options 入参。 */
 const tZh: LessonLoopMessages = MESSAGES.zh;
@@ -47,6 +48,8 @@ const EVENT_MESSAGE_DELETE = "feedback/message-delete";
 const EVENT_RECORD = "feedback/record";
 /** 差评分类：官方 feedback 的取值域（属数据，不进消息字典）。 */
 const CATEGORY_TASK_RESULT = "task-result";
+/** 会话备注的分类夹具（官方 feedback 取值域；多处用例复用，收成具名值防重复字面量）。 */
+const CATEGORY_RESOURCE_COST = "resource-cost";
 /** 教训上报夹具：来源 / 分类 / 项目键 / 签名四位（同一笔门禁失败在各用例复用）。 */
 const SOURCE_QUALITY_GATE = "quality-gate";
 const CATEGORY_GATE_FAILURE = "gate-failure";
@@ -138,6 +141,31 @@ function fakeSession(cwd = "/repo/proj"): SessionLike {
 const untilAborted = (signal: AbortSignal | undefined): Promise<unknown> =>
   signal === undefined ? Promise.resolve() : once(signal, "abort");
 
+/** 墙钟到点后适配器以错误收场 → 本地化超时文案，不是底层 AbortError 原文。 */
+const makeAbortThrowingLlm = (): LlmService => ({
+  async *stream(options) {
+    // 真适配器对 abort 的典型收场：finish kind=aborted（带 failure 摘要）。
+    // 生成器停在 await 上直到 abort 事件，模拟"流卡在模型侧"。
+    await untilAborted(options.signal);
+    yield {
+      type: "finish",
+      reason: { kind: "aborted", failure: { message: "This operation was aborted" } },
+    } as never;
+  },
+});
+
+/** reasoningEffort 透传观察桩：记录 reasoningEffort 键的有无与值。 */
+function makeEffortProbeLlm(captures: { effort?: unknown; present?: boolean }): LlmService {
+  return {
+    async *stream(options) {
+      captures.effort = options.reasoningEffort;
+      captures.present = "reasoningEffort" in options;
+      yield { type: CHUNK_TEXT_DELTA, index: 0, text: "[]" };
+      yield { type: "finish", reason: { kind: "stop" } };
+    },
+  };
+}
+
 describe("digest 蒸馏管线", () => {
   beforeEach(() => {
     scratch = mkdtempSync(path.join(tmpdir(), "lesson-digest-"));
@@ -168,7 +196,7 @@ describe("digest 蒸馏管线", () => {
         },
         { type: EVENT_MESSAGE_PUT, data: { item: { rating: "negative" } } },
         { type: EVENT_MESSAGE_DELETE, data: { sessionId: "s1", messageId: "m1" } },
-        { type: EVENT_RECORD, data: { text: "整体太慢", category: "resource-cost" } },
+        { type: EVENT_RECORD, data: { text: "整体太慢", category: CATEGORY_RESOURCE_COST } },
         { type: EVENT_RECORD, data: {} },
         { type: "assistant/message", data: {} },
       ];
@@ -178,7 +206,11 @@ describe("digest 蒸馏管线", () => {
       assert.equal(out[0]?.note, "");
       // 无 messageId 不编造（上一行已把 `out[0]` 断言成 `""`，故此处类型已非空）
       assert.equal(out[0].messageId, undefined);
-      assert.deepEqual(out[1], { note: "整体太慢", category: "resource-cost", kind: "session" });
+      assert.deepEqual(out[1], {
+        note: "整体太慢",
+        category: CATEGORY_RESOURCE_COST,
+        kind: "session",
+      });
     });
 
     it("按 messageId 折叠到当前态：改评分即撤销、改备注取最新（put 是 create-or-edit）", () => {
@@ -217,6 +249,92 @@ describe("digest 蒸馏管线", () => {
     it("事件流缺失/畸形安全返回空", () => {
       assert.deepEqual(collectNegativeFeedback([]), []);
       assert.deepEqual(collectNegativeFeedback([null, 42, { type: 1 }]), []);
+    });
+
+    it("note 类型漂移按可读序列化保留：缺省空串、标量原文、对象 JSON 原文（人工输入不许凭空消失）", () => {
+      const out = collectNegativeFeedback([
+        { type: EVENT_MESSAGE_PUT, data: { item: { messageId: "m1", rating: "negative" } } },
+        {
+          type: EVENT_MESSAGE_PUT,
+          data: { item: { messageId: "m2", rating: "negative", note: 42 } },
+        },
+        {
+          type: EVENT_MESSAGE_PUT,
+          data: { item: { messageId: "m3", rating: "negative", note: true } },
+        },
+        {
+          type: EVENT_MESSAGE_PUT,
+          data: { item: { messageId: "m4", rating: "negative", note: 0 } },
+        },
+        {
+          type: EVENT_MESSAGE_PUT,
+          data: { item: { messageId: "m5", rating: "negative", note: { a: 1 } } },
+        },
+      ] as never);
+      // JSON 往返造不出的三种标量（内存态载荷可达）：String 原文，不是 [object Object]
+      const extra = collectNegativeFeedback([
+        {
+          type: EVENT_MESSAGE_PUT,
+          data: { item: { messageId: "m6", rating: "negative", note: Symbol("标记") } },
+        },
+        {
+          type: EVENT_MESSAGE_PUT,
+          data: { item: { messageId: "m7", rating: "negative", note: () => 1 } },
+        },
+        {
+          type: EVENT_MESSAGE_PUT,
+          data: { item: { messageId: "m8", rating: "negative", note: 10n } },
+        },
+      ] as never);
+      const notes = out.map((row) => row.note);
+      assert.deepEqual(notes, ["", "42", "true", "0", '{"a":1}']);
+      const extraNotes = extra.map((row) => row.note);
+      assert.equal(extraNotes[0], "Symbol(标记)");
+      assert.ok(String(extraNotes[1]).startsWith("() =>"), "函数漂移取源码原文");
+      assert.equal(extraNotes[2], "10");
+    });
+
+    it("rating 漂移成未知取值 → 原样不动（不许把已存在的真实差评静默清空）", () => {
+      const out = collectNegativeFeedback([
+        {
+          type: EVENT_MESSAGE_PUT,
+          data: { item: { messageId: "m1", rating: "negative", note: "真差评" } },
+        },
+        // 载荷漂移：rating 缺失/改名，只该是"这次读不懂"，不该当撤销
+        { type: EVENT_MESSAGE_PUT, data: { item: { messageId: "m1", note: "漂移载荷" } } },
+        {
+          type: EVENT_MESSAGE_PUT,
+          data: { item: { messageId: "m1", rating: "sort-of-bad", note: "未知取值" } },
+        },
+      ] as never);
+      assert.equal(out.length, 1);
+      assert.deepEqual(out[0], { messageId: "m1", note: "真差评", kind: "message" });
+    });
+
+    it("无 messageId 的差评按内容指纹折叠：同一载荷重复回放只算一条", () => {
+      const drift = {
+        type: EVENT_MESSAGE_PUT,
+        data: { item: { rating: "negative", note: "无 id 差评" } },
+      };
+      const out = collectNegativeFeedback([drift, { ...drift }, drift] as never);
+      assert.equal(out.length, 1, "内容指纹相同的三条事件折进同一槽位");
+      assert.deepEqual(out[0], { note: "无 id 差评", kind: "message" });
+      // 内容不同仍是两条（指纹只折重复，不合并不同输入）
+      const mixed = collectNegativeFeedback([
+        { type: EVENT_MESSAGE_PUT, data: { item: { rating: "negative", note: "甲" } } },
+        { type: EVENT_MESSAGE_PUT, data: { item: { rating: "negative", note: "乙" } } },
+      ] as never);
+      assert.equal(mixed.length, 2);
+    });
+
+    it("会话备注按内容指纹去重：同一备注重复提交/事件重复回放只记一条", () => {
+      const record = {
+        type: EVENT_RECORD,
+        data: { text: "太慢", category: CATEGORY_RESOURCE_COST },
+      };
+      const out = collectNegativeFeedback([record, { ...record }, record] as never);
+      assert.equal(out.length, 1, "重复回放放大差评权重的路被指纹掐掉");
+      assert.deepEqual(out[0], { note: "太慢", category: CATEGORY_RESOURCE_COST, kind: "session" });
     });
 
     it("会话日志里的 plugin: 记录不进蒸馏输入（宿主 0.2.1-alpha.2 起的 ignorable 面）", () => {
@@ -282,16 +400,98 @@ describe("digest 蒸馏管线", () => {
       assert.ok(bg.includes("额外说明"));
     });
 
-    it("解析：纯 JSON / 包裹在散文里 / 非法输入", () => {
+    it("同键同时间戳（同毫秒批量写入）→ 后出现者算最新；去重键含类别，不跨类别互吞", async () => {
+      const store = makeStore();
+      await store.report({
+        ts: 5,
+        source: SOURCE_QUALITY_GATE,
+        category: CATEGORY_GATE_FAILURE,
+        project: PROJECT_FIXTURE,
+        signature: SIGNATURE_GATE_COMMAND,
+        detail: "先写下的旧文本",
+      });
+      await store.report({
+        ts: 5,
+        source: SOURCE_QUALITY_GATE,
+        category: CATEGORY_GATE_FAILURE,
+        project: PROJECT_FIXTURE,
+        signature: SIGNATURE_GATE_COMMAND,
+        detail: "同毫秒的更新文本",
+      });
+      const bg = lessonsBackground(store, PROJECT_FIXTURE, tZh);
+      assert.ok(bg.includes("同毫秒的更新文本"), "同 ts 并列时后出现者算最新");
+      assert.ok(!bg.includes("先写下的旧文本"), "旧的那条被同键折叠掉");
+      // 去重键含类别：不同类别（各自折叠到自己的稳定键）不互相吞
+      const digest = makeStore();
+      await digest.report({
+        ts: 5,
+        source: SOURCE_QUALITY_GATE,
+        category: CATEGORY_GATE_FAILURE,
+        project: PROJECT_FIXTURE,
+        signature: SIGNATURE_GATE_COMMAND,
+        detail: "门禁失败",
+      });
+      await digest.report({
+        ts: 5,
+        source: SOURCE_QUALITY_GATE,
+        category: "dangerous-bash",
+        project: PROJECT_FIXTURE,
+        signature: "危险命令",
+        detail: "危险命令拒绝",
+      });
+      const both = lessonsBackground(digest, PROJECT_FIXTURE, tZh);
+      assert.ok(both.includes("门禁失败"));
+      assert.ok(both.includes("危险命令拒绝"));
+      // 空签名回退 detail 做去重键：空签名的不同教训互不吞掉（键只取签名时会整组坍缩）
+      const emptySig = makeStore();
+      await emptySig.report({
+        ts: 5,
+        source: SOURCE_QUALITY_GATE,
+        category: "out-of-table",
+        project: PROJECT_FIXTURE,
+        signature: "",
+        detail: "空签名教训甲",
+      });
+      await emptySig.report({
+        ts: 5,
+        source: SOURCE_QUALITY_GATE,
+        category: "out-of-table",
+        project: PROJECT_FIXTURE,
+        signature: "",
+        detail: "空签名教训乙",
+      });
+      const empties = lessonsBackground(emptySig, PROJECT_FIXTURE, tZh);
+      assert.ok(empties.includes("空签名教训甲"), "空签名 + 不同 detail 是两个键");
+      assert.ok(empties.includes("空签名教训乙"));
+    });
+
+    it("解析：纯 JSON / 包裹在散文里 / 非法输入 / 表外类别", () => {
       const good = '[{"category":"gate-failure","signature":"pnpm check","statement":"先自检"}]';
-      assert.equal(parseDigestOutput(good).length, 1);
-      assert.equal(parseDigestOutput(`结论如下：\n${good}\n以上。`).length, 1);
-      assert.equal(parseDigestOutput("no json here").length, 0);
-      assert.equal(parseDigestOutput('[{"category":1}]').length, 0);
+      assert.equal(parseDigestOutput(good).rules.length, 1);
+      assert.equal(parseDigestOutput(`结论如下：\n${good}\n以上。`).rules.length, 1);
+      // 找不到数组 → parsed:false（与"合法的空数组"分开，后者 parsed:true）
+      assert.equal(parseDigestOutput("no json here").parsed, false);
+      assert.equal(parseDigestOutput("[]").parsed, true);
+      assert.equal(parseDigestOutput("[]").rules.length, 0);
+      // 表外类别丢弃（机器读的存储契约：落一张 pass() 永远匹配不到的卡没有意义）
+      assert.equal(parseDigestOutput('[{"category":1}]').rules.length, 0);
+      assert.equal(
+        parseDigestOutput('[{"category":"hallucinated","statement":"s"}]').rules.length,
+        0,
+      );
+      // 空白 statement 拒收
+      assert.equal(
+        parseDigestOutput('[{"category":"max-tokens","statement":"   "}]').rules.length,
+        0,
+      );
       // signature 缺失 → 用 statement 前 60 字兜底，不丢规则
       const fallback = parseDigestOutput(`[{"category":"c","statement":"${"x".repeat(100)}"}]`);
-      assert.equal(fallback.length, 1);
-      assert.equal(fallback[0]?.signature.length, 60);
+      assert.equal(fallback.rules.length, 0, "表外类别 c 不再进结果");
+      const fallbackKnown = parseDigestOutput(
+        `[{"category":"max-tokens","statement":"${"x".repeat(100)}"}]`,
+      );
+      assert.equal(fallbackKnown.rules.length, 1);
+      assert.equal(fallbackKnown.rules[0]?.signature.length, 60);
     });
   });
 
@@ -437,7 +637,7 @@ describe("digest 蒸馏管线", () => {
       assert.equal(result.feedbackCount, 0);
     });
 
-    it("events 不是数组（契约外交付）→ 退空表，不炸命令", async () => {
+    it("events 不是数组（契约外交付）→ 退空表、留诊断、不炸命令", async () => {
       const store = makeStore();
       const broken = {
         ...runZh,
@@ -454,6 +654,8 @@ describe("digest 蒸馏管线", () => {
         broken,
       );
       assert.equal(second.feedbackCount, 0);
+      // "零证据蒸馏"与"取数失败"在回执上同形，诊断日志必须把后者点出来
+      assert.match(loggedText(), /digest events payload is not an array \(string\)/u);
     });
 
     it("事件流里的畸形项（非对象 / 未知类型 / 无 item）都无害", () => {
@@ -693,6 +895,27 @@ describe("digest 蒸馏管线", () => {
       );
     });
 
+    it("finish 块在但 reason 读不懂 → 归成 unknown 的未完成文案，不误报缺 finish 块", async () => {
+      const store = makeStore();
+      const noReason: LlmService = {
+        async *stream() {
+          // 官方声明 finish 必带 reason；交付漂移成 undefined 时，
+          // "reason 缺位" 与 "finish 块缺位" 是两件事，不许混成同一句
+          yield { type: CHUNK_TEXT_DELTA, index: 0, text: "[]" };
+          yield { type: "finish", reason: undefined } as never;
+        },
+      };
+      await assert.rejects(
+        runDigest(store, fakeSession(), noReason, selection, runZh),
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : "";
+          assert.match(message, /未正常完成/u);
+          assert.equal(message.includes("缺少 finish 块"), false, "不许误报缺 finish 块");
+          return true;
+        },
+      );
+    });
+
     it("模型只回空白 → 视为空结果", async () => {
       const store = makeStore();
       await assert.rejects(
@@ -701,14 +924,25 @@ describe("digest 蒸馏管线", () => {
       );
     });
 
-    it("解析容错：括号错序 / JSON 语法错 / 非对象项 / 空白签名", () => {
-      assert.equal(parseDigestOutput("] 先右括号 [ 后左括号").length, 0);
+    it("解析容错：括号错序 / JSON 语法错 / 多候选切片 / 混入方括号", () => {
+      assert.equal(parseDigestOutput("] 先右括号 [ 后左括号").parsed, false);
       // 首尾括号都在、中间坏掉 → 才真的走到 JSON.parse 的 catch
-      assert.equal(parseDigestOutput("[{语法坏}]").length, 0);
-      assert.equal(parseDigestOutput('[3,"文本",{"category":"c","statement":"s"}]').length, 1);
+      assert.equal(parseDigestOutput("[{语法坏}]").parsed, false);
+      // 模型输出的散文夹带方括号（引文编号、尾注）：逐档回退仍取到合法数组，
+      // 不再因"首个 [ 到最后一个 ] 之间混入方括号"整段报废
+      const bracketed =
+        '背景 [1]：以下是建议\n[{"category":"max-tokens","signature":"s","statement":"分段"}]（完）';
+      const sliced = parseDigestOutput(bracketed);
+      assert.equal(sliced.parsed, true);
+      assert.equal(sliced.rules.length, 1);
+      // 合法数组在中间、后随另一个只写了一半的括号：多候选切片取先能解析的那份
+      const trailing = '[{"category":"max-tokens","signature":"s","statement":"先"}] 后半 [没写完';
+      assert.equal(parseDigestOutput(trailing).rules.length, 1);
+      const known = parseDigestOutput('[3,"文本",{"category":"max-tokens","statement":"s"}]');
+      assert.equal(known.rules.length, 1);
       assert.equal(
-        parseDigestOutput('[{"category":"c","statement":"兜底正文","signature":"   "}]')[0]
-          ?.signature,
+        parseDigestOutput('[{"category":"max-tokens","statement":"兜底正文","signature":"   "}]')
+          .rules[0]?.signature,
         "兜底正文",
       );
     });
@@ -775,6 +1009,113 @@ describe("digest 蒸馏管线", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("墙钟到点后适配器以错误收场 → 本地化超时文案，不是底层 AbortError 原文", async () => {
+      vi.useFakeTimers();
+      try {
+        const store = makeStore();
+        const run = runDigest(store, fakeSession(), makeAbortThrowingLlm(), selection, runZh);
+        // 拒绝处理器要先挂上再推时钟：超时拒绝发生在 advanceTimersByTimeAsync 的定时器
+        // 回调链里，处理器挂晚了 node 会以 unhandledRejection 记一笔。
+        const expectation = assert.rejects(run, /蒸馏超时/u);
+        await vi.advanceTimersByTimeAsync(120_000);
+        await expectation;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("timeoutMs 配成 0 / 负数 / NaN → 当场拒（配置漂移不许等流才炸）", async () => {
+      await assert.rejects(
+        runDigest(makeStore(), fakeSession(), fakeLlm("[]"), selection, { ...runZh, timeoutMs: 0 }),
+        /必须是正数/u,
+        "0 不合法",
+      );
+      await assert.rejects(
+        runDigest(makeStore(), fakeSession(), fakeLlm("[]"), selection, {
+          ...runZh,
+          timeoutMs: -5,
+        }),
+        /必须是正数/u,
+        "负数不合法",
+      );
+      await assert.rejects(
+        runDigest(makeStore(), fakeSession(), fakeLlm("[]"), selection, {
+          ...runZh,
+          timeoutMs: Number.NaN,
+        }),
+        /必须是正数/u,
+        "NaN 不合法",
+      );
+    });
+
+    it("provider / model 是空白串 → 同缺位拒（适配器的模糊错误不给用户）", async () => {
+      await assert.rejects(
+        runDigest(makeStore(), fakeSession(), fakeLlm("[]"), { provider: "  ", model: "m" }, runZh),
+        /无可用模型选择/u,
+      );
+      await assert.rejects(
+        runDigest(makeStore(), fakeSession(), fakeLlm("[]"), { provider: "p", model: "" }, runZh),
+        /无可用模型选择/u,
+      );
+    });
+
+    it("官方选择的第三位 reasoningEffort 原样透传 llm.stream；缺省时不写该键", async () => {
+      const store = makeStore();
+      const withEffort: { effort?: unknown; present?: boolean } = {};
+      await runDigest(
+        store,
+        fakeSession(),
+        makeEffortProbeLlm(withEffort),
+        { provider: "p", model: "m", reasoningEffort: "high" },
+        runZh,
+      );
+      assert.equal(withEffort.effort, "high");
+      const withoutEffort: { effort?: unknown; present?: boolean } = {};
+      await runDigest(store, fakeSession(), makeEffortProbeLlm(withoutEffort), selection, runZh);
+      assert.equal(
+        withoutEffort.present,
+        false,
+        "缺省不写键：undefined 键与缺键在传输面上同形，前者是多余位",
+      );
+    });
+
+    it("模型输出读不出 JSON 数组 → 显式报错，不走成'蒸馏出 0 条'的正常路径", async () => {
+      await assert.rejects(
+        runDigest(makeStore(), fakeSession(), fakeLlm("完全不是 JSON"), selection, runZh),
+        /无法解析/u,
+      );
+    });
+
+    it("单条落库抛 I/O 异常 → 记 dropped 继续后续条目（已落库的候选不从回执里消失）", async () => {
+      const broken = new LessonStore({
+        lessonsFile: path.join(scratch, LESSONS_FILE),
+        // load 一抛错，每条 addCandidate 都炸：两笔候选都要走 attemptCandidate 的兜底
+        rules: {
+          load: () => {
+            throw new Error("存储炸了");
+          },
+          save: async () => "persisted",
+        },
+        messages: () => MESSAGES.zh,
+      });
+      const result = await runDigest(
+        broken,
+        fakeSession(),
+        fakeLlm(
+          '[{"category":"max-tokens","signature":"a","statement":"s1"},{"category":"max-tokens","signature":"b","statement":"s2"}]',
+        ),
+        selection,
+        runZh,
+      );
+      assert.equal(result.created.length, 0, "一条都没写进去");
+      assert.deepEqual(
+        result.dropped.map((row) => row.signature),
+        ["a", "b"],
+        "两笔都如实进 dropped，且跑完了整批",
+      );
+      assert.match(loggedText(), /digest persist failed: 存储炸了/u);
     });
   });
 });

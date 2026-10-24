@@ -6,7 +6,8 @@
 // 驱动、无需重载页面（见 client-entry.ts 的 apply）。本包命名空间已 merge 进官方
 // `LocaleNamespaceMap`（下面那条 `declare module`），故键集与 `t` 的函数面都由官方
 // 表达式交出。
-// 插值不放进字典（官方字典是扁平字符串表）：带变量的整行由调用点用固定模板 + 本表片段拼。
+// 本表存的就是带 `{…}` 占位符的整行模板：官方字典是扁平字符串表，插值由调用点的
+// `t(key, params)` 完成（如 `t("cardDescription", { candidates, armed, lessons })`）。
 //
 // **这里只有卡片自己的文案**：规则卡的 `statement` / `category` / `signature` / `project`
 // 与端点回传的 error 串都是数据（规则库——`lesson-loop` 命名空间里那枚 `.volatile()` 的
@@ -73,8 +74,8 @@ export interface UiMessages {
   readonly sectionDemoted: string;
   readonly sectionArmed: string;
   readonly sectionRetired: string;
-  /** 展开「已拒绝/归档」的按钮。 */
-  readonly showRetired: string;
+  /** 已展开时显示的「收起已拒绝/归档」按钮（折叠态显示的是 sectionRetired 标题 + 条数）。 */
+  readonly hideRetired: string;
   /** 分组懒渲染的「加载更多」（{count} = 本组仍折叠着的条数）。 */
   readonly loadMore: string;
   /** 分组为空时的占位。 */
@@ -196,21 +197,22 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       "rejected 规则同签名再次出现在此次数 → 自动转回候选待人工重审（1-20，默认 3）",
     decayDaysLabel: "不可判定阈值（天）",
     decayDaysHint:
-      "armed 超此天数却既无复发也无一次遵守（从没被测到）→ 卡片标记「不可判定」交人工停用/归档（不再自动归档）（1-365，默认 30）",
+      "armed 超此天数却从未被遵守过 → 卡片标记「不可判定」交人工停用/归档（不再自动归档；复发已达降级门槛同样触发）（1-365，默认 30）",
     maxLessonsBytesLabel: "events.jsonl 磁盘保险丝（字节）",
-    maxLessonsBytesHint: "0 = 不设上限（默认，内容零截断）；仅在磁盘需要保护时设置",
+    maxLessonsBytesHint: "0 = 不设上限（默认，内容零截断）；硬上限 1 GiB；仅在磁盘需要保护时设置",
 
     sectionHeading: "{title}（{count}）",
     sectionCandidates: "待确认候选（人工升格）",
     sectionDemoted: "降级待审",
     sectionArmed: "生效中的规则（复发/遵守/暴露 实时度量；不可判定者请人工处理）",
     sectionRetired: "已拒绝/归档",
-    showRetired: "收起已拒绝/归档",
+    hideRetired: "收起已拒绝/归档",
     loadMore: "加载更多（还有 {count} 条）",
     emptyGroup: "暂无",
     metaObservations: "观察 {count} 次 · {day}",
     metaArmed: "复发 {violation} / 遵守 {suppressed} / 暴露 {samples}",
-    metaUndeterminable: "不可判定：armed 至今既无复发也无一次遵守，机器无从裁定，请人工停用或归档",
+    metaUndeterminable:
+      "不可判定：armed 后从未被遵守过（且已挂满阈值天数或复发已达门槛），机器无从裁定，请人工停用或归档",
     metaRevive: "拒绝后又出现 {count} 次（达阈值自动回候选）",
     metaStatusUnknown: "状态：{status}（本卡未识别，暂不提供动作）",
     metaFromDigest: "来自 /lessons-digest",
@@ -270,10 +272,10 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       "A rejected rule whose signature reappears this many times goes back to candidates for human re-review (1-20, default 3)",
     decayDaysLabel: "Undeterminable threshold (days)",
     decayDaysHint:
-      "Armed longer than this with neither a violation nor a single follow-through marks the card as undeterminable for a human to disable/archive (no more silent archiving) (1-365, default 30)",
+      "Armed longer than this with never a follow-through marks the card as undeterminable for a human to disable/archive (no more silent archiving; reaching the violation threshold triggers it too) (1-365, default 30)",
     maxLessonsBytesLabel: "events.jsonl disk fuse (bytes)",
     maxLessonsBytesHint:
-      "0 = no cap (default, content never truncated); set only to protect the disk",
+      "0 = no cap (default, content never truncated); hard cap 1 GiB; set only to protect the disk",
 
     sectionHeading: "{title} ({count})",
     sectionCandidates: "Pending candidates (human promotion)",
@@ -281,13 +283,13 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     sectionArmed:
       "Armed rules (live violation/followed/exposure metrics; handle undeterminable ones by hand)",
     sectionRetired: "Rejected / archived",
-    showRetired: "Hide rejected / archived",
+    hideRetired: "Hide rejected / archived",
     loadMore: "Load more ({count} remaining)",
     emptyGroup: "none",
     metaObservations: "{count} observations · {day}",
     metaArmed: "{violation} violations / {suppressed} followed / {samples} exposed",
     metaUndeterminable:
-      "Undeterminable: armed this long with neither a violation nor a single follow-through — no way for the machine to judge, please disable or archive it",
+      "Undeterminable: never followed since arming (and the decay window has elapsed or the violation threshold is reached) — no way for the machine to judge, please disable or archive it",
     metaRevive:
       "Reappeared {count} time(s) after rejection (returns to candidates at the threshold)",
     metaStatusUnknown: "status: {status} (not recognised by this card — no actions offered)",

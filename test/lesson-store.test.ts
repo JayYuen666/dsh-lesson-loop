@@ -28,6 +28,7 @@ import type { RuleCard, RulesRepository } from "../lib/lesson-store.ts";
 // 的边界，不再绕道 lesson-store 的转发出口。
 import {
   CATEGORY_SIGNATURES,
+  isFragmentSignatureOf,
   looksLikePathSignature,
   normalizeSignature,
   ruleKey,
@@ -37,6 +38,7 @@ import { draftStatement } from "../lib/statement-draft.ts";
 import { DEFAULT_DECAY, decayVerdict } from "../lib/decay-policy.ts";
 import type { DecayPolicy } from "../lib/decay-policy.ts";
 import { appendJsonl, readJsonl } from "../lib/lesson-jsonl.ts";
+import { logged, loggedText } from "./setup-logs.ts";
 // 本包不再有本地 `describeError`：catch 值转日志文本走 shared 的 errorText。
 // 这里保留两条断言（逐字搬自被删的那份）不是重复劳动，而是**消费方针**：shared 的
 // errors 子路径若改名/掉出 dependencies，本包所有 catch 站点都会在运行期才炸。
@@ -48,7 +50,7 @@ import {
   SETTINGS_NAMESPACE,
   capEvidence,
 } from "../lib/rules-layout.ts";
-import { createRulesRepository } from "../lib/rules-namespace.ts";
+import { createRulesRepository, RulesFieldSchema } from "../lib/rules-namespace.ts";
 import type { SettingsCasSurface } from "../lib/rules-namespace.ts";
 import { MESSAGES, fill } from "../lib/messages.ts";
 import {
@@ -64,6 +66,8 @@ const PROJECT_KEY_FIXTURE = "p-1234abcd";
 const PROJECT_KEY_WUKIL = "wukil-a58d36fe";
 const PROJECT_KEY_DSH = ".dsh-ebd8b0cc";
 const CANON_CWD = "/repo/proj";
+/** 规范键按当前平台派生：Windows 的 hash 含盘符，POSIX 字面量不能跨平台复用。 */
+const CANON_KEY = deriveProject(CANON_CWD);
 const LEDGER_FILE_NAME = "lessons.jsonl";
 
 const CATEGORY_FACTGATE_DENY = "factgate-deny";
@@ -363,7 +367,11 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.match(deriveProject("/Users/x/dev/wukil"), /^wukil-[0-9a-f]{8}$/u);
       assert.equal(deriveProject(undefined), "default");
       assert.equal(deriveProject("/"), "default");
-      // 兼容锚点：绝对且已规范的路径，键与旧"纯字符串归一"逐字节相同（存量桶不迁移）
+    });
+
+    // 兼容锚点钉的是 POSIX 存量桶；Windows 上同一字面量的规范化结果带盘符，键本来就不同，
+    // 显式跳过而不是让这一格红（shared 的 project-key 单测用注入 sep 在任一 runner 上验）。
+    it.skipIf(path.sep !== "/")("存量桶兼容锚点（POSIX）：绝对已规范路径键不迁移", () => {
       assert.equal(deriveProject("/Users/dev/proj"), "proj-75ff31d9");
     });
   });
@@ -492,7 +500,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       await zhStore.migrateFragmentRules();
       assert.equal(
         ruleById(zhStore, "sum-zh")?.statement,
-        fill(MESSAGES.zh.statementFactgateRejected, { signature: summarySig }),
+        fill(MESSAGES.zh.statementRejectedSummary, { signature: summarySig }),
       );
 
       seedRules([diskRow({ id: "sum-en", signature: "/repo/src/en.ts", status: "rejected" })]);
@@ -501,7 +509,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       const container = ruleById(enStore, "sum-en")?.statement ?? "";
       assert.equal(
         container,
-        fill(MESSAGES.en.statementFactgateRejected, { signature: summarySig }),
+        fill(MESSAGES.en.statementRejectedSummary, { signature: summarySig }),
       );
       assert.doesNotMatch(container, /\p{Script=Han}/u);
     });
@@ -528,6 +536,32 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(looksLikePathSignature(".dsh/plugin/host.ts"), true);
       assert.equal(looksLikePathSignature(SIGNATURE_GATE_COMMAND), false);
       assert.equal(looksLikePathSignature(STABLE_SIG_FACTGATE), false);
+    });
+  });
+
+  describe("isFragmentSignatureOf（碎片判据长在函数里）", () => {
+    it("稳定签名与 rejected 归档汇总签名一律不算碎片（含 dangerous-bash 自身）", async () => {
+      assert.equal(isFragmentSignatureOf(CATEGORY_DANGEROUS_BASH, "rm -rf /"), true);
+      // 旧判据对 ANY_SIGNATURE_FRAGMENTS 类别无条件 true，连它自己的稳定签名也判碎片
+      assert.equal(
+        isFragmentSignatureOf(CATEGORY_DANGEROUS_BASH, STABLE_SIG_DANGEROUS_BASH),
+        false,
+        "已收敛的稳定卡不该被再当碎片归并",
+      );
+      assert.equal(isFragmentSignatureOf(CATEGORY_FACTGATE_DENY, STABLE_SIG_FACTGATE), false);
+      assert.equal(
+        isFragmentSignatureOf(CATEGORY_FACTGATE_DENY, STABLE_SIG_FACTGATE_REJECTED),
+        false,
+        "归档汇总卡不是待归并碎片",
+      );
+      // 表外类别不受稳定签名影响：路径形态照旧算碎片
+      assert.equal(isFragmentSignatureOf("not-registered", "/a/b/c.ts"), true);
+    });
+
+    it("冻结的 CATEGORY_SIGNATURES：迁移目标表不许被调用方就地增删", async () => {
+      assert.equal(Object.isFrozen(CATEGORY_SIGNATURES), true);
+      // 查表走 Map 快照：表冻结后 stableSignatureFor 与 draftStatement 仍同源
+      assert.equal(stableSignatureFor(CATEGORY_FACTGATE_DENY, "/a.ts"), STABLE_SIG_FACTGATE);
     });
   });
 
@@ -673,6 +707,50 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(mergedRule.violation, 11);
       assert.equal(mergedRule.suppressed, 5);
       assert.equal(mergedRule.samples, 14);
+    });
+
+    // 人工否决 / 降级不可被归并翻掉：归并是机器动作，要复活只有 ruleAction(id,"arm")。
+    // 这三档的度量仍然并入（碎片里真实测到的违规不能丢），变的只是状态。
+    it.each(["rejected", "archived", "demoted"] as const)(
+      "主卡是 %s 时：armed 碎片只并入度量，不把主卡改写回 armed",
+      async (status) => {
+        const store = seedStore([
+          stableCandidateRow({ status, violation: 0, suppressed: 0, samples: 0 }),
+          armedFragmentRow({
+            id: "f-armed-1",
+            signature: SIGNATURE_PATH_A,
+            violation: 4,
+            suppressed: 3,
+            samples: 9,
+          }),
+        ]);
+        await store.migrateFragmentRules();
+        const rules = store.rules();
+        assert.equal(rules.length, 1, "碎片并入后只剩主卡");
+        const [mergedRule] = rules;
+        assert.ok(mergedRule);
+        assert.equal(mergedRule.status, status, "人工否决/降级的状态不许被归并改写");
+        assert.equal(mergedRule.violation, 4, "度量照常并入");
+        assert.equal(mergedRule.suppressed, 3);
+        assert.equal(mergedRule.samples, 9);
+      },
+    );
+
+    it("主卡是候选时仍照常继承 armed（人工升格不被机器抹掉，与上面三条互为反向）", async () => {
+      const store = seedStore([
+        stableCandidateRow({ status: "candidate", violation: 0, suppressed: 0, samples: 0 }),
+        armedFragmentRow({
+          id: "f-armed-1",
+          signature: SIGNATURE_PATH_A,
+          violation: 4,
+          suppressed: 3,
+          samples: 9,
+        }),
+      ]);
+      await store.migrateFragmentRules();
+      const [mergedRule] = store.rules();
+      assert.ok(mergedRule);
+      assert.equal(mergedRule.status, "armed");
     });
 
     it("单条 rejected 碎片并入 rejected 汇总卡", async () => {
@@ -932,6 +1010,39 @@ describe("lesson-store：台账、规则库与度量", () => {
       await store.sessionEnded(PROJECT_KEY_FIXTURE, new Set(), new Set(), "s1");
       assert.equal(ruleById(store, id)?.suppressed, 0);
     });
+
+    it("countExposure=false 的重复边不加 samples，但仍结算 suppressed", async () => {
+      // `session/disposed` 按 store 条目发，同一会话每 resume 一次多一条边。samples 的语义
+      // 是"在场几场会话"，所以只有首个边计；而 resumed 回合里的干净命中是真观测，照常计。
+      const store = makeStore();
+      const { candidate } = await store.report(rec() as never);
+      const { id } = candidate!;
+      await store.ruleAction(id, "arm", "rule");
+
+      await store.sessionEnded(PROJECT_KEY_FIXTURE, new Set(), new Set(), "s1", true);
+      assert.equal(ruleById(store, id)?.samples, 1, "首个边计 exposure");
+
+      await store.sessionEnded(PROJECT_KEY_FIXTURE, new Set(), new Set(), "s1", false);
+      assert.equal(ruleById(store, id)?.samples, 1, "重复边不得再涨 samples");
+
+      await store.sessionEnded(PROJECT_KEY_FIXTURE, new Set(), new Set([id]), "s1", false);
+      assert.equal(ruleById(store, id)?.suppressed, 1, "重复边里的 pass 仍要计");
+      assert.equal(ruleById(store, id)?.samples, 1, "但它仍不加 exposure");
+    });
+
+    it("重复边在没有 pass 时一格都不写盘（不让 resume 触发一轮空 CAS 写）", async () => {
+      const store = makeStore({ promoteThreshold: 1 });
+      const { candidate } = await store.report(rec() as never);
+      const { id } = candidate!;
+      await store.ruleAction(id, "arm", "rule");
+      const before = ruleById(store, id);
+      // 判据读**端口的 revision**：卡是同一份对象引用，deepEqual 在"整片写回同样内容"
+      // 时照样相等 —— 只比内容测不到"到底写没写盘"。
+      const revisionBefore = facet.revision();
+      await store.sessionEnded(PROJECT_KEY_FIXTURE, new Set(), new Set(), "s1", false);
+      assert.equal(facet.revision(), revisionBefore, "两个计数器都不动就不该发起写");
+      assert.deepEqual(ruleById(store, id), before, "内容也不该变");
+    });
   });
 
   describe("report：候选归并与升格门槛", () => {
@@ -945,10 +1056,13 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(r2.ready, false);
       const r3 = await store.report(rec() as never);
       assert.equal(r3.ready, true);
+      assert.equal(r3.justReady, true, "刚越过门槛的那一次是边沿");
       // 登记表内的类别：换目标路径不再另开一张卡（Part 1 的汇聚点）
       const r4 = await store.report(rec({ signature: SIGNATURE_PATH_B }) as never);
       assert.equal(store.rules().length, 1);
       assert.equal(r4.candidate?.occurrences, 4);
+      assert.equal(r4.ready, true, "ready 是电平，越过之后一直为 true");
+      assert.equal(r4.justReady, false, "justReady 是边沿，不该随每条上报重复");
       // 表外类别保持"一条签名一张卡"
       await store.report(rawRec({ signature: "/repo/src/c.ts" }) as never);
       await store.report(rawRec({ signature: SIGNATURE_PATH_D }) as never);
@@ -1018,6 +1132,31 @@ describe("lesson-store：台账、规则库与度量", () => {
       // 本会话复发过的规则不计 suppressed
       await store.sessionEnded(PROJECT_KEY_FIXTURE, new Set([id]), new Set([id]), "s2");
       assert.equal(ruleById(store, id)?.suppressed, 1);
+    });
+
+    it("needsUserConfirmation 的上报不算违规：只补证据，不动复发率", async () => {
+      // 「判据看不见、要人拍板」不是「已确认违规」。计进去会让一条从不产生违规的规则
+      // 凭"问过几次"累积到降级门槛，而分母（suppressed）永远是 0，卡只能停在不可判定。
+      const store = makeStore();
+      const { candidate } = await store.report(rec() as never);
+      const { id } = candidate!;
+      await store.ruleAction(id, "arm", "rule");
+      const evidenceBefore = ruleById(store, id)?.evidence.length ?? 0;
+
+      const ask = await store.report(
+        rec({ signature: SIGNATURE_PATH_B, evidence: { needsUserConfirmation: true } }) as never,
+      );
+      assert.equal(ask.violationOf, undefined, "这类上报不该回 violationOf");
+      assert.equal(ruleById(store, id)?.violation, 0, "复发性计数不得上涨");
+      assert.equal(
+        ruleById(store, id)?.evidence.length,
+        evidenceBefore + 1,
+        "证据仍要留下——人审时要看得见问的是什么",
+      );
+
+      // 对照：不带这个标记的同类上报照常计违规（防止上面那条把整类都放过）
+      const real = await store.report(rec({ signature: SIGNATURE_PATH_D }) as never);
+      assert.equal(real.violationOf?.violation, 1);
     });
 
     it("arm 清零历史度量（新生命周期重新计数）", async () => {
@@ -1179,6 +1318,62 @@ describe("lesson-store：台账、规则库与度量", () => {
   });
 
   describe("持久化", () => {
+    it("冲突错误带真实推进的 revision：拿旧 expectedRevision 重放必再撞（重读才写得进）", async () => {
+      const provider = makeSettingsProvider();
+      provider.forceConflicts(1);
+      await assert.rejects(
+        provider.update(SETTINGS_NAMESPACE, { rules: [] }, 0),
+        /changed since it was read/u,
+      );
+      // 冲突那次真的推进了 revision：拿旧的 0 重放 → CAS 拒；重读后拿 1 → 成功
+      await assert.rejects(
+        provider.update(SETTINGS_NAMESPACE, { rules: [] }, 0),
+        /changed since it was read/u,
+        "假件若只编一个 actual 而不推进 revision，坏重试就会在这里悄悄成功",
+      );
+      await provider.update(SETTINGS_NAMESPACE, { rules: [] }, 1);
+      assert.equal(provider.revisionOf(SETTINGS_NAMESPACE), 2);
+    });
+
+    it("写入先过 schema 再落段：解析拒绝时 document 原样、revision 不前进", async () => {
+      const provider = makeSettingsProvider({ [SETTINGS_NAMESPACE]: { enabled: true } });
+      await assert.rejects(
+        provider.update(SETTINGS_NAMESPACE, { promoteThreshold: 999 }, 0),
+        /entry config rejected/u,
+      );
+      assert.equal(provider.revisionOf(SETTINGS_NAMESPACE), 0, "拒写的写不推进 revision");
+      assert.equal(
+        provider.peek(SETTINGS_NAMESPACE)?.["promoteThreshold"],
+        undefined,
+        "document 没有被写坏",
+      );
+      assert.equal(provider.peek(SETTINGS_NAMESPACE)?.["enabled"], true);
+    });
+
+    it("merge 与读面的原型/隔离守卫：__proto__ 落自有属性；describe 与 rawRules 交深拷贝", async () => {
+      const rows = [diskRow({ id: "iso", category: CATEGORY_GATE_FAILURE, signature: "s" })];
+      const isoFacet = makeRulesFacet(rows);
+      // merge 层：带 __proto__ 键的 patch 落自有属性，不改掉 merged 的原型
+      // （JSON.parse 造自有 __proto__ 键，structuredClone 同样保留它——这条路径真实可达）
+      const poisoned = JSON.parse('{"__proto__": {"polluted": true}}') as Record<string, unknown>;
+      await isoFacet.provider.update(SETTINGS_NAMESPACE, poisoned, 0);
+      const section = isoFacet.provider.peek(SETTINGS_NAMESPACE)!;
+      assert.equal(
+        Object.getPrototypeOf(section) === Object.prototype,
+        true,
+        "写 __proto__ 不许改掉 section 的原型",
+      );
+      assert.equal(section["polluted"], undefined);
+      // 读面隔离：改 describe().user / rawRules() 的返回值不许渗回假件状态
+      const [descriptor] = isoFacet.provider.describe();
+      assert.ok(descriptor !== undefined, "describe 至少交回本条目那一行");
+      const user = descriptor.user as Record<string, unknown>;
+      (user[RULES_FIELD] as unknown[]).push({ id: "污染" });
+      assert.equal(isoFacet.rawRules().length, 1, "describe 交的是深拷贝");
+      (isoFacet.rawRules() as unknown[]).push({ id: "污染2" });
+      assert.equal(isoFacet.rawRules().length, 1, "rawRules 交的也是深拷贝");
+    });
+
     it("规则库跨实例重载（settings 命名空间 CAS）", async () => {
       const store1 = makeStore();
       const { candidate } = await store1.report(rec() as never);
@@ -1217,6 +1412,38 @@ describe("lesson-store：台账、规则库与度量", () => {
   });
 
   describe("规则库端口 createRulesRepository", () => {
+    it("describe().schema 的形状信息经 RuleCardSchema 分支带出全部字段名（不被 any 分支抹掉）", () => {
+      const { inner } = RulesFieldSchema;
+      assert.ok(inner !== undefined, "array 的元素 schema 挂在 inner 上");
+      const branches = inner.list;
+      assert.ok(Array.isArray(branches), "union 的分支在 list 上");
+      assert.equal(branches.length, 2, "两支：RuleCardSchema 与 any（宽松判定在读取侧）");
+      // 期望清单独立写死（不是从实现派生）：字段集与 lib/lesson-store.ts 的 RuleCard 一一对应
+      assert.deepEqual(Object.keys(branches[0]?.dict ?? {}).toSorted(), [
+        "armedAt",
+        "category",
+        "createdAt",
+        "cwd",
+        "evidence",
+        "id",
+        "lastSeenAt",
+        "lastSuppressedAt",
+        "lastViolationAt",
+        "occurrences",
+        "origin",
+        "project",
+        "recurrences",
+        "samples",
+        "signature",
+        "sources",
+        "statement",
+        "status",
+        "suppressed",
+        "updatedAt",
+        "violation",
+      ]);
+    });
+
     it("surface 缺位（null，注册被打回 / 宿主无 CAS 面）→ 读不可用、写一律 rejected", async () => {
       const repo = createRulesRepository(null);
       const read = repo.load();
@@ -1246,14 +1473,42 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(boxed.updates(), 0, "不可用读不背书任何一次写");
     });
 
-    it("descriptor 的 value 非对象 / revision 非数字 → 空库 + revision 退 0", () => {
+    it("descriptor 的 value 非记录 → 不可用读，绝不以当前 revision 背书写回", async () => {
       const boxed = surface(() => [
-        { ns: SETTINGS_NAMESPACE, value: "用户手改坏的存量段", revision: "3" },
+        { ns: SETTINGS_NAMESPACE, value: "用户手改坏的存量段", revision: 3 },
+      ]);
+      const repo = createRulesRepository(boxed.cas);
+      const read = repo.load();
+      assert.equal(read.usable, false, "解析值读不懂 ≠ 库是空的");
+      assert.deepEqual(read.cards, []);
+      const store = otherProcess(repo);
+      const receipt = await store.report(rawRec({ signature: "cmd-badvalue" }) as never);
+      assert.equal(receipt.ok, false);
+      assert.equal(boxed.updates(), 0, "不可用读不背书任何一次写");
+    });
+
+    it("value 是记录但 rules 不是数组 → 同样不可用（cardsOfValue 会把空值折成空库）", () => {
+      const boxed = surface(() => [
+        { ns: SETTINGS_NAMESPACE, value: { rules: "junk" }, revision: 3 },
       ]);
       const read = createRulesRepository(boxed.cas).load();
-      assert.equal(read.usable, true, "读得动，只是内容不合形状");
+      assert.equal(read.usable, false);
       assert.deepEqual(read.cards, []);
-      assert.equal(read.revision, 0, "revision 不是数字时退 0，不拿脏值当 CAS 条件");
+    });
+
+    it("revision 非数字/负数/非整数 → 不可用读（绝不伪造 0 去 CAS 写）", () => {
+      for (const revision of ["3", Number.NaN, -1, 1.5]) {
+        const boxed = surface(() => [{ ns: SETTINGS_NAMESPACE, value: { rules: [] }, revision }]);
+        const read = createRulesRepository(boxed.cas).load();
+        assert.equal(read.usable, false, `revision ${String(revision)} 不合形状，读按不可用退`);
+        assert.deepEqual(read.cards, []);
+        assert.equal(read.revision, 0, "不可用读的 revision 恒 0（写侧一律拒）");
+      }
+      // 负例一侧：非负整数 revision 正常可读，值原样交出
+      const boxed = surface(() => [{ ns: SETTINGS_NAMESPACE, value: { rules: [] }, revision: 3 }]);
+      const read = createRulesRepository(boxed.cas).load();
+      assert.equal(read.usable, true);
+      assert.equal(read.revision, 3);
     });
 
     it("describe() 抛错 → rules read failed 日志 + 不可用读（不外抛）", () => {
@@ -1266,6 +1521,29 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(createRulesRepository(boxed.cas).load().usable, false);
       assert.match(String(error.mock.calls[0]?.[0]), /rules read failed: 宿主读不动/u);
       error.mockRestore();
+    });
+
+    it("缺 id 的存量行被丢弃并上报；条数变化再报（数据丢失不许无痕）", () => {
+      const rows: unknown[] = [
+        { id: "kept", category: "c", signature: "s", status: "armed" },
+        { category: "c", signature: "s" },
+        { id: "", signature: "s" },
+      ];
+      const boxed = surface(() => [
+        { ns: SETTINGS_NAMESPACE, value: { rules: rows }, revision: 1 },
+      ]);
+      const repo = createRulesRepository(boxed.cas);
+      const read = repo.load();
+      assert.equal(read.usable, true, "缺 id 的行只丢那一行，不构成读不可用");
+      assert.equal(read.cards.length, 1, "好行照常读出");
+      assert.match(loggedText(), /2 rule row\(s\) without a usable id dropped/u);
+      const before = logged().length;
+      repo.load();
+      assert.equal(logged().length, before, "条数没变不重复刷");
+      // 坏行被修掉一条 → 条数变化再报一次
+      rows.pop();
+      repo.load();
+      assert.match(loggedText(), /1 rule row\(s\) without a usable id dropped/u);
     });
   });
 
@@ -1292,6 +1570,22 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(last.detail.length, MAX_EVIDENCE_DETAIL_CHARS + 1, "超限截断并补一个省略号");
       assert.equal(last.detail.endsWith("…"), true);
       assert.equal(card.evidence.length, MAX_EVIDENCE_ENTRIES + 3, "不改入参");
+    });
+
+    it("detail 含代理对（emoji 等）时按码点截断，截断点不撕裂字符", () => {
+      const head = "x".repeat(MAX_EVIDENCE_DETAIL_CHARS - 1);
+      const card: RuleCard = {
+        ...cardOf({ id: "astral", signature: "sig" }),
+        evidence: [
+          { ts: 1, source: SOURCE_DANGER_GUARD, detail: `${head}😀后面还有一段超限的正文` },
+        ],
+      };
+      const [capped] = capEvidence([card]);
+      const row = capped?.evidence[0];
+      assert.ok(row);
+      assert.equal(row.detail.endsWith("…"), true);
+      assert.ok(row.detail.includes("😀"), "第 400 个码点恰是代理对：整字符保留，无孤立半边");
+      assert.ok(row.detail.endsWith("😀…"), "截断体以完整的 emoji 收尾（无孤立代理项）");
     });
   });
 
@@ -1349,8 +1643,17 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.deepEqual(readJsonl(path.join(scratch, "nope.jsonl")), []);
     });
 
-    it("文件不可读（路径是目录）→ 空表，不抛", async () => {
+    it("文件不可读（路径是目录）→ 空表不抛，且留一条按文件去重的 warn（与'没有流水'分得开）", async () => {
       assert.deepEqual(readJsonl(scratch), []);
+      assert.match(loggedText(), /lesson ledger unreadable/u);
+      // 第二次同因失败不再重复刷（错误摘要没变）
+      readJsonl(scratch);
+      assert.equal(logged().length, 1);
+      // 换一个不可读路径（错误摘要按文件去重）→ 再报一次
+      const other = path.join(scratch, "另一个目录");
+      mkdirSync(other);
+      readJsonl(other);
+      assert.equal(logged().length, 2);
     });
 
     it("JSONL 坏行跳过并汇总 warn 一次", async () => {
@@ -1869,9 +2172,11 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(errorText("字符串抛出"), "字符串抛出");
     });
 
-    it("normalizeSignature 非字符串 → 空串", async () => {
+    it("normalizeSignature 非字符串 → 空串，并留一条可观测信号（否则缺签名上报会被静默归并成同键）", async () => {
       assert.equal(normalizeSignature(42), "");
       assert.equal(normalizeSignature(null), "");
+      assert.match(loggedText(), /lesson signature is not a string \(number\)/u);
+      assert.match(loggedText(), /lesson signature is not a string \(object\)/u);
     });
 
     it("deriveProject：无斜杠/尾斜杠/空格目录都归一", async () => {
@@ -1959,7 +2264,7 @@ describe("lesson-store：台账、规则库与度量", () => {
   });
 
   describe("度量与衰减补充分支", () => {
-    it("decayVerdict 锚点回退链：lastViolationAt > lastSuppressedAt > armedAt > createdAt", async () => {
+    it("decayVerdict 挂满锚点 = armedAt（回退 createdAt）：复发不改写窗口", async () => {
       const t0 = 1_700_000_000_000;
       const base: RuleCard = {
         id: "r",
@@ -1980,21 +2285,61 @@ describe("lesson-store：台账、规则库与度量", () => {
         origin: "threshold",
       };
       const late = t0 + 365 * 86_400_000;
+      const armedMid = t0 + 10 * 86_400_000;
+      // 有干净命中（suppressed > 0）的卡不进不可判定分支：复发率裁决接管
       assert.equal(
-        decayVerdict({ ...base, lastSuppressedAt: late, suppressed: 1 }, DEFAULT_DECAY, late),
+        decayVerdict({ ...base, armedAt: armedMid, suppressed: 1 }, DEFAULT_DECAY, late),
         "keep",
       );
       assert.equal(
         decayVerdict(
-          { ...base, armedAt: late, violation: 1, lastViolationAt: late },
+          { ...base, armedAt: armedMid, violation: 1, suppressed: 1 },
           DEFAULT_DECAY,
           late,
         ),
         "keep",
       );
+      // 挂满（armedAt 起算）且零遵守 → 不可判定
       assert.equal(decayVerdict({ ...base, armedAt: t0 }, DEFAULT_DECAY, late), "undeterminable");
-      // 三个锚点全缺 → 回退到 createdAt
+      // 锚点缺 armedAt → 回退 createdAt
       assert.equal(decayVerdict(base, DEFAULT_DECAY, late), "undeterminable");
+      // 关键反例：armed 已挂满、最近还有复发（lastViolationAt 很近）、复发没到门槛、
+      // 零遵守 → 按 armedAt 起算点出"不可判定"。旧锚点（最近一条证据）在这里会被
+      // 复发一次次重置窗口，这条卡就永远 keep 下去。
+      const recentViolation = t0 + 5 * 86_400_000;
+      assert.equal(
+        decayVerdict(
+          { ...base, armedAt: t0, violation: 2, lastViolationAt: recentViolation },
+          { ...DEFAULT_DECAY, decayDays: 3 },
+          recentViolation + 86_400_000,
+        ),
+        "undeterminable",
+      );
+    });
+
+    it("decayVerdict 只在 armed 卡上裁决；零样本零遵守的候选不受影响", async () => {
+      const t0 = 1_700_000_000_000;
+      const base: RuleCard = {
+        id: "r",
+        project: "p",
+        category: "c",
+        signature: "s",
+        statement: "t",
+        status: "candidate",
+        createdAt: t0,
+        updatedAt: t0,
+        occurrences: 1,
+        sources: [],
+        violation: 0,
+        suppressed: 0,
+        samples: 0,
+        recurrences: 0,
+        evidence: [],
+        origin: "threshold",
+      };
+      const late = t0 + 365 * 86_400_000;
+      assert.equal(decayVerdict(base, DEFAULT_DECAY, late), "keep");
+      assert.equal(decayVerdict({ ...base, status: "archived" }, DEFAULT_DECAY, late), "keep");
     });
 
     it("pass 只认 armed 卡；非 armed 与不匹配键都返回 undefined", async () => {
@@ -2444,13 +2789,12 @@ describe("lesson-store：台账、规则库与度量", () => {
   });
 
   // ── Part 2：project 键单源 + 一次性归一迁移 ─────────────────────────────
-  // 期望值是 shared/lib/project-key.ts 的产物，串在这里是刻意的字面量锚点：
-  //   LEGACY = 旧"纯字符串归一"下 `/repo/other/../proj` 的桶键；
-  //   CANON  = 规范归一（path.resolve 吃掉 `..`）后同一目录的桶键。
-  // 两者不同正是本迁移要收拢的那类分桶。
+  // LEGACY 是旧"纯字符串归一"下 `/repo/other/../proj` 的桶键，作为存量值写死即可；
+  // CANON 由 `deriveProject(CANON_CWD)` 在模块顶层按当前平台派生（Windows 的规范化结果
+  // 带盘符，POSIX 字面量会在那一格漂移）。POSIX 历史键的逐字节锚点在 shared 自己的
+  // project-key 单测里，由注入 `sep` 固定，不依赖 runner 平台。
 
   const LEGACY_KEY = "proj-93e3dace";
-  const CANON_KEY = "proj-6b906b9c";
   const DIRTY_CWD = "/repo/other/../proj";
   // CANON_CWD 上移到模块作用域：cwd 归一的用例在别的 describe 块里也要用。
 
@@ -2693,7 +3037,6 @@ describe("lesson-store：台账、规则库与度量", () => {
     it("deriveProject 与 shared 派生同源：同一 cwd 两种写法同键", async () => {
       assert.equal(deriveProject("/repo//proj///"), deriveProject(CANON_CWD));
       assert.equal(deriveProject(DIRTY_CWD), CANON_KEY);
-      assert.equal(deriveProject(CANON_CWD), CANON_KEY);
     });
   });
 
@@ -2990,6 +3333,19 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(spy.count(), 1, "同一趟坏形状只点一次名");
       assert.match(spy.text(), /rules namespace rejected/u);
       assert.match(spy.text(), /is not an array/u);
+      spy.restore();
+    });
+
+    it("解析值读不懂（value 非记录）⇒ 同样点名一次并按不可用处理", () => {
+      const spy = captureErrors();
+      const { cas } = surface(() => [
+        { ns: SETTINGS_NAMESPACE, value: "半解析的载荷", user: { rules: [] }, revision: 0 },
+      ]);
+      const repository = createRulesRepository(cas);
+      assert.equal(repository.load().usable, false);
+      assert.equal(repository.load().usable, false);
+      assert.equal(spy.count(), 1, "value 层的坏形状同享一次性点名");
+      assert.match(spy.text(), /rules namespace rejected/u);
       spy.restore();
     });
 
