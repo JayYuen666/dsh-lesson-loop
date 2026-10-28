@@ -13,6 +13,15 @@
 /** 宿主服务键 = 客户端线上命名空间（两侧共用的唯一来源）。 */
 export const RULES_REMOTE_NAMESPACE = "lessonLoopRules";
 
+/**
+ * 本包 bundle 的包名：`$mount` 的 `package` 位与 `plugins.bundle.config` 的槽位 key 都必须
+ * 与宿主 bundle 包名**逐字相等**（key 写成条目 id 时插件页永不出卡），descriptor 的 id
+ * 前缀也用它。两个 src（client-entry 的 $mount 槽位 / rules-reader 的 descriptor 与
+ * codec typeSymbol）从这里取，字面量只有这一份——改名/fork 时漏改一处只会表现为
+ * 「贡献挂不上、数据面永远读不到」，单靠门禁抓不住。
+ */
+export const RULES_BUNDLE_PACKAGE = "@jayyuen66/dsh-lesson-loop";
+
 /** 人工动作的取值域（宿主白名单；白名单本身在 lib/rules-remote.ts）。 */
 export type RuleActionName = "arm" | "reject" | "demote" | "archive" | "edit" | "revive";
 
@@ -71,7 +80,9 @@ export interface RulesRequest {
   readonly project?: string;
 }
 
-/** 事件流水的过滤入参；`limit` ≤ 0 / 缺省 = 全量（内容零截断）。 */
+/** 事件流水的过滤入参：`limit` 缺省 / ≤ 0 取默认条数、非零值封顶——事件流水只追加
+ *  不修剪，"缺省 = 全量"等于把整份流水（含每条工具输出的全文）挂在公开命名空间上，
+ *  载荷随使用时长线性增长。detail 在下发前按读面常量截断（存储侧仍是零截断全量）。 */
 export interface LessonsRequest {
   readonly project?: string;
   readonly limit?: number;
@@ -107,8 +118,9 @@ export interface RuleActionDone {
   readonly action: RuleActionName;
 }
 
-/** 拒绝回执：`status` 保留旧 HTTP 面的语义码（400/404/500，lib/rules-remote.ts 的四个
- *  返回分支只产出这三个值），卡片只读 `error`。字面量联合把新增/改写状态码钉在编译期。 */
+/** 拒绝回执：`status` 保留旧 HTTP 面的语义码（400/404/500；lib/rules-remote.ts 的
+ *  ruleAction 共五处返回，只产出这三个值），卡片只读 `error`。字面量联合把新增/
+ *  改写状态码钉在编译期。 */
 export interface RuleActionRefused {
   readonly ok: false;
   readonly error: string;

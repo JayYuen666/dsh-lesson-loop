@@ -19,7 +19,6 @@ import {
   LessonStore,
   PERSIST_FAILED,
   deriveProject,
-  isKnownLessonSource,
   normalizeRuleCardRow,
 } from "../lib/lesson-store.ts";
 import type { RuleCard, RulesRepository } from "../lib/lesson-store.ts";
@@ -49,6 +48,7 @@ import {
   RULES_FIELD,
   SETTINGS_NAMESPACE,
   capEvidence,
+  cardsOfValue,
 } from "../lib/rules-layout.ts";
 import { createRulesRepository, RulesFieldSchema } from "../lib/rules-namespace.ts";
 import type { SettingsCasSurface } from "../lib/rules-namespace.ts";
@@ -80,6 +80,18 @@ const CATEGORY_SECRET_PATH = "secret-path";
 const CATEGORY_FEEDBACK_DIGEST = "feedback-digest";
 const CATEGORY_TRANSIENT_FAILURE = "transient-failure";
 const CATEGORY_DANGEROUS_BASH = "dangerous-bash";
+/** 人工动作被正文判据拒绝的回执码（三个用例共用一份字面量）。 */
+const RULE_ACTION_INVALID_STATEMENT = "invalid-statement";
+/** 正文超过 maxStatementChars 的回执码。 */
+const RULE_ACTION_STATEMENT_TOO_LONG = "statement-too-long";
+
+/** 往 store 的流水文件直接追加一行原始 JSON（绕过 report 的归一）：造"可解析但
+ *  归一不了"的行，供 lessonsCount 与 recentLessons 的口径对账用。 */
+function appendJsonlRaw(file: string, row: Record<string, unknown>): void {
+  writeFileSync(file, `${JSON.stringify(row)}\n`, { flag: "a" });
+}
+/** edit 用例的人工正文（改写前后与"与现文相同"三条断言共用）。 */
+const EDITED_STATEMENT = "人工改写";
 const SOURCE_DANGER_GUARD = "danger-guard";
 const SOURCE_LESSONS_DIGEST = "lessons-digest";
 
@@ -408,7 +420,10 @@ describe("lesson-store：台账、规则库与度量", () => {
     { category: CATEGORY_TRANSIENT_FAILURE, signature: "cavoti code", embeds: true },
     { category: "max-tokens", signature: "sig", embeds: false },
     { category: "unfinished-turn", signature: "sig", embeds: false },
+    { category: CATEGORY_FEEDBACK_DIGEST, signature: "model verbatim text", embeds: true },
     { category: "unknown-cat", signature: "some other thing", embeds: true },
+    // 空签名（归一后为空）：起草出的是明说缺签名的占位正文，不嵌任何签名。
+    { category: CATEGORY_FEEDBACK_DIGEST, signature: "   ", embeds: false },
   ];
 
   describe("draftStatement", () => {
@@ -431,8 +446,10 @@ describe("lesson-store：台账、规则库与度量", () => {
 
     it("locale=en：起草出的十二条正文全是英文（不含汉字），且不留占位符", async () => {
       const statementKeys = Object.keys(MESSAGES.en).filter((key) => key.startsWith("statement"));
-      assert.equal(statementKeys.length, 12, "字典 statement* 段与模板场景表同源");
-      assert.equal(DRAFT_CASES.length, statementKeys.length);
+      assert.equal(statementKeys.length, 13, "字典 statement* 段与模板场景表同源");
+      // feedback-digest 的透传场景不消费模板键（signature 本身就是正文），所以场景表
+      // 比键多一枚。
+      assert.equal(DRAFT_CASES.length, statementKeys.length + 1);
       for (const scenario of DRAFT_CASES) {
         const drafted = draftStatement(scenario.category, scenario.signature, MESSAGES.en);
         assert.ok(drafted.length > 0, `${scenario.category} 起草出了空正文`);
@@ -496,10 +513,16 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.doesNotMatch(enStatement, /\p{Script=Han}/u);
     });
 
-    it("rejected 汇总卡的容器正文同样随消息表走（en 无汉字，zh 保留原模板原文）", async () => {
+    it("rejected 汇总卡的容器正文随消息表走；人工写过的碎片正文在迁移中保留", async () => {
       const summarySig = `${CATEGORY_SIGNATURES[CATEGORY_FACTGATE_DENY]}:rejected`;
+      // 机器起草的碎片（正文 = 该签名按当前语言起草出的模板）→ 容器正文随消息表走。
       const zhStore = seedStore([
-        diskRow({ id: "sum-zh", signature: "/repo/src/zh.ts", status: "rejected" }),
+        diskRow({
+          id: "sum-zh",
+          signature: "/repo/src/zh.ts",
+          status: "rejected",
+          statement: fill(MESSAGES.zh.statementFactgatePath, { signature: "/repo/src/zh.ts" }),
+        }),
       ]);
       await zhStore.migrateFragmentRules();
       assert.equal(
@@ -507,7 +530,22 @@ describe("lesson-store：台账、规则库与度量", () => {
         fill(MESSAGES.zh.statementRejectedSummary, { signature: summarySig }),
       );
 
-      seedRules([diskRow({ id: "sum-en", signature: "/repo/src/en.ts", status: "rejected" })]);
+      // 正文不是当前语言模板的碎片按"人工写过的"保守保留——模板覆盖会把人写下的
+      // 拒绝理由换成模板文案（edit 对任何状态的卡都生效，rejected 卡可以被改写）。
+      const keepStore = seedStore([
+        diskRow({ id: "sum-keep", signature: "/repo/src/keep.ts", status: "rejected" }),
+      ]);
+      await keepStore.migrateFragmentRules();
+      assert.equal(ruleById(keepStore, "sum-keep")?.statement, "存量碎片正文");
+
+      seedRules([
+        diskRow({
+          id: "sum-en",
+          signature: "/repo/src/en.ts",
+          status: "rejected",
+          statement: fill(MESSAGES.en.statementFactgatePath, { signature: "/repo/src/en.ts" }),
+        }),
+      ]);
       const enStore = makeStore({ messages: () => MESSAGES.en });
       await enStore.migrateFragmentRules();
       const container = ruleById(enStore, "sum-en")?.statement ?? "";
@@ -711,6 +749,9 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(mergedRule.violation, 11);
       assert.equal(mergedRule.suppressed, 5);
       assert.equal(mergedRule.samples, 14);
+      // 主卡不是 armed 时：第一张整片继承，但其后每张 armed 碎片的 foldMetrics 会把
+      // 锚点取较晚者——归并后的 armedAt 必须是这批碎片里的最大值，不许停在数组第一张。
+      assert.equal(mergedRule.armedAt, 20, "锚点取更晚那张，不因整片继承而拉早");
     });
 
     // 人工否决 / 降级不可被归并翻掉：归并是机器动作，要复活只有 ruleAction(id,"arm")。
@@ -1448,12 +1489,93 @@ describe("lesson-store：台账、规则库与度量", () => {
       ]);
     });
 
+    it("sessionEnded：读不可信 → 回 false 并留 skipped 日志（暴露账目在盘上一格未动）", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {
+        // 断言在下方
+      });
+      const boxed = surface(() => [
+        { ns: SETTINGS_NAMESPACE, value: { rules: "坏形状" }, revision: 3 },
+      ]);
+      const store = otherProcess(createRulesRepository(boxed.cas));
+      const settled = await store.sessionEnded(PROJECT_KEY_FIXTURE, new Set(), new Set(), "s-x");
+      assert.equal(settled, false, "读不可信 = 清算没到达磁盘");
+      assert.match(
+        String(error.mock.calls.at(-1)?.[0]),
+        /session settle for project .* was skipped \(rule library unreadable/u,
+      );
+      error.mockRestore();
+    });
+
+    it("sessionEnded 无 sessionId 且读不可信 → 日志用 unknown session 占位", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {
+        // 断言在下方
+      });
+      const boxed = surface(() => [
+        { ns: SETTINGS_NAMESPACE, value: { rules: "坏形状" }, revision: 3 },
+      ]);
+      const store = otherProcess(createRulesRepository(boxed.cas));
+      assert.equal(await store.sessionEnded(PROJECT_KEY_FIXTURE, new Set(), new Set()), false);
+      assert.match(String(error.mock.calls.at(-1)?.[0]), /unknown session: session settle/u);
+      error.mockRestore();
+    });
+
+    it("migrateFragmentRules / migrateProjectKeys：CAS 耗尽 → 回 0 / 零值 + NOT persisted 日志", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {
+        // 断言在下方
+      });
+      const casFacet = makeRulesFacet([
+        diskRow({ id: "frag-1", signature: SIGNATURE_PATH_A, cwd: "/repo/alpha" }),
+        diskRow({ id: "frag-2", signature: SIGNATURE_PATH_B, cwd: "/repo/alpha" }),
+      ]);
+      casFacet.provider.forceConflicts(9);
+      const store = new LessonStore({
+        rules: casFacet.repo,
+        lessonsFile: path.join(scratch, "lessons-migrate.jsonl"),
+        messages: () => MESSAGES.zh,
+      });
+      const merged = await store.migrateFragmentRules();
+      assert.equal(merged, 0, "计划值不落盘就不报数");
+      assert.match(
+        String(error.mock.calls[0]?.[0]),
+        /fragment migration: \d+ merge\(s\) were NOT persisted/u,
+      );
+      const migrated = await store.migrateProjectKeys();
+      assert.deepEqual(migrated, { rewrites: 0, merged: 0 }, "键迁移同口径");
+      assert.match(
+        String(error.mock.calls[1]?.[0]),
+        /project key migration: \d+ rewrite\(s\) \/ \d+ merge\(s\) were NOT persisted/u,
+      );
+      error.mockRestore();
+    });
+
+    it("migrateProjectKeys 有真改写但写失败 → 零值回执 + NOT persisted 日志", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {
+        // 断言在下方
+      });
+      // 卡上存着过期的桶键（与 cwd 派生结果不一致）：计划里 rewrites=1，写又被拒。
+      const projectFacet = makeRulesFacet([
+        diskRow({ id: "stale-bucket", signature: "s", cwd: "/repo/gamma", project: "stale" }),
+      ]);
+      projectFacet.provider.forceConflicts(9);
+      const store = new LessonStore({
+        rules: projectFacet.repo,
+        lessonsFile: path.join(scratch, "lessons-project-fail.jsonl"),
+        messages: () => MESSAGES.zh,
+      });
+      assert.deepEqual(await store.migrateProjectKeys(), { rewrites: 0, merged: 0 });
+      assert.match(
+        String(error.mock.calls[0]?.[0]),
+        /project key migration: 1 rewrite\(s\) \/ 0 merge\(s\) were NOT persisted/u,
+      );
+      error.mockRestore();
+    });
+
     it("surface 缺位（null，注册被打回 / 宿主无 CAS 面）→ 读不可用、写一律 rejected", async () => {
       const repo = createRulesRepository(null);
       const read = repo.load();
       assert.equal(read.usable, false, "没有 CAS 面就不许背书任何库内容");
       assert.deepEqual(read.cards, []);
-      assert.equal(read.revision, 0);
+      assert.equal(read.revision, -1, "哨兵 revision 取 -1：0 是官方合法版本号，不与合法值混淆");
       assert.equal(await repo.save([cardOf({ id: "x", signature: "s" })], 0), "rejected");
       // 接上 store：任何一次改动都退成 persist-failed，且回读写也不被调用
       const store = otherProcess(repo);
@@ -1500,13 +1622,17 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.deepEqual(read.cards, []);
     });
 
-    it("revision 非数字/负数/非整数 → 不可用读（绝不伪造 0 去 CAS 写）", () => {
+    it("revision 非数字/负数/非整数 → 不可用读（绝不伪造 CAS 条件去写）", () => {
       for (const revision of ["3", Number.NaN, -1, 1.5]) {
         const boxed = surface(() => [{ ns: SETTINGS_NAMESPACE, value: { rules: [] }, revision }]);
         const read = createRulesRepository(boxed.cas).load();
         assert.equal(read.usable, false, `revision ${String(revision)} 不合形状，读按不可用退`);
         assert.deepEqual(read.cards, []);
-        assert.equal(read.revision, 0, "不可用读的 revision 恒 0（写侧一律拒）");
+        assert.equal(
+          read.revision,
+          -1,
+          "不可用读的 revision 恒 -1（0 是合法版本号，不与哨兵混淆）",
+        );
       }
       // 负例一侧：非负整数 revision 正常可读，值原样交出
       const boxed = surface(() => [{ ns: SETTINGS_NAMESPACE, value: { rules: [] }, revision: 3 }]);
@@ -1515,16 +1641,29 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(read.revision, 3);
     });
 
-    it("describe() 抛错 → rules read failed 日志 + 不可用读（不外抛）", () => {
+    it("describe() 抛错 → rules read failed 日志 + 不可用读（不外抛）；持续抛错按翻转节流，不刷屏", () => {
       const error = vi.spyOn(console, "error").mockImplementation(() => {
         // 断言在下方
       });
       const boxed = surface(() => {
         throw new Error("宿主读不动");
       });
-      assert.equal(createRulesRepository(boxed.cas).load().usable, false);
+      const repo = createRulesRepository(boxed.cas);
+      assert.equal(repo.load().usable, false);
       assert.match(String(error.mock.calls[0]?.[0]), /rules read failed: 宿主读不动/u);
+      // 连续两次失败只报一次（/stats 轮询路径不许被半装配的 provider 刷屏）。
+      assert.equal(repo.load().usable, false);
+      assert.equal(error.mock.calls.length, 1, "抛错那一路与 corrupt 告警同款节流");
       error.mockRestore();
+    });
+
+    it("user 层不是记录（整段被写成字符串）→ 按读不懂处理，不当成原文干净放行", () => {
+      const boxed = surface(() => [
+        { ns: SETTINGS_NAMESPACE, value: { rules: [] }, revision: 3, user: "整段被写成字符串" },
+      ]);
+      const read = createRulesRepository(boxed.cas).load();
+      assert.equal(read.usable, false, "原文通道坏了不能当干净放行");
+      assert.deepEqual(read.cards, []);
     });
 
     it("缺 id 的存量行被丢弃并上报；条数变化再报（数据丢失不许无痕）", () => {
@@ -1593,28 +1732,174 @@ describe("lesson-store：台账、规则库与度量", () => {
     });
   });
 
-  describe("isKnownLessonSource", () => {
-    it("内置五个来源为 true，自报的第三方名与畸形值为 false", () => {
-      // 名单在测试里写死一份：改动内置来源必须同时改这里，不给"顺手加一个"留空间
-      for (const name of [
-        SOURCE_DANGER_GUARD,
-        "quality-gate",
-        "session-rescue",
-        SOURCE_LESSONS_DIGEST,
-        "manual",
-      ]) {
-        assert.equal(isKnownLessonSource(name), true, `${name} 是宿主自带生产者`);
-      }
-      assert.equal(isKnownLessonSource("gateway-feedback"), false, "表外来源不算内置");
-      // 非字符串一律 false（判定先得过 typeof 这一关）
-      assert.equal(isKnownLessonSource(undefined), false);
-      assert.equal(isKnownLessonSource(null), false);
-      assert.equal(isKnownLessonSource(42), false);
-      assert.equal(isKnownLessonSource(["manual"]), false);
+  describe("来源归一的日志面（noteSourceFallback）", () => {
+    it("超长来源 warn；非字符串来源也 warn（静默降级要有迹可循）", async () => {
+      const store = makeStore();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      await store.report(rec({ source: "x".repeat(80) }) as never);
+      assert.match(
+        String(warn.mock.calls[0]?.[0]),
+        /lesson source "x+" 不可用（非空但超 64 字符）/u,
+      );
+      await store.report(rec({ source: 42 }) as never);
+      assert.match(String(warn.mock.calls[1]?.[0]), /lesson source "42" 不可用（类型是 number）/u);
+      warn.mockRestore();
+    });
+
+    it("含控制字符的来源名拒收并告警（日志不许被伪造分行）", async () => {
+      const store = makeStore();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      const receipt = await store.report(rec({ source: "a\n[lesson-loop] fake" }) as never);
+      assert.equal(receipt.ok, true, "来源退 manual，上报照常入库");
+      assert.match(
+        String(warn.mock.calls[0]?.[0]),
+        /lesson source "a\[lesson-loop\] fake" 不可用（含控制字符）/u,
+      );
+      warn.mockRestore();
+    });
+
+    it("非字符串来源是循环引用 → stringify 抛错也留告警，上报照常入库", async () => {
+      const store = makeStore();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      const circular: Record<string, unknown> = {};
+      circular["self"] = circular;
+      const receipt = await store.report(rec({ source: circular }) as never);
+      assert.equal(receipt.ok, true, "来源退 manual，上报不因序列化失败而丢");
+      assert.match(
+        String(warn.mock.calls[0]?.[0]),
+        /lesson source "\[object Object\]" 不可用（类型是 object）/u,
+      );
+      warn.mockRestore();
+    });
+
+    it("空白/缺失来源不打假告警；函数与 bigint 载荷仍取可读形态并留告警", async () => {
+      const store = makeStore();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      await store.report(rec({ source: "   " }) as never);
+      await store.report(rec({ source: null }) as never);
+      await store.report(rec({ source: (): void => undefined }) as never);
+      await store.report(rec({ source: { count: 1n } }) as never);
+      const messages = warn.mock.calls
+        .map((call) => String(call[0]))
+        .filter((message) => message.includes("lesson source"));
+      assert.equal(messages.length, 2, "空白与缺失不算「说了别的」；函数与 bigint 各留一条");
+      assert.ok(
+        messages.some((message) => message.includes("类型是 function")),
+        "stringify 交 undefined 时退辨认形态",
+      );
+      assert.ok(
+        messages.some((message) => message.includes("类型是 object")),
+        "bigint 被 replacer 转成字符串后仍可读",
+      );
+      warn.mockRestore();
+    });
+
+    it("合法的 manual 来源不打假告警（兜底名撞名不是降级）", async () => {
+      const store = makeStore();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      await store.report(rec({ source: "manual" }) as never);
+      assert.equal(
+        warn.mock.calls.filter((call) => String(call[0]).includes("lesson source")).length,
+        0,
+        "manual 是合法来源，不触发 不可用 告警",
+      );
+      warn.mockRestore();
+    });
+  });
+
+  describe("decayVerdict 的漂移锚点（补测）", () => {
+    it("numericOf 的漂移形态：非有限数与空白串退兜底，编号字符串照旧读", () => {
+      const card = normalizeRuleCardRow({
+        id: "drift-numeric",
+        occurrences: Number.POSITIVE_INFINITY,
+        violation: "   ",
+        armedAt: "0x10",
+      });
+      assert.ok(card);
+      assert.equal(card.occurrences, 0, "Infinity 不是有限数，计数退 0");
+      assert.equal(card.violation, 0, "空白串不是数字（Number('') === 0 是陷阱）");
+      assert.equal(card.armedAt, 16, "存量里的十六进制字符串仍按数字读");
+    });
+
+    it("armedAt 漂移成 0 → 锚点落回 now，刚升格的卡不被判「早已挂满」", () => {
+      const card = cardOf({ id: "d0", signature: "s", status: "armed", armedAt: 0, createdAt: 0 });
+      assert.equal(decayVerdict(card, DEFAULT_DECAY, Date.now()), "keep");
+    });
+
+    it("恰好挂满 decayDays 也算挂满（>= 口径）", () => {
+      const armedAt = Date.now() - DEFAULT_DECAY.decayDays * 86_400_000;
+      const card = cardOf({
+        id: "d1",
+        signature: "s",
+        status: "armed",
+        armedAt,
+        violation: 0,
+        suppressed: 0,
+      });
+      assert.equal(decayVerdict(card, DEFAULT_DECAY, Date.now()), "undeterminable");
+    });
+
+    it("脏计数（violation=3, suppressed=-3）不许让 Infinity 替卡做降级决定", () => {
+      // 读取侧归一会把负数钳回 0（countField）；这里在归一之后的卡上改回脏值，
+      // 钉的是裁决自身的分母守卫（decayVerdict 也可能被未经归一的调用方喂到）。
+      const card = {
+        ...cardOf({ id: "d2", signature: "s", status: "armed", armedAt: Date.now() }),
+        violation: 3,
+        suppressed: -3,
+      };
+      assert.equal(decayVerdict(card, DEFAULT_DECAY, Date.now()), "keep");
+    });
+  });
+
+  describe("cardsOfValue 的 corrupted 标记（补测）", () => {
+    it("rules 键在但不是数组 → corrupted=true，不与合法空库混淆", () => {
+      const projection = cardsOfValue({ rules: "乱码" });
+      assert.deepEqual(projection.cards, []);
+      assert.equal(projection.corrupted, true);
+      assert.equal(cardsOfValue({ rules: [] }).corrupted, false, "合法空库不是读不懂");
+      assert.equal(cardsOfValue({}).corrupted, false, "键缺席也不是读不懂");
+      // value 根本不是记录（整段坏值）：取不到 rules 键，同样不是"读懂了空库"。
+      const broken = cardsOfValue("乱码");
+      assert.deepEqual(broken.cards, []);
+      assert.equal(broken.corrupted, false, "value 非记录时原文缺席，corrupted 由调用方另判");
     });
   });
 
   describe("recentLessons / lessonsCount", () => {
+    it("lessonsCount 只数归一得了的行：可解析但缺 category 的行不计", async () => {
+      const store = makeStore();
+      await store.report(rec() as never);
+      // 原始行缺 category（normalizeLessonRow 返回 null）：行在文件里、计数不含它。
+      appendJsonlRaw(path.join(scratch, LEDGER_FILE_NAME), { ts: 1, source: "manual" });
+      assert.equal(store.recentLessons().length, 1, "列表只收归一得了的行");
+      assert.equal(store.lessonsCount(), 1, "计数与列表同一口径");
+    });
+
+    it("空白 category 的存量行不丢弃，归一到 unknown（别让一条坏行从读面消失）", async () => {
+      const store = makeStore();
+      appendJsonlRaw(path.join(scratch, LEDGER_FILE_NAME), {
+        ts: 1,
+        source: "manual",
+        category: "   ",
+        signature: "s",
+        detail: "d",
+        project: PROJECT_KEY_FIXTURE,
+      });
+      const rows = store.recentLessons();
+      assert.equal(rows.length, 1, "行保留");
+      assert.equal(rows[0]?.category, "unknown", "空白分类折进明确的兜底桶");
+    });
+
     it("project 过滤 + limit 语义（≤0 全量）", async () => {
       const store = makeStore();
       await store.report(rec() as never);
@@ -2257,6 +2542,29 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(store.rules().length, 1);
     });
 
+    it("configure 把 maxStatementChars 收敛到 1-100000（界面值 = 生效值）", async () => {
+      const store = makeStore();
+      const receipt = await store.report(rec() as never);
+      const { id } = receipt.candidate!;
+      store.configure({ maxStatementChars: 0 });
+      assert.equal(
+        await store.ruleAction(id, "edit", "xx"),
+        RULE_ACTION_STATEMENT_TOO_LONG,
+        "下限钳到 1",
+      );
+      store.configure({ maxStatementChars: 1_000_000_000 });
+      assert.equal(
+        await store.ruleAction(id, "edit", "x".repeat(100_001)),
+        RULE_ACTION_STATEMENT_TOO_LONG,
+        "上限钳到 100000",
+      );
+      assert.equal(
+        await store.ruleAction(id, "edit", "x".repeat(100_000)),
+        "persisted",
+        "恰好上限允许",
+      );
+    });
+
     it("setMaxLessonsBytes：非法值一律退 0（不设上限）", async () => {
       const store = makeStore();
       store.setMaxLessonsBytes(Number.NaN);
@@ -2600,18 +2908,62 @@ describe("lesson-store：台账、规则库与度量", () => {
   });
 
   describe("ruleAction 全动作", () => {
-    it("edit 带正文才改写；空正文保留原文", async () => {
+    it("edit 带正文才改写：空白/缺省正文回 invalid-statement，库未动；与现文相同回 unchanged 不落盘", async () => {
       const store = makeStore();
       const receipt = await store.report(rec() as never);
       const { id } = receipt.candidate!;
       const original = ruleById(store, id)!.statement;
-      assert.equal(await store.ruleAction(id, "edit", "   "), "persisted");
+      assert.equal(await store.ruleAction(id, "edit", "   "), RULE_ACTION_INVALID_STATEMENT);
+      assert.equal(ruleById(store, id)?.statement, original);
+      assert.equal(await store.ruleAction(id, "edit"), RULE_ACTION_INVALID_STATEMENT);
       assert.equal(ruleById(store, id)?.statement, original);
       await store.ruleAction(id, "edit", "  人工改写  ");
-      assert.equal(ruleById(store, id)?.statement, "人工改写");
-      await store.ruleAction(id, "edit");
-      assert.equal(ruleById(store, id)?.statement, "人工改写");
+      assert.equal(ruleById(store, id)?.statement, EDITED_STATEMENT);
+      const updatedAtBefore = ruleById(store, id)?.updatedAt;
+      assert.equal(await store.ruleAction(id, "edit", EDITED_STATEMENT), "unchanged");
+      assert.equal(ruleById(store, id)?.statement, EDITED_STATEMENT);
+      assert.equal(ruleById(store, id)?.updatedAt, updatedAtBefore, "unchanged 不推进 updatedAt");
       assert.equal(ruleById(store, id)?.status, "candidate");
+    });
+
+    it("maxStatementChars：显式正文超限时 arm/edit 都被拒；arm 继承的超长存量正文同样被拒", async () => {
+      const store = makeStore({ maxStatementChars: 5 });
+      const receipt = await store.report(rec() as never);
+      const { id } = receipt.candidate!;
+      assert.equal(
+        await store.ruleAction(id, "edit", "x".repeat(6)),
+        RULE_ACTION_STATEMENT_TOO_LONG,
+      );
+      assert.equal(
+        await store.ruleAction(id, "arm", "x".repeat(6)),
+        RULE_ACTION_STATEMENT_TOO_LONG,
+      );
+      assert.equal(ruleById(store, id)?.status, "candidate", "三次拒收都没动库");
+      assert.equal(await store.ruleAction(id, "edit", "12345"), "persisted", "恰好上限允许");
+      // 存量正文超长的候选：arm 不带正文时按继承的正文判，不许借一次人工动作绕过闸门。
+      seedRules([diskRow({ id: "long-seed", statement: "y".repeat(6) })]);
+      const limited = makeStore({ maxStatementChars: 5 });
+      assert.equal(await limited.ruleAction("long-seed", "arm"), RULE_ACTION_STATEMENT_TOO_LONG);
+      assert.equal(ruleById(limited, "long-seed")?.status, "candidate");
+    });
+
+    it("arm 空正文被拒（invalid-statement）：状态仍是候选，计数一格未动", async () => {
+      const store = makeStore();
+      const receipt = await store.addCandidate({
+        project: PROJECT_KEY_FIXTURE,
+        category: CATEGORY_GATE_FAILURE,
+        signature: SIGNATURE_GATE_COMMAND,
+        statement: "   ",
+        detail: "蒸馏出的空正文",
+      });
+      const { card } = receipt;
+      assert.notEqual(card, undefined);
+      const { id } = card;
+      assert.equal(await store.ruleAction(id, "arm"), RULE_ACTION_INVALID_STATEMENT);
+      const row = ruleById(store, id);
+      assert.ok(row !== undefined, "卡还在库里");
+      assert.equal(row.status, "candidate", "空正文不许升格成 armed");
+      assert.equal(row.armedAt, undefined);
     });
 
     it("archive / revive / demote / reject 的状态流转", async () => {

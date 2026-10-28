@@ -39,6 +39,7 @@ import { appendJsonl, readJsonl } from "./lesson-jsonl.ts";
 // 与 lib/statement-draft.ts 必须算出同一个串，一处漏调就长成"写得进、查不到"的键漂移。
 import {
   CATEGORY_SIGNATURES,
+  REJECTED_SUMMARY_SUFFIX,
   isFragmentSignatureOf,
   normalizeSignature,
   ruleKey,
@@ -66,8 +67,8 @@ function isRuleStatus(value: unknown): value is RuleStatus {
 
 /**
  * 内置已知来源（观察端五个生产者）。**开放集**：第三方插件自报的来源名同样合法
- * （见 normalizeLessonSource），本表只用来判定"是不是内置值"（内部调用方与
- * 统计口径用它，不再当白名单用）。
+ * （见 normalizeLessonSource），本类型只枚举内置值；没有按值判定的生产消费者，
+ * 不设运行期白名单表。
  */
 export type KnownLessonSource =
   | "danger-guard"
@@ -83,21 +84,6 @@ export type KnownLessonSource =
  */
 const LESSONS_DIGEST_SOURCE = "lessons-digest" as const;
 
-const KNOWN_LESSON_SOURCES: readonly KnownLessonSource[] = [
-  "danger-guard",
-  "quality-gate",
-  "session-rescue",
-  LESSONS_DIGEST_SOURCE,
-  "manual",
-];
-
-const KNOWN_SOURCE_SET: ReadonlySet<string> = new Set(KNOWN_LESSON_SOURCES);
-
-/** 内置来源判定（供卡片/统计区分"宿主自带生产者"与第三方上报）。 */
-export function isKnownLessonSource(value: unknown): value is KnownLessonSource {
-  return typeof value === "string" && KNOWN_SOURCE_SET.has(value);
-}
-
 /** 内置五个之外的兜底来源名。 */
 const FALLBACK_LESSON_SOURCE: KnownLessonSource = "manual";
 
@@ -105,8 +91,11 @@ const FALLBACK_LESSON_SOURCE: KnownLessonSource = "manual";
 const MAX_LESSON_SOURCE_LENGTH = 64;
 
 /**
- * 来源归一（开放集）：trim 后非空且不过长 → 原样保留（第三方插件得以自报家门，
- * 其教训与内置来源一样可入库、可统计）；空/非字符串/超限 → manual。
+ * 来源归一（开放集）：trim 后非空、不过长、不含控制字符 → 原样保留（第三方插件得以
+ * 自报家门，其教训与内置来源一样可入库、可统计）；空/非字符串/超限/含控制字符 → manual。
+ *
+ * 控制字符（含换行）不得进入来源名：它会流进卡片渲染面与 `console.warn` 日志，
+ * `x\n[lesson-loop] …` 一类的串能伪造出一条看似别人的日志行。
  *
  * 为什么退 manual 而不是拒收：manual 是"有人记了这条、但说不出是谁"的最保守归属，
  * 不因此把它当成某个内置生产者的机器上报（内置来源的归因语义不许被稀释）。
@@ -116,18 +105,70 @@ function normalizeLessonSource(value: unknown): string {
     return FALLBACK_LESSON_SOURCE;
   }
   const trimmed = value.trim();
-  if (trimmed.length === 0 || trimmed.length > MAX_LESSON_SOURCE_LENGTH) {
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > MAX_LESSON_SOURCE_LENGTH ||
+    /\p{Cc}/u.test(trimmed)
+  ) {
     return FALLBACK_LESSON_SOURCE;
   }
   return trimmed;
 }
 
-/** 归一后落回 manual 的"本来说了别的"情形：必须留日志，否则第三方接入只表现为静默降级。 */
+/**
+ * 归一后落回 manual 的"本来说了别的"情形的拒因描述：described 是日志里引号内的原文
+ * （控制字符已剥），reason 是给人看的拒因；undefined = 上报方什么都没说（缺字段/空串，
+ * 不刷日志）或归一本来就会收下它（典型是内置 "manual" 恰好等于兜底名——上报合法来源
+ * 不算"本来说了别的"，不打假告警）。拒因判据与 normalizeLessonSource 逐条对应，
+ * 两份判据只隔几行，改一处忘另一处会被各自的测试用例当场钉住。
+ */
+function sourceFallbackReason(raw: unknown): { described: string; reason: string } | undefined {
+  let detail: { described: string; reason: string } | undefined;
+  if (typeof raw === "string") {
+    const described = raw.trim();
+    if (described.length > 0) {
+      if (/\p{Cc}/u.test(described)) {
+        detail = { described, reason: "含控制字符" };
+      } else if (described.length > MAX_LESSON_SOURCE_LENGTH) {
+        detail = { described, reason: `非空但超 ${String(MAX_LESSON_SOURCE_LENGTH)} 字符` };
+      }
+    }
+  } else if (raw !== undefined && raw !== null) {
+    // 非字符串载荷取可读形式：JSON 优先（对象/数组进来的原样可读）；toJSON 返回
+    // undefined 时 stringify 的运行时值是 undefined（按类型收窄，不用 ??）；循环引用/
+    // BigInt 走 catch，退最后的辨认形态。
+    try {
+      const text: string = JSON.stringify(raw, (_key, value: unknown) =>
+        typeof value === "bigint" ? String(value) : value,
+      );
+      detail = {
+        described: typeof text === "string" ? text : Object.prototype.toString.call(raw),
+        reason: `类型是 ${typeof raw}`,
+      };
+    } catch {
+      detail = { described: Object.prototype.toString.call(raw), reason: `类型是 ${typeof raw}` };
+    }
+  }
+  return detail;
+}
+
+/**
+ * 归一后落回 manual 的"本来说了别的"情形：必须留日志，否则第三方接入只表现为静默降级。
+ * 每一档拒因（非字符串 / 含控制字符 / 超长）各留一条。上报方什么都没说（缺字段/空串）
+ * 不算"说了别的"，不刷日志。
+ */
 function noteSourceFallback(raw: unknown, source: string): string {
-  if (source === FALLBACK_LESSON_SOURCE && typeof raw === "string" && raw.trim().length > 0) {
-    console.warn(
-      `[lesson-loop] lesson source "${raw.trim().slice(0, MAX_LESSON_SOURCE_LENGTH + 8)}" 不可用（非空但超 ${String(MAX_LESSON_SOURCE_LENGTH)} 字符），按 manual 记账`,
-    );
+  if (source === FALLBACK_LESSON_SOURCE) {
+    const detail = sourceFallbackReason(raw);
+    if (detail !== undefined) {
+      // 引号里的原文剥掉控制字符再上日志：它进不了来源名，也不该借日志的便回来。
+      const clipped = detail.described
+        .replaceAll(/\p{Cc}/gu, "")
+        .slice(0, MAX_LESSON_SOURCE_LENGTH + 8);
+      console.warn(
+        `[lesson-loop] lesson source "${clipped}" 不可用（${detail.reason}），按 manual 记账`,
+      );
+    }
   }
   return source;
 }
@@ -153,13 +194,22 @@ function strField(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
 
-/** 数值字段读取：只认 number 与数字字符串两种存量形态；NaN/null/布尔/对象一律视为漂移。 */
+/** 数值字段读取：只认 number 与数字字符串两种存量形态；NaN/null/布尔/对象一律视为漂移。
+ *  空串/纯空白串也按漂移退兜底：`Number("") === 0` 是有限数，会把"字段被清空"读成
+ *  合法的 0——落卡上是"纪元 0"锚点与 0 次计数，比缺字段更难察觉。 */
 function numericOf(value: unknown): number | undefined {
   let result: number | undefined;
-  if (typeof value === "number" || typeof value === "string") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      result = parsed;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    result = value;
+  } else if (typeof value === "string") {
+    // 空串/纯空白串 Number("") === 0：会把漂移读成合法的 0（"纪元 0" 锚点、0 次计数），
+    // 必须当漂移退兜底，而不是走 Number 的宽转换。
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      const parsed = Number(trimmed);
+      if (Number.isFinite(parsed)) {
+        result = parsed;
+      }
     }
   }
   return result;
@@ -169,6 +219,17 @@ function numericOf(value: unknown): number | undefined {
 function numField(value: unknown, fallback: number): number {
   const parsed = numericOf(value);
   return parsed ?? fallback;
+}
+
+/** 计数器字段归一：非负整数（occurrences / violation / suppressed / samples / recurrences）。
+ *  负数会把复发率分母（violation+suppressed）压小甚至归零、小数让"达到阈值"的次数比较
+ *  失真——计数语义上这些位只能是 0、1、2…，漂移值按截断收敛而不是原样放行。 */
+function countField(value: unknown, fallback: number): number {
+  const parsed = numericOf(value);
+  if (parsed === undefined || parsed < 0) {
+    return fallback;
+  }
+  return Math.trunc(parsed);
 }
 
 /** 未知数组：非数组退空表（不经 any 扩散，逐元素仍是 unknown）。 */
@@ -231,7 +292,8 @@ export interface RuleCard {
   cwd?: string;
   category: string;
   signature: string;
-  /** 规则正文（候选期由模板起草，arm 时可人工改写；注入全文，不设 token 上限）。 */
+  /** 规则正文（候选期由模板起草，arm 时可人工改写；注入全文，不按 token 截断——
+   *  写入侧另有 maxStatementChars 的体量闸门，超限的 arm/edit 被拒）。 */
   statement: string;
   status: RuleStatus;
   createdAt: number;
@@ -292,8 +354,19 @@ export interface ReportReceipt {
  */
 export const PERSIST_FAILED = "rules-not-persisted";
 
-/** 人工动作结果：persisted 已落盘；not-found 无此卡；persist-failed 这一次没存住（需重试）。 */
-export type RuleActionResult = "persisted" | "not-found" | "persist-failed";
+/**
+ * 人工动作结果：persisted 已落盘；not-found 无此卡；persist-failed 这一次没存住（需重试）；
+ * invalid-statement 动作被拒（arm/edit 带空正文，库未动）；statement-too-long 生效正文
+ * 超过 maxStatementChars（库同样没动）；unchanged 请求的终态本就成立（edit 与现文相同），
+ * 未落盘也不算失败。
+ */
+export type RuleActionResult =
+  | "persisted"
+  | "not-found"
+  | "persist-failed"
+  | "invalid-statement"
+  | "statement-too-long"
+  | "unchanged";
 
 // ── 规则库端口（settings 命名空间的读写面；实现在 lib/rules-namespace.ts）────
 
@@ -346,6 +419,13 @@ export interface CandidateReceipt {
  */
 const RULES_CAS_RETRY_LIMIT = 3;
 
+/** 规则正文的默认写入上限（字符）。设置项 maxStatementChars 的 schema 默认也从这里取，
+ *  两侧不留第二份数字。armed 正文整段注入每次会话的提示词，没有上限时一次写请求就能
+ *  把任意长文本塞进之后每个会话；蒸馏产出的候选不受这条闸门约束（人审时才经过 arm）。 */
+export const DEFAULT_MAX_STATEMENT_CHARS = 4000;
+/** 写入上限的硬上界（与 settings schema 的 max 同值）：防一个离谱的配置把闸门变成空门。 */
+const MAX_STATEMENT_CHARS_CAP = 100_000;
+
 export interface StoreOptions {
   /** 事件流水 JSONL（官方 cache 目录下；单写者追加）。 */
   lessonsFile: string;
@@ -361,6 +441,8 @@ export interface StoreOptions {
   messages: () => LessonLoopMessages;
   /** lessons JSONL 磁盘保险丝（字节）。0 = 不设上限（默认，内容零截断）。 */
   maxLessonsBytes?: number;
+  /** 规则正文的写入上限（字符；arm/edit 与继承存量正文时判）。缺省 4000。 */
+  maxStatementChars?: number;
   promoteThreshold?: number;
   demoteThreshold?: number;
   demoteMinSamples?: number;
@@ -522,13 +604,13 @@ export function normalizeRuleCardRow(value: unknown): RuleCard | null {
     status: statusOf(fieldOf(value, "status")),
     createdAt: numField(fieldOf(value, "createdAt"), 0),
     updatedAt: numField(fieldOf(value, "updatedAt"), 0),
-    occurrences: numField(fieldOf(value, "occurrences"), 0),
+    occurrences: countField(fieldOf(value, "occurrences"), 0),
     sources: unknownArray(fieldOf(value, "sources")).map((entry) => normalizeLessonSource(entry)),
-    violation: numField(fieldOf(value, "violation"), 0),
-    suppressed: numField(fieldOf(value, "suppressed"), 0),
+    violation: countField(fieldOf(value, "violation"), 0),
+    suppressed: countField(fieldOf(value, "suppressed"), 0),
     // 存量库无 samples（新增暴露计数）：默认 0，不猜值、不改写既有计数。
-    samples: numField(fieldOf(value, "samples"), 0),
-    recurrences: numField(fieldOf(value, "recurrences"), 0),
+    samples: countField(fieldOf(value, "samples"), 0),
+    recurrences: countField(fieldOf(value, "recurrences"), 0),
     evidence: unknownArray(fieldOf(value, "evidence"))
       .filter((entry): entry is Record<string, unknown> => isRecord(entry))
       .map((entry) => normalizeEvidenceRow(entry)),
@@ -563,22 +645,25 @@ function normalizeLessonRow(value: unknown): LessonRecord | null {
   if (typeof category !== "string" || typeof signature !== "string") {
     return null;
   }
-  const cwd = fieldOf(value, "cwd");
-  const sessionId = fieldOf(value, "sessionId");
+  const cwd = nonEmptyString(fieldOf(value, "cwd"));
+  const sessionId = nonEmptyString(fieldOf(value, "sessionId"));
   const turn = numericOf(fieldOf(value, "turn"));
   const evidence = fieldOf(value, "evidence");
   const row: LessonRecord = {
     ts: numField(fieldOf(value, "ts"), 0),
     source: normalizeLessonSource(fieldOf(value, "source")),
-    category,
+    // 空白 category 会把所有漂移行折进蒸馏去重的同一个桶（键 = category+signature），
+    // 与卡片归一（normalizeRuleCardRow 对 category 退 "unknown"）取同款兜底；保留行、
+    // 不让一条坏 category 把整条教训从读面抹掉。
+    category: category.trim().length > 0 ? category : "unknown",
     project: strField(fieldOf(value, "project"), "default"),
     signature,
     detail: strField(fieldOf(value, "detail"), ""),
   };
-  if (typeof cwd === "string") {
+  if (cwd !== undefined) {
     row.cwd = cwd;
   }
-  if (typeof sessionId === "string") {
+  if (sessionId !== undefined) {
     row.sessionId = sessionId;
   }
   if (turn !== undefined) {
@@ -592,9 +677,14 @@ function normalizeLessonRow(value: unknown): LessonRecord | null {
 
 // ── LessonStore ──────────────────────────────────────────────────────────
 
-/** 数字阈值归一：非法/越界用默认值（供 policy() 共用，无父级捕获）。 */
+/** 数字阈值归一：非法/越界用默认值（供 policy() 共用，无父级捕获）。
+ *  只认 number 类型：`Number(null/"")` 都是 0，会把漂移交出来的 null/空串当成
+ *  "合法的 0"放行——与"非法用默认值"的承诺相反。 */
 function num(value: unknown, fallback: number, min = 0): number {
-  return Number.isFinite(Number(value)) && Number(value) >= min ? Number(value) : fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min) {
+    return fallback;
+  }
+  return value;
 }
 
 /** commit 的改动计划返回值：write=false = 没有要落盘的改动（不写盘，也不算失败）。 */
@@ -681,18 +771,42 @@ function trimmedStatement(statement: string | undefined): string | undefined {
 }
 
 /**
- * 人工动作落地。arm 会清零历史度量：复发/干净/暴露三项计数属于**那一次升格**的
- * 生命周期，带着旧值进新一轮会让降级裁决读到混合证据。
+ * 人工动作落地。返回动作有没有真的改了卡：
+ * - "changed"：状态/正文/计数有实际变化，updatedAt 推进到 now，写盘。
+ * - "no-statement"：arm/edit 需要非空正文而拿不到（缺省、空白）。空正文的规则一旦
+ *   armed 会整段注入常驻注入面（prompt 侧不设 token 上限），一条没有内容的"规则"
+ *   只挤占上下文；edit 空正文则是"什么都没改"。两种都不动卡，调用方回 400。
+ * - "too-long"：生效正文超过 maxStatementChars。armed 正文整段注入每次会话的提示词，
+ *   写入侧不设限时一次请求就能把它塞满；arm 继承存量正文时同样要判（旧数据不受写入
+ *   上限约束，但不许借一次 arm 直接进注入面）。
+ * - "no-change"：edit 的正文与现文逐字相同。不碰正文也不推进 updatedAt——那会把
+ *   "最后一次人工动作时间"污染成一个没有动作的时刻，还触发一轮整片 CAS 覆写。
+ *
+ * arm 会清零历史度量：复发/干净/暴露三项计数属于**那一次升格**的生命周期，带着旧值
+ * 进新一轮会让降级裁决读到混合证据。
  */
+/** 人工动作的"缺正文"信号（字面量在返回类型与两处 return 之间共用，不散写）。 */
+const ACTION_NO_STATEMENT = "no-statement" as const;
+/** 人工动作的"正文超长"信号（同上）。 */
+const ACTION_TOO_LONG = "too-long" as const;
+
 function applyRuleAction(
   rule: RuleCard,
   action: "arm" | "reject" | "demote" | "archive" | "edit" | "revive",
   statement: string | undefined,
   now: number,
-): void {
+  maxStatementChars: number,
+): "changed" | typeof ACTION_NO_STATEMENT | typeof ACTION_TOO_LONG | "no-change" {
   const nextStatement = trimmedStatement(statement);
   switch (action) {
     case "arm": {
+      const effective = nextStatement ?? rule.statement;
+      if (effective.trim().length === 0) {
+        return ACTION_NO_STATEMENT;
+      }
+      if (effective.length > maxStatementChars) {
+        return ACTION_TOO_LONG;
+      }
       if (nextStatement !== undefined) {
         rule.statement = nextStatement;
       }
@@ -726,15 +840,23 @@ function applyRuleAction(
       break;
     }
     case "edit": {
-      if (nextStatement !== undefined) {
-        rule.statement = nextStatement;
+      if (nextStatement === undefined) {
+        return ACTION_NO_STATEMENT;
       }
-      // action 是六个字面量的联合类型，宿主侧 isRuleAction 先把门外值挡掉，故不写兜底分支。
-      // no default
+      if (nextStatement.length > maxStatementChars) {
+        return ACTION_TOO_LONG;
+      }
+      if (nextStatement === rule.statement) {
+        return "no-change";
+      }
+      rule.statement = nextStatement;
       break;
     }
+    // action 是六个字面量的联合类型，宿主侧 isRuleAction 先把门外值挡掉，故不写兜底分支。
+    // no default
   }
   rule.updatedAt = now;
+  return "changed";
 }
 
 /** 就地剔出一批卡（commit 的工作数组是本次读取的副本，剔除只影响这份待写内容）。 */
@@ -803,42 +925,53 @@ export class LessonStore {
         | "demoteRatio"
         | "decayDays"
         | "maxLessonsBytes"
+        | "maxStatementChars"
         | "reviveThreshold"
       >
     >,
   ): void {
     for (const [key, val] of Object.entries(partial)) {
       if (typeof val === "number" && Number.isFinite(val)) {
-        // 动态键直写 opts 会撞索引签名断言；已知数值键白名单走 switch 显式字段赋值。
+        // 写入侧按读取侧（threshold()/policy()/reviveThreshold()）接受的合法区间收敛后
+        // 再赋值：负数/越界值直写 opts 只会在读取侧被静默换成默认值，设置界面上的值与
+        // 实际生效值从此对不上，排查时无从判断"设置到底有没有生效"。各键的区间与读取
+        // 侧一一对应（policy() 不取整，故这两枚不 floor；threshold()/reviveThreshold()
+        // 读取侧 floor，写入侧同样收成整数）。
         switch (key) {
           case "promoteThreshold": {
-            this.opts.promoteThreshold = val;
+            this.opts.promoteThreshold = Math.max(1, Math.floor(val));
             break;
           }
           case "demoteThreshold": {
-            this.opts.demoteThreshold = val;
+            this.opts.demoteThreshold = Math.max(1, val);
             break;
           }
           case "demoteMinSamples": {
-            this.opts.demoteMinSamples = val;
+            this.opts.demoteMinSamples = Math.max(1, val);
             break;
           }
           case "demoteRatio": {
-            this.opts.demoteRatio = val;
+            this.opts.demoteRatio = Math.max(0.01, val);
             break;
           }
           case "decayDays": {
-            this.opts.decayDays = val;
+            this.opts.decayDays = Math.max(1, val);
             break;
           }
           case "maxLessonsBytes": {
-            // 走归一口而不是再写一次字段：保险丝"非法退 0"的判据只该有一处（configure 的
-            // 循环只滤掉非有限值，负数仍会漏进来）。
+            // 走归一口而不是再写一次字段：保险丝"非法退 0"的判据只该有一处。
             this.setMaxLessonsBytes(val);
             break;
           }
+          case "maxStatementChars": {
+            this.opts.maxStatementChars = Math.min(
+              MAX_STATEMENT_CHARS_CAP,
+              Math.max(1, Math.floor(val)),
+            );
+            break;
+          }
           case "reviveThreshold": {
-            this.opts.reviveThreshold = val;
+            this.opts.reviveThreshold = Math.min(20, Math.max(1, Math.floor(val)));
             break;
           }
           default: {
@@ -879,6 +1012,9 @@ export class LessonStore {
     const attempt = async (retryLeft: number): Promise<Committed<Value>> => {
       const current = this.repo.load();
       const trustworthy = current.usable;
+      // 数组浅拷贝：卡对象本身的隔离由端口契约保证（RulesRead 的 JSDoc：每次 load 交出
+      // 归一后的**新对象**，plan 就地改写不会渗回端口）。端口实现若缓存复用卡对象，
+      // CAS 重放会把同一批对象二次累加——那是违反契约，不是这里的缺陷。
       const cards = trustworthy ? [...current.cards] : [];
       const planned = plan(cards);
       if (!planned.write) {
@@ -1090,6 +1226,15 @@ export class LessonStore {
     return Number.isFinite(value) && value >= 1 ? Math.min(20, Math.floor(value)) : 3;
   }
 
+  /** 规则正文写入上限（StoreOptions.maxStatementChars，归一 1-100000，默认 4000）。
+   *  按 UTF-16 码元计：这条闸门护的是"注入面的体量"，不是排版宽度。 */
+  private maxStatementChars(): number {
+    const value = Number(this.opts.maxStatementChars);
+    return Number.isFinite(value) && value >= 1
+      ? Math.min(MAX_STATEMENT_CHARS_CAP, Math.floor(value))
+      : DEFAULT_MAX_STATEMENT_CHARS;
+  }
+
   /** pass 信号：规则场景被触发且被遵守。会话收尾清算时只有被
    *  pass 过的 armed 规则才计 suppressed——无关会话不再灌水。
    *  键与 report() 同源（stableSignatureFor），调用方继续传自己那条细签名。 */
@@ -1107,6 +1252,10 @@ export class LessonStore {
    * 遵守）再计一次 suppressed=observed。被本会话违反的规则既不记 samples 也不记
    * observed（violation 已由 report() 计）。samples 只增暴露度，绝不进复发率分母。
    *
+   * @returns 是否落定：true = 要么真写进了库、要么本来就没有要写的东西；false = 这次
+   * 清算没到达磁盘（CAS 耗尽 / 端口拒写 / 读不可信），暴露账目在盘上一格未动——调用方
+   * 据此保留重试边（ lesson-store 的宿主接线靠它决定要不要还原清算标记与台账条目）。
+   *
    * @param countExposure 首个 dispose 边计暴露；resume 出来的重复边只结算 suppressed。
    */
   public async sessionEnded(
@@ -1115,7 +1264,7 @@ export class LessonStore {
     passedRuleIds: ReadonlySet<string>,
     sessionId?: string,
     countExposure = true,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const now = this.now();
     const outcome = await this.commit((cards): Planned<boolean> => {
       let dirty = false;
@@ -1141,18 +1290,28 @@ export class LessonStore {
       return { value: dirty, write: dirty };
     });
     // 汇报"已清算"只在**真的写进库**之后：没存住（CAS 耗尽/端口拒写/读不懂）时
-    // samples/suppressed 在盘上一格没动，回显成 settled 就是把计划当事实报。
+    // samples/suppressed 在盘上一格没动，回执 false 让调用方保留重试边。
     if (outcome.value && !outcome.ok) {
       console.error(
         `[lesson-loop] ${sessionId ?? "unknown session"}: session settle for project ${project} was NOT persisted (retry on the next session end)`,
       );
-      return;
+      return false;
+    }
+    // 读不可信（usable:false）时计划折叠成空转：一笔 samples/suppressed 都没记、也没进
+    // 库，outcome 却是 ok:true + value:false——回执 false，别让这次暴露的丢失在日志里
+    // 完全无迹可查（规则库侧的 corrupt 告警说的是"读不懂"，这条说的是"因此少记了账"）。
+    if (!outcome.trustworthy) {
+      console.error(
+        `[lesson-loop] ${sessionId ?? "unknown session"}: session settle for project ${project} was skipped (rule library unreadable, exposure not recorded)`,
+      );
+      return false;
     }
     if (outcome.value && sessionId !== undefined) {
       console.info(
         `[lesson-loop] ${sessionId}: session settled for project ${project} (${String(passedRuleIds.size)} passed rule(s))`,
       );
     }
+    return true;
   }
 
   /** 读这一刻的规则数组（每次都是新对象：改动只作用于本次的待写副本）。
@@ -1169,22 +1328,46 @@ export class LessonStore {
 
   /** 人工动作：arm（可携改写后的 statement）/ reject / demote / archive / edit / revive。
    *  返回 not-found = 可信读面上确实无此卡（id 错了，重试也没用）；persist-failed = 这一次
-   *  没存住（含端口读不懂的那种），调用方提示重试，绝不当成"规则不存在"。 */
+   *  没存住（含端口读不懂的那种），调用方提示重试，绝不当成"规则不存在"；
+   *  invalid-statement = 动作被正文判据拒绝（库未动）；statement-too-long = 生效正文
+   *  超过 maxStatementChars（库同样没动）；unchanged = 请求的终态本就成立。 */
   public async ruleAction(
     id: string,
     action: "arm" | "reject" | "demote" | "archive" | "edit" | "revive",
     statement?: string,
   ): Promise<RuleActionResult> {
-    const outcome = await this.commit((cards): Planned<boolean> => {
-      const rule = cards.find((row) => row.id === id);
-      if (rule === undefined) {
-        return { value: false, write: false };
-      }
-      applyRuleAction(rule, action, statement, this.now());
-      return { value: true, write: true };
-    });
-    if (!outcome.value) {
+    const outcome = await this.commit(
+      (cards): Planned<"changed" | "missing" | "no-statement" | "too-long" | "no-change"> => {
+        const rule = cards.find((row) => row.id === id);
+        if (rule === undefined) {
+          return { value: "missing", write: false };
+        }
+        const applied = applyRuleAction(
+          rule,
+          action,
+          statement,
+          this.now(),
+          this.maxStatementChars(),
+        );
+        // 两个 no-* 都不写盘：no-statement 是动作被拒（调用方回 400），no-change 是
+        // 请求的终态（正文 = 这段文字）本就成立——落一盘只改 updatedAt 的 CAS 覆写
+        // 没有语义。
+        return applied === "changed"
+          ? { value: "changed", write: true }
+          : { value: applied, write: false };
+      },
+    );
+    if (outcome.value === "missing") {
       return outcome.trustworthy ? "not-found" : "persist-failed";
+    }
+    if (outcome.value === "no-statement") {
+      return "invalid-statement";
+    }
+    if (outcome.value === "too-long") {
+      return "statement-too-long";
+    }
+    if (outcome.value === "no-change") {
+      return "unchanged";
     }
     return outcome.ok ? "persisted" : "persist-failed";
   }
@@ -1211,7 +1394,6 @@ export class LessonStore {
         // 同 (project,category,signature) 只允许一张卡：ruleKey 是 report()/pass() 的
         // 查找键，第二张同键卡永远查不到（新观测堆在没人看的卡上），人工决定也会被
         // 蒸馏路径绕过重开一张。故一律并回已有卡。
-        existing.updatedAt = now;
         // 只有候选卡消费蒸馏产出（计 occurrences + 追加证据）；rejected/armed/archived/
         // demoted 的状态与证据都由人拍板，蒸馏一概不改。证据这一面尤其不能松：落盘时
         // capEvidence 只留最近几条（见 lib/rules-layout.ts），而蒸馏正文是模型产出——
@@ -1220,8 +1402,13 @@ export class LessonStore {
         if (existing.status === "candidate") {
           existing.evidence.push(evidenceRow(now, source, input.detail, rawSignature, signature));
           existing.occurrences += 1;
+          existing.updatedAt = now;
+          existing.lastSeenAt = now;
+          return { value: existing, write: true };
         }
-        return { value: existing, write: true };
+        // 非候选命中一格未动：写一笔只改 updatedAt 的整片 CAS 覆盖，会把"最后一次
+        // 人工动作时间"污染成一次蒸馏摸过的时刻，还触发无意义的全库写。
+        return { value: existing, write: false };
       }
       const card = newRuleCard({
         project: input.project,
@@ -1284,6 +1471,15 @@ export class LessonStore {
       const pass = this.mergeFragmentsIn(cards);
       return { value: pass.merged, write: pass.dirty };
     });
+    // 与 runDecay 同一口径：计划值不等于落盘值。commit 在 CAS 耗尽/端口拒写时一次都
+    // 没写，盘上一张卡未动——把并掉的张数照原样返回，调用方的 "migrated N fragment
+    // rule(s)" 日志就把未落盘的归并当成了事实。
+    if (!outcome.ok && outcome.value > 0) {
+      console.error(
+        `[lesson-loop] fragment migration: ${String(outcome.value)} merge(s) were NOT persisted`,
+      );
+      return 0;
+    }
     return outcome.value;
   }
 
@@ -1334,7 +1530,7 @@ export class LessonStore {
     stableSig: string,
     project: string,
   ): MergePass {
-    const summarySig = `${stableSig}:rejected`;
+    const summarySig = `${stableSig}${REJECTED_SUMMARY_SUFFIX}`;
     const summary = cards.find(
       (card) =>
         card.category === category && card.signature === summarySig && card.project === project,
@@ -1357,10 +1553,16 @@ export class LessonStore {
     }
     let rewritten = false;
     if (primary.signature !== summarySig) {
+      // 容器正文原则上由本包模板起草，但 busiest 碎片可能被人改写过（edit 对任何状态
+      // 的卡都生效）——无条件覆盖会把人写下的拒绝理由换成模板文案。机器起草的判定：
+      // 正文与该签名按当前语言起草出的模板逐字相同才覆盖；语言切换后的存量卡比不中
+      // 模板，按"人工写过的"保守保留。已是汇总签名的那张卡走不到这里，它的正文永不被改写。
+      const draftedAsFragment = draftStatement(category, primary.signature, this.messages());
+      const machineDrafted = primary.statement === draftedAsFragment;
       primary.signature = summarySig;
-      // 容器正文由本包模板起草（不是人工写下的规则），故随当前语言走；已是汇总
-      // 签名的那张卡走不到这里，它的正文永不被改写。
-      primary.statement = draftStatement(category, summarySig, this.messages());
+      if (machineDrafted) {
+        primary.statement = draftStatement(category, summarySig, this.messages());
+      }
       // 新建汇总卡才钉 rejected；已存在的汇总卡可能是人工 revive 过的候选，
       // 无条件覆写会把人的决定退回。
       primary.status = "rejected";
@@ -1523,6 +1725,17 @@ export class LessonStore {
       }
       return { value: { rewrites, merged: this.mergeProjectKeyCollisions(cards) }, write: true };
     });
+    // 与 runDecay / migrateFragmentRules 同一口径：CAS 耗尽 / 端口拒写时一次都没落盘，
+    // "rewrote N / merged M" 的调用方日志不许把计划当事实报。
+    // 两个计划值合并成一个判据（而不是 `a > 0 || b > 0`）：写只可能在 rewrites > 0 时发生，
+    // 短路会让 `merged > 0` 成为一条永远不求值的分支，覆盖率门禁把它当未覆盖。
+    const plannedChanges = outcome.value.rewrites + outcome.value.merged;
+    if (!outcome.ok && plannedChanges > 0) {
+      console.error(
+        `[lesson-loop] project key migration: ${String(outcome.value.rewrites)} rewrite(s) / ${String(outcome.value.merged)} merge(s) were NOT persisted`,
+      );
+      return { rewrites: 0, merged: 0 };
+    }
     return outcome.value;
   }
 
@@ -1634,7 +1847,16 @@ export class LessonStore {
     return limit > 0 ? out.slice(-limit) : out;
   }
 
+  /** 有效教训数：与 recentLessons 同一归一口径（normalizeLessonRow 过滤后的条数），
+   *  而不是 JSONL 原始行数——原始行数把"可解析但 category 漂移"之类读侧会兜底/丢弃的
+   *  行也计进去，界面的"计数"会大于"列表全量长度"，两个数字对不上。 */
   public lessonsCount(): number {
-    return readJsonl(this.opts.lessonsFile).length;
+    let count = 0;
+    for (const row of readJsonl(this.opts.lessonsFile)) {
+      if (normalizeLessonRow(row) !== null) {
+        count += 1;
+      }
+    }
+    return count;
   }
 }

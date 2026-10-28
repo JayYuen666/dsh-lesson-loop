@@ -109,9 +109,14 @@ overrides:
   "@deepseek-ai/dsh-util-workspace-path": 0.2.1-rc.3
   "@deepseek-ai/dsh-workspace": 0.2.1-rc.3
   "@deepseek-ai/schemastery": 3.18.5
-# esbuild 由 vite 传递引入，其安装脚本负责落下当前平台的二进制；本仓没有包直接依赖它。
+# allowBuilds 是 pnpm 12 的构建脚本白名单键（本机 12.14 实测：true 放行、false 拦截）。
+# esbuild 当前**不在**本仓安装树里（vite 只把它列为 optional peer，autoInstallPeers: false
+# 下不会物化）——这枚条目是前向守卫：将来它真进依赖树时，其 install 脚本由这条放行。
 allowBuilds:
   esbuild: true
-# 发布冷却刻意为 0：内部 @jayyuen66/* 与宿主族 rc 包必须发布后即时可装；第三方新版的供应链
-# 缓冲由 catalog 与 overrides 的精确钉版承担，不靠时间窗。
+# 发布冷却刻意为 0：内部 @jayyuen66/* 与宿主族 rc 包必须发布后即时可装。供应链缓冲由
+# 钉版与 lockfile 共同承担：catalog/overrides 把直接依赖钉死，lockfile 把**整棵传递闭包**
+# 钉到当期解析——只要 lockfile 不重算，第三方新版本进不来。剩余的暴露面是重算 lockfile
+# （sync:lock / 删锁重装）那一刻：第三方新版本即时生效、没有时间窗冷却，这层残余风险
+# 由人工重锁的时机承担，是刻意取舍、不是遗漏。
 minimumReleaseAge: 0

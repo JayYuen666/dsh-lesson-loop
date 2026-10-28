@@ -1,6 +1,7 @@
 node_modules/
-coverage/
-.tmp/
+# 本地产物目录根锚定（与文件头"不锚定会误伤子目录同名文件"的原则一致）：
+/coverage/
+/.tmp/
 # 构建产物只在包根（build-*.mjs 的落盘位置）：不锚定会把任意子目录的同名源码/夹具一并忽略。
 /client.js
 /host.js
@@ -9,6 +10,16 @@ coverage/
 # 误提交高发项：本机凭据/日志，一律不进库。
 .env
 .env.*
+# 配置模板要入库：`.env.*` 会连它们一起忽略，新成员与 CI 就都拿不到样例文件。
+!.env.example
+!.env.template
 *.pem
 *.key
+*.p12
+*.pfx
+*.crt
+*.jks
+id_rsa*
+# 本地手工 pnpm pack 的产物（CI 打到 /tmp，本地会落在包根）
+*.tgz
 *.log

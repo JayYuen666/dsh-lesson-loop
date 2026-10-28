@@ -1,6 +1,6 @@
 {
   "name": "@jayyuen66/dsh-lesson-loop",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Self-evolution lesson loop for dsh: unified lesson bus (danger-guard / quality-gate / session-rescue reporters) + rule cards with human-confirmed promotion, violation/suppressed measurement, and decay. Host half provides the 'lessonLoop' service; client half renders the review card.",
   "keywords": [
     "cordis",
@@ -11,7 +11,7 @@
     "typert"
   ],
   "license": "MIT",
-  "author": "JayYuen",
+  "author": "JayYuen666",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/JayYuen666/dsh-lesson-loop.git"
@@ -47,14 +47,14 @@
     "build:client": "node build-client.mjs",
     "build": "node build-host.mjs",
     "build:types": "node build-types.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p tsconfig.build-scripts.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p tsconfig.client-tests.json && tsc --noEmit -p tsconfig.build-scripts.json",
     "lint": "oxlint .",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
     "check": "npm run --loglevel=warn typecheck && npm run --loglevel=warn lint && npm run --loglevel=warn build:client && npm run --loglevel=warn build && npm run --loglevel=warn build:types && npm run --loglevel=warn test && npm run --loglevel=warn fmt:check",
     "prepack": "npm run --loglevel=warn build:client && npm run --loglevel=warn build && npm run --loglevel=warn build:types",
     "fmt:check": "oxfmt --check .",
-    "prepare": "npm run --loglevel=warn build:client && npm run --loglevel=warn build && npm run --loglevel=warn build:types"
+    "prepare": "npm run --loglevel=warn prepack"
   },
   "dependencies": {
     "@jayyuen66/dsh-plugin-shared": "catalog:"

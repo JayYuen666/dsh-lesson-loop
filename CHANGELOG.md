@@ -2,6 +2,37 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.6
+
+这一版收口全仓审查：事件流水与规则库在坏数据与并发边上改为 fail-closed，蒸馏与读面补齐边界，测试门禁与发布工作流加固；设置卡新增规则正文上限。对外方法面保持兼容，新增 `statement-too-long` 回执与 `maxStatementChars` 设置；`lessons` 的默认条数与 `detail` 长度改为有界。
+
+### Changed
+
+- **规则正文写入上限**：设置卡新增 `maxStatementChars`（默认 4000，1–100000）。arm/edit 的生效正文超限时回 400 与本地化文案、库不动；arm 继承存量超长正文同样被拒。蒸馏建出的候选不受写入闸门约束，人审改写后再升格。
+- **规则库坏形状判定补上 user 层**：`user` 不是记录同样按读不懂处理；`UNUSABLE_READ` 改用 `-1` 哨兵并冻结；`describe()` 抛错的日志按状态翻转节流。
+- **事件流水读取口径收紧**：改用 `statSync` 区分 ENOENT 与其它读失败（"读不到"不再洗成"没有"）；解析缓存键加入 ctime；目录按仅属主可进创建。
+- **JSONL 保险丝进一步加固**：陈旧锁接管后按 ino/mtime 验明正身，搬错人时物归原主；归还锁改为原子搬走再验令牌；临时文件沿用原文件权限；陈旧门槛随数据文件大小放大；追加后的自查改为全文查找。
+- **读面收敛**：`lessons` 缺省 50 / 上限 500 条，`detail` 下发前截断 400 字符且不外借 evidence；规则卡投影加编译期钉子，`RuleCard` 新增字段必须先表态。
+- **测试门禁硬化**：`schema-coverage` 跳过注释/字符串定位 `Schema.object`，支持单行写法与 `.tsx/.mts/.cts`；`profile-bundle` 按花括号深度取整个注册对象并只认顶层 `key:`，拼接常量响亮失败；`setup-logs` 接管 debug/trace、按全部实参归属、安装幂等；两份新鲜度夹具补导出与产物形状校验；客户端测试拆出 `tsconfig.client-tests.json`，client 程序保持 `types: []`。
+- **CI / 发布**：来源证明只签默认分支；发布用完整 ref 比较、`curl` 加超时/重试、`setup-node` 开 pnpm 缓存、预检改查 catalog 钉的 shared 版本、发布前断言 tarball 依赖段没有未解析的 `catalog:`/`workspace:`；CodeQL 补 `actions: read`；scorecard 补 concurrency 且 artifact 失败不阻断 SARIF；actionlint 走 `-config-file` 并覆盖 `*.yaml`。
+- **文档与配置**：两份 README 的注入事件名、降级条件、正文上限、术语与 `LICENSE` 署名对齐代码；`cordis.patch.yml` 的维护命令指向包根；`dependabot.yml` 不再复述 rc 版本号并写明安全更新路径；`oxfmt.config.ts` 的共享基线声明改正；`.gitignore` 补根锚定、凭据载体、模板例外与本地 tgz。
+
+### Fixed
+
+- **会话清算在落盘之后才登记**：`markSettled` 移到持久化成功之后；失败时回滚清算标记与台账条目，下一次 dispose 边带全量数据重试；无预种台账的会话失败时只回滚标记。
+- **插件关闭后的持久化副作用**：周期衰减在 `enabled=false` 时不再降级写库；timer disposer 等待在飞的一轮落定。
+- **两条会话写入口同判据**：`agent/created` 预种、违规记账与 pass 记账都先查 `hasSettled`，已清算会话不再重建台账。
+- **蒸馏墙钟到点必返回**：abort 后加短宽限，仍不落定的流按超时收场；`selection` 逐位按字符串收窄并 trim；解析加切片长度/尝试次数上限；单轮候选上限 20，超出与落盘失败分列 `dropped`。
+- **负反馈投影兜底**：循环引用/BigInt/`toJSON` 返回 undefined 不再炸整条投影；指纹键改用 JSON 序列化、业务键加前缀、会话备注按 trim 后的文本去重。
+- **人工动作的写面收口**：空正文与超长正文都被拒且库不动；`edit` 与现文相同回 `unchanged` 不写盘；`addCandidate` 命中非候选卡不再空写 `updatedAt`；rejected 汇总卡不覆盖人工正文。
+- **规则卡渲染与编辑**：草稿在非编辑态跟随宿主的 statement；同一 tick 的重复操作不再发第二笔请求；越界时间戳退 `?`；配置行补 React key 与可访问名；动作失败显示本地化文案。
+- **工具链与配置漂移**：`prepare` 转调 `prepack`；`tsconfig.types.json` 去掉 DOM lib；`tsconfig.json` 删除不存在的 `build-utils.mjs`；`tsconfig.build-scripts.json` 改 `build-*.mjs` 通配；actionlint 的按文件豁免改为真正生效。
+
+### Added
+
+- 新增本地化回执 `errStatementTooLong`。
+- 新增 `tsconfig.client-tests.json` 测试类型程序。
+
 ## 0.1.5
 
 这一版统一到伞工作区的构建与门禁基线，并修掉规则库、会话清算与蒸馏解析里几处会静默算错或静默丢数据的面；两份 README 按模板重写。条目与注入文案的对外形状未改。

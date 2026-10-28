@@ -29,6 +29,9 @@ const runtime = vi.hoisted(() => {
   const box = {
     /** 每个 hook 序号一个槽（useState 的值与 setter / useEffect 的 deps 与 cleanup）。 */
     values: [] as unknown[],
+    /** useRef 的槽与 useState 分开存：ref 槽里是恒定的盒对象，不会与任何 useState
+     *  的值形态（字符串/数字）撞在同一个序号上。 */
+    refs: [] as ({ current: unknown } | undefined)[],
     setters: [] as (((next: unknown) => void) | undefined)[],
     deps: [] as (readonly unknown[] | undefined)[],
     cleanups: [] as ((() => void) | undefined)[],
@@ -80,7 +83,15 @@ vi.mock("react", async (importOriginal) => {
     }
     box.cleanups[index] = effect();
   };
-  const patched = { ...actual, useState, useEffect };
+  const useRef = <RefValue>(initial: RefValue): { current: RefValue } => {
+    const index = box.cursor;
+    box.cursor += 1;
+    if (!(index in box.refs)) {
+      box.refs[index] = { current: initial };
+    }
+    return box.refs[index] as { current: RefValue };
+  };
+  const patched = { ...actual, useState, useEffect, useRef };
   return { ...patched, default: patched };
 });
 

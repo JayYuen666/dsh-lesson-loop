@@ -11,16 +11,24 @@
 // **已落库的规则卡正文不在本表里**：设置段 `lesson-loop` 的 `rules` 里那些 `statement`
 // （人工改写过的、蒸馏出来的、旧版本起草出来的）是一份用户数据，落盘后还要注入回模型，
 // 跟着界面语言切换会把已生效规则改写成另一种语言——本表从不碰它们。
-// 但**起草新卡的那批模板是本包自己产出的文案**：`lib/lesson-store.ts` 的 draftStatement
-// 在运行时按分类起草 `statement` 正文，正文随即回注给模型，故与常驻段/注入帧同属
-// 「注入给模型的文案」，必须双语（收在本表的 statement* 段）。用户的 locale 是 en 时，
-// 新起草的规则卡正文没有理由是中文。模板里的 signature 与 category 取值域仍是**数据**
-// （同 digest.ts 的处理：键名与枚举面留在原文件，只把说明文字进字典）。
+// 但**起草新卡的那批模板是本包自己产出的文案**：`lib/statement-draft.ts` 的 draftStatement
+// 在运行时按分类起草 `statement` 正文（lesson-store 只 import 后调用），正文随即回注给模型，
+// 故与常驻段/注入帧同属「注入给模型的文案」，必须双语（收在本表的 statement* 段）。用户的
+// locale 是 en 时，新起草的规则卡正文没有理由是中文。模板里的 signature 与 category 取值域
+// 仍是**数据**（同 digest-prompt.ts 的处理：键名与枚举面留在原文件，只把说明文字进字典）。
 // console.* 的日志文案也不在此列——那是给排障的人看的，不随界面语言切换。
 import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
 /** 字典模板的插值参数（数值由调用点现算，字典只收整行模板）。 */
 export type MessageParams = Readonly<Record<string, string | number>>;
+
+/**
+ * 危险 shell 的安全替代建议：两个 dangerous-bash 模板（嵌占位版与稳定签名版）共用这一份，
+ * 改一处两语同步——分开写会在后续维护中漂成互相矛盾的指导，而两条卡都会回注给模型。
+ */
+const SAFE_SHELL_ALTERNATIVES_ZH = "去掉 --no-verify、先确认再删除、用包管理器替代 curl|sh";
+const SAFE_SHELL_ALTERNATIVES_EN =
+  "drop --no-verify, confirm before deleting, use a package manager instead of curl|sh";
 
 /** 本包 host 侧产出的全部人读文案。 */
 export interface LessonLoopMessages {
@@ -39,17 +47,6 @@ export interface LessonLoopMessages {
   readonly armedNoTrigger: string;
   /** 条数超上限、只列了最近几条时的帧尾说明（{total} {shown}）。 */
   readonly digestOmitted: string;
-
-  // ── 规则状态标签与摘要行（describeRule）────────────────────────────────
-  readonly statusCandidate: string;
-  readonly statusArmed: string;
-  readonly statusDemoted: string;
-  readonly statusRejected: string;
-  readonly statusArchived: string;
-  /** 规则摘要行（{label} {statement} {category} {signature} {occurrences} {metrics}）。 */
-  readonly ruleSummary: string;
-  /** 摘要行里 armed 才有的度量尾巴（{violation} {suppressed} {samples}）。 */
-  readonly ruleSummaryArmed: string;
 
   // ── 新起草规则卡的正文模板（draftStatement，起草即回注给模型）───────────
   // 模板里的 `{signature}` 是本包自己嵌的占位（数据原文），路径/命令原样落进去。
@@ -78,15 +75,21 @@ export interface LessonLoopMessages {
   readonly statementUnfinishedTurn: string;
   /** 未登记分类的兜底正文（{signature}）。 */
   readonly statementGeneric: string;
+  /** 签名归一后为空时的占位正文（无占位）：空签名的卡在升格前必须让人看出缺了什么。 */
+  readonly statementMissingSignature: string;
 
   // ── /lessons-digest：进模型的蒸馏提示 ─────────────────────────────────
-  /** 蒸馏 system 提示（输出契约的 JSON 行由 digest.ts 拼在本表片段之间）。 */
+  /** 蒸馏 system 提示（输出契约的 JSON 行由 lib/digest-prompt.ts 的 digestOutputShape
+   *  拼在本表片段之间）。 */
   readonly digestSystemRole: string;
   readonly digestSystemShape: string;
   /**
    * 输出契约行里两处 `<>` 占位的**说明文字**（模型读的人话）。
-   * 键名与 category 取值域那一串枚举是**数据**，留在 lib/digest.ts 里不翻译——
+   * 键名与 category 取值域那一串枚举是**数据**，留在 lib/digest-prompt.ts 里不翻译——
    * 它是 `lesson-loop` 段里 rules 的归类键面，跟着界面语言改一次就等于改一次存储契约。
+   * ⚠ 硬约束：这两段会被 fill 原样嵌进一段 JSON 骨架（`"signature":"<…>"`），译文里
+   * 出现英文双引号、反斜杠或花括号都会把输出契约行的 JSON 形状改坏——改文案时不得
+   * 引入 JSON 元字符，test/digest.test.ts 有断言钉着。
    */
   readonly digestSystemShapeSignature: string;
   readonly digestSystemShapeStatement: string;
@@ -141,6 +144,10 @@ export interface LessonLoopMessages {
 
   // ── 端点里回显给人的 error（卡片直接显示这些串）────────────────────────
   readonly errIdAndActionRequired: string;
+  /** arm/edit 带空正文被拒（库未动）。 */
+  readonly errStatementRequired: string;
+  /** 生效正文超过 maxStatementChars 被拒（库未动）。 */
+  readonly errStatementTooLong: string;
   /** 白名单外的动作（{action} 原样回显，便于定位是谁发的）。 */
   readonly errUnknownAction: string;
   readonly errRuleNotFound: string;
@@ -163,6 +170,8 @@ export interface LessonLoopMessages {
  * @returns 插值完成的文本。
  */
 export function fill(template: string, params: MessageParams): string {
+  // 捕获组按 lint（prefer-named-capture-group）要求具名；回调取位置参数 p1（值与
+  // groups.name 相同），组名在这里同时是「这个组是什么」的文档。
   return template.replaceAll(/\{(?<name>\w+)\}/gu, (matched: string, name: string): string => {
     const value = Object.hasOwn(params, name) ? params[name] : undefined;
     return value === undefined ? matched : String(value);
@@ -187,25 +196,14 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     digestOmitted:
       "（本项目共 {total} 条生效规则，此处只列最近 {shown} 条；更早的未列出，可在本包设置卡的规则评审页归档或降级）",
 
-    statusCandidate: "待确认",
-    statusArmed: "生效中",
-    statusDemoted: "已降级待人审",
-    statusRejected: "已拒绝",
-    statusArchived: "已归档",
-    ruleSummary:
-      "[{label}]{statement}（{category} · {signature} · 观察 {occurrences} 次{metrics}）",
-    ruleSummaryArmed: " · 复发 {violation} / 被遵守 {suppressed} / 暴露 {samples}",
-
     statementFactgateStable:
       "编辑文件之前，必须先成功 read 该文件，并做项目级引用检索（grep/glob/zg_search 覆盖引用面）确认改动波及面（调用方/依赖方/测试），再动手。",
     statementRejectedSummary:
       "已拒绝的历史碎片归档汇总（{signature}）：同类要求由生效规则承载；本条仅保留拒绝记录与证据，不注入、不度量。",
     statementFactgatePath:
       "编辑 {signature} 之前，必须先成功 read 该文件，并做项目级引用检索（grep/glob/zg_search 覆盖引用面），按证据档位补齐 test/e2e/docs 层探查后再动手。",
-    statementDangerousBash:
-      "避免使用危险 shell 形态（{signature}）。需要同类操作时先向用户说明风险或改用安全替代（如去掉 --no-verify、先确认再删除、用包管理器替代 curl|sh）。",
-    statementDangerousBashStable:
-      "避免使用危险 shell 形态。每次命中的**具体命令**在证据里（signature），据此判断该换成哪种写法：去掉 --no-verify、先确认再删除、用包管理器替代 curl|sh；或先向用户说明风险再执行。",
+    statementDangerousBash: `避免使用危险 shell 形态（{signature}）。需要同类操作时先向用户说明风险或改用安全替代（如${SAFE_SHELL_ALTERNATIVES_ZH}）。`,
+    statementDangerousBashStable: `避免使用危险 shell 形态。每次命中的**具体命令**在证据里（signature），据此判断该换成哪种写法：${SAFE_SHELL_ALTERNATIVES_ZH}；或先向用户说明风险再执行。`,
     statementSecretPathStable:
       "不要编辑密钥/凭据类文件（.env、*.key、token 配置等）；确需变更时先征得用户明确同意，并最小化接触面。",
     statementSecretPathTarget:
@@ -218,6 +216,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     statementUnfinishedTurn:
       "回合结束前把任务清单收口：完成一项勾一项，不要带着未闭合的待办结束回合。",
     statementGeneric: "避免重复以下问题：{signature}（详见证据）。",
+    statementMissingSignature:
+      "（这条教训没有可用的签名：需要人工补写一句具体、可判定的规则正文后再升格。）",
 
     digestSystemRole:
       "你是工程质量教练。输入是一次会话的人工差评与该项目的历史教训，请把差评归纳为可执行的候选规则。",
@@ -249,13 +249,17 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
 
     errNoModelSelection: "当前无可用模型选择（agentDefaultModel）",
     errMissingFinishChunk: "模型返回流缺少 finish 块",
-    errIncompleteFinish: "模型整理未正常完成（{kind}{failure}）",
-    errEmptyDigest: "模型整理结果为空",
+    errIncompleteFinish: "模型蒸馏未正常完成（{kind}{failure}）",
+    errEmptyDigest: "模型蒸馏结果为空",
     errUnreadableDigest: "模型输出无法解析为 JSON 数组，请重试",
-    errDigestTimeout: "蒸馏超时：{ms} 毫秒内模型请求没有完成，可重试或在行配置调大 digestTimeoutMs",
-    errDigestTimeoutInvalid: "蒸馏墙钟配置不合法：digestTimeoutMs 必须是正数",
+    errDigestTimeout:
+      "蒸馏超时：{ms} 毫秒内模型请求没有完成；可重试，或在安装本插件的 entry config 里调大 digestTimeoutMs",
+    errDigestTimeoutInvalid: "蒸馏墙钟配置不合法：digestTimeoutMs 必须是不小于 1000 的整数",
 
     errIdAndActionRequired: "缺少 id 或 action",
+    /** arm/edit 带空正文时的拒绝回显（库未动）。 */
+    errStatementRequired: "该操作需要非空的规则正文",
+    errStatementTooLong: "规则正文超过长度上限，未写入；可在设置卡调整「规则正文上限」后重试",
     errUnknownAction: "未知操作：{action}",
     errRuleNotFound: "找不到该规则",
     errRulePersistFailed: "规则库拒绝了这次写入，改动未生效，请重试",
@@ -280,25 +284,14 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     digestOmitted:
       "({total} rules are armed for this project; only the newest {shown} are listed here — the older ones are omitted and can be archived or demoted on this package's rule-review card)",
 
-    statusCandidate: "pending review",
-    statusArmed: "armed",
-    statusDemoted: "demoted, needs review",
-    statusRejected: "rejected",
-    statusArchived: "archived",
-    ruleSummary:
-      "[{label}]{statement} ({category} · {signature} · {occurrences} observations{metrics})",
-    ruleSummaryArmed: " · {violation} violations / {suppressed} followed / {samples} exposed",
-
     statementFactgateStable:
       "Before editing a file, read it successfully first and run a project-wide reference search (grep/glob/zg_search over the referencing surface) to confirm the blast radius — call sites, dependents, tests — before touching anything.",
     statementRejectedSummary:
       "Archived summary of rejected historical fragments ({signature}): the requirement of this kind is carried by the armed rule; this entry only keeps the rejection record and the evidence — it is never injected and never measured.",
     statementFactgatePath:
       "Before editing {signature}, read that file successfully first and run a project-wide reference search (grep/glob/zg_search over the referencing surface); close the test/e2e/docs evidence tiers before making the change.",
-    statementDangerousBash:
-      "Avoid dangerous shell shapes ({signature}). When the same operation is really needed, explain the risk to the user first or switch to a safe alternative (drop --no-verify, confirm before deleting, use a package manager instead of curl|sh).",
-    statementDangerousBashStable:
-      "Avoid dangerous shell shapes. The concrete command of each hit is in the evidence (signature) — use it to pick the safe rewrite (drop --no-verify, confirm before deleting, use a package manager instead of curl|sh), or explain the risk to the user before running it.",
+    statementDangerousBash: `Avoid dangerous shell shapes ({signature}). When the same operation is really needed, explain the risk to the user first or switch to a safe alternative (${SAFE_SHELL_ALTERNATIVES_EN}).`,
+    statementDangerousBashStable: `Avoid dangerous shell shapes. The concrete command of each hit is in the evidence (signature) — use it to pick the safe rewrite (${SAFE_SHELL_ALTERNATIVES_EN}), or explain the risk to the user before running it.`,
     statementSecretPathStable:
       "Do not edit secret/credential files (.env, *.key, token configs and the like); when a change is genuinely required, get the user's explicit consent first and keep the touched surface minimal.",
     statementSecretPathTarget:
@@ -312,6 +305,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     statementUnfinishedTurn:
       "Close out the task list before ending the turn: tick an item as soon as it is done, and never end a turn with unresolved to-dos.",
     statementGeneric: "Do not repeat the following problem: {signature} (see the evidence).",
+    statementMissingSignature:
+      "(this lesson has no usable signature: write a concrete, decidable rule statement by hand before arming it.)",
 
     digestSystemRole:
       "You are an engineering-quality coach. The input is the human negative feedback from one session plus this project's historical lessons; distil the feedback into actionable candidate rules.",
@@ -357,9 +352,13 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     errDigestTimeout:
       "Distillation timed out: the model request did not finish within {ms} ms — retry, or raise digestTimeoutMs in the entry config",
     errDigestTimeoutInvalid:
-      "The distillation wall clock is invalid: digestTimeoutMs must be a positive number",
+      "The distillation wall clock is invalid: digestTimeoutMs must be an integer of at least 1000",
 
     errIdAndActionRequired: "id and action required",
+    /** arm/edit 带空正文时的拒绝回显（库未动）。 */
+    errStatementRequired: "this action requires a non-empty rule statement",
+    errStatementTooLong:
+      "the rule statement exceeds the length limit and was not written; adjust the statement-length setting in this card and retry",
     errUnknownAction: "unknown action: {action}",
     errRuleNotFound: "rule not found",
     errRulePersistFailed: "The rule library refused this write — nothing was applied, retry",

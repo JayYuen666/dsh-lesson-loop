@@ -28,10 +28,20 @@ jobs:
     name: analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # fork PR 的 GITHUB_TOKEN 被强制降为只读，声明的 security-events: write 不生效，
+    # analyze 的 SARIF 上传会以 "Resource not accessible by integration" 硬红并把整个
+    # PR 检查带红——fork PR 跳过整条 analyze（init 也省了）；同仓 PR / push / schedule
+    # 照常跑。
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       # 上传 SARIF 到 code scanning 面板所必需。
       security-events: write
-      # CodeQL 查询包要读 registry 上的 pack。
+      # 读取 workflow run 元数据（官方高级配置模板的组成位；私有仓上缺它时
+      # analyze 阶段取不到运行信息）。
+      actions: read
+      # 官方模板为 registry 上的自定义查询包预留的读权限。本工作流当前只用随
+      # CodeQL bundle 下发的内置查询，这一枚不是判据；引入 packs/queries 之前
+      # 别把它当成"已经在用"的证据。
       packages: read
       contents: read
     strategy:

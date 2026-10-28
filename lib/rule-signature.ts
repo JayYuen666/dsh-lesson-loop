@@ -51,15 +51,20 @@ export const CATEGORY_SIGNATURES: Readonly<Record<string, string>> = Object.free
  *  `constructor` 当 category 时拿到的是函数），Map 没有这个洞。 */
 const STABLE_SIGNATURES: ReadonlyMap<string, string> = new Map(Object.entries(CATEGORY_SIGNATURES));
 
-/** 该 (category, signature) 是否就是这一类的稳定签名（正文起草按它选通用模板）。 */
+/** 该 (category, signature) 是否就是这一类的稳定签名（正文起草按它选通用模板）。
+ *  两段都比对其归一形态：签名的来源之一是持久化卡（卡解析只兜类型、不归一），历史/
+ *  外部写入的 `" edit-before-factgate "` 若按原文精确比对会被判成"非稳定"，起草侧把它
+ *  当路径嵌进正文，而写入侧早已折叠——"写得进、查不到"的键漂移。 */
 export function isStableSignature(category: string, signature: string): boolean {
-  return STABLE_SIGNATURES.get(category) === signature;
+  return STABLE_SIGNATURES.get(category.trim()) === normalizeSignature(signature);
 }
 
-/** 该 (category, signature) 是否是这一类的 rejected 归档汇总签名。 */
+/** 该 (category, signature) 是否是这一类的 rejected 归档汇总签名（归一口径同上）。 */
 export function isRejectedSummarySignature(category: string, signature: string): boolean {
-  const stable = STABLE_SIGNATURES.get(category);
-  return stable !== undefined && signature === `${stable}${REJECTED_SUMMARY_SUFFIX}`;
+  const stable = STABLE_SIGNATURES.get(category.trim());
+  return (
+    stable !== undefined && normalizeSignature(signature) === `${stable}${REJECTED_SUMMARY_SUFFIX}`
+  );
 }
 
 /**
@@ -70,7 +75,9 @@ export function isRejectedSummarySignature(category: string, signature: string):
  */
 export function stableSignatureFor(category: string, signature: unknown): string {
   const normalized = normalizeSignature(signature);
-  return STABLE_SIGNATURES.get(category) ?? normalized;
+  // category 同样先 trim 再查表：上报方带来的首尾空白会让登记类别漏折叠，
+  // 同一条教训的 report 键与 pass 键从此对不上（armed 规则静默失效）。
+  return STABLE_SIGNATURES.get(category.trim()) ?? normalized;
 }
 
 /** 路径/文件名形态签名判定（迁移归并的识别器，factgate / secret-path 的碎片是文件路径）。 */
@@ -106,9 +113,21 @@ export function isFragmentSignatureOf(category: string, signature: string): bool
 /**
  * 归并键拼接。**前置条件：调用方已先经 stableSignatureFor 折叠**（report / pass /
  * addCandidate 都满足），本函数刻意不在内部折叠——rejected 归档汇总签名
- * `${stable}:rejected` 若在这里再查一次表会原样退回（表外值保留自身），于是汇总卡与
- * armed 稳定卡撞成同一个键，人工拒绝记录会被活卡吞掉。
+ * `${stable}:rejected` 若在这里再查一次表，会被按 category 的查表逻辑换回稳定签名
+ * （查表只看 category、与传入的 signature 无关），于是汇总卡与 armed 稳定卡撞成
+ * 同一个键，人工拒绝记录会被活卡吞掉。
+ *
+ * 三段拼键前各自去 NUL 并 trim（project / category 原样进来）：`\u0000` 是本函数的
+ * 分隔符，normalizeSignature 只折叠空白、不去控制字符——不去掉它，`("a\u0000b","c")`
+ * 与 `("a","b\u0000c")` 会拼出同一个键，两条不同的教训被静默归并成一张卡；project /
+ * category 只差首尾空白时同理（"repo" 与 "repo " 拼不出同一个键，armed 规则静默失效）。
  */
+/** 键段归一：去分隔符（\u0000）与首尾空白。模块级——不捕获任何外层变量，提出来
+ *  是为了让 ruleKey 的拼接一眼读完。 */
+function keyPart(value: string): string {
+  return value.replaceAll("\u0000", "").trim();
+}
+
 export function ruleKey(project: string, category: string, signature: string): string {
-  return `${project}\u0000${category}\u0000${normalizeSignature(signature)}`;
+  return `${keyPart(project)}\u0000${keyPart(category)}\u0000${keyPart(normalizeSignature(signature))}`;
 }

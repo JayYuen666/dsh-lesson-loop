@@ -13,7 +13,7 @@
 import { normalizeRuleCardRow, unknownArray } from "./lesson-store.ts";
 import type { RuleCard, RuleEvidence } from "./lesson-store.ts";
 import { PLUGIN_NAME } from "./prompt.ts";
-import { fieldOf } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 /**
  * 规则库存身的设置命名空间 = 本包 profile **条目 id**（`lesson-loop`，见 cordis.patch.yml
@@ -32,17 +32,23 @@ export const RULES_FIELD = "rules";
 /** 解析后的命名空间值 → 规则卡数组的投影：cards 是逐行归一的结果（非数组一律空库），
  *  dropped 是缺 id 被丢弃的行数——丢弃本身不留痕，谁消费这个投影谁负责上报（见
  *  rules-namespace 的 load），否则 save 用本次读出的卡整片覆盖 `rules` 数组时，一条
- *  手工改坏的存量记录会被永久删除而无人知晓。 */
+ *  手工改坏的存量记录会被永久删除而无人知晓。corrupted 把"rules 键在但不是数组"
+ *  （value 根本不是记录时同样算）与"合法的空库"在类型面上分开：直接把投影交给
+ *  save 的调用方，不能把读不懂当成空库整片写回。 */
 export interface CardsProjection {
   readonly cards: RuleCard[];
   readonly dropped: number;
+  /** true = rules 键存在但形状读不懂；空库（键缺席/空数组）为 false。 */
+  readonly corrupted: boolean;
 }
 
 /** 解析后的命名空间值 → 规则卡投影。 */
 export function cardsOfValue(value: unknown): CardsProjection {
   const out: RuleCard[] = [];
   let dropped = 0;
-  for (const row of unknownArray(fieldOf(value, RULES_FIELD))) {
+  const raw = isRecord(value) ? fieldOf(value, RULES_FIELD) : undefined;
+  const corrupted = raw !== undefined && !Array.isArray(raw);
+  for (const row of unknownArray(raw)) {
     const card = normalizeRuleCardRow(row);
     if (card === null) {
       dropped += 1;
@@ -50,7 +56,7 @@ export function cardsOfValue(value: unknown): CardsProjection {
       out.push(card);
     }
   }
-  return { cards: out, dropped };
+  return { cards: out, dropped, corrupted };
 }
 
 /** 单条证据 detail 的字符上限（按码点计，见 truncateByCodePoints）。 */
@@ -86,16 +92,21 @@ function truncateByCodePoints(text: string, max: number): string {
 export function capEvidence(cards: readonly RuleCard[]): RuleCard[] {
   const out: RuleCard[] = [];
   for (const card of cards) {
-    const kept = card.evidence.slice(-MAX_EVIDENCE_ENTRIES);
+    // "最近 N 条"以 ts 为准：写入侧按上报方的 ts 追加（时钟回拨、乱序上报），
+    // mergeFragment 又会把另一张卡（往往更旧）的证据整段并到尾部——数组不保证有序，
+    // 直接取尾部可能留下的恰是最旧的几条。排序只作用在副本上，不改入参。
+    const kept = [...card.evidence]
+      .toSorted((left, right) => left.ts - right.ts)
+      .slice(-MAX_EVIDENCE_ENTRIES);
     const evidence: RuleEvidence[] = [];
     for (const row of kept) {
+      const cappedText = truncateByCodePoints(row.detail, MAX_EVIDENCE_DETAIL_CHARS);
       const cappedRow: RuleEvidence = {
         ts: row.ts,
         source: row.source,
-        detail:
-          row.detail.length > MAX_EVIDENCE_DETAIL_CHARS
-            ? `${truncateByCodePoints(row.detail, MAX_EVIDENCE_DETAIL_CHARS)}…`
-            : row.detail,
+        // 截没截以截断结果为准，不用两种长度口径各判一次：判据按 UTF-16 码元、
+        // 截断按码点，含代理对的文本会出现"没截断却补了省略号"的假截断。
+        detail: cappedText === row.detail ? row.detail : `${cappedText}…`,
       };
       if (row.signature !== undefined) {
         cappedRow.signature = row.signature;

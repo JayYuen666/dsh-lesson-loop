@@ -17,7 +17,7 @@
 // 不含时间戳/随机数（rollup 无 banner hash 变量），逐字节相等成立；若未来构建
 // 引入非确定性，改为规范哈希比较并在 build-client.mjs 里输出 canonical 形态。
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -29,22 +29,47 @@ export interface FreshnessEvidence {
   readonly built: string;
 }
 
+/** 取包名：JSON.parse 而不是正则——正则会命中文件里第一个 "name"（嵌套键同形），
+ *  解析失败也不能静默标成 unknown（诊断信息里失去包身份）。 */
+function packageNameOf(pkgDir: string): string {
+  const parsed: unknown = JSON.parse(readFileSync(path.resolve(pkgDir, "package.json"), "utf8"));
+  const name =
+    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)["name"]
+      : undefined;
+  if (typeof name !== "string") {
+    throw new TypeError(`[client-freshness] package.json 里没有字符串 name，指纹门禁标不出包身份`);
+  }
+  return name;
+}
+
 /** 取指纹门禁证据：磁盘 client.js 与当期内存构建产物。 */
 export async function clientFreshnessEvidence(testFileUrl: string): Promise<FreshnessEvidence> {
   const testDir = path.dirname(fileURLToPath(testFileUrl));
   const pkgDir = path.resolve(testDir, "..");
-  const pkgName =
-    /"name":\s*"(?<pkgName>[^"]+)"/u.exec(
-      readFileSync(path.resolve(pkgDir, "package.json"), "utf8"),
-    )?.groups?.["pkgName"] ?? "unknown";
-  // 动态导入 .mjs 对 TS 为 any，先收窄到调用面再 await（避免 no-unsafe-*）。
+  const pkgName = packageNameOf(pkgDir);
+  // 动态导入 .mjs 对 TS 为 any，先收窄到调用面再 await（避免 no-unsafe-*）；
+  // 导出面也校验：build-client.mjs 改名/删导出时给出可操作的诊断，而不是让
+  // mod.buildClient() 以 "is not a function" 的裸 TypeError 收场。
   const mod = (await import(pathToFileURL(path.resolve(pkgDir, "build-client.mjs")).href)) as {
-    buildClient: () => Promise<string>;
+    buildClient?: () => Promise<string>;
   };
+  const build = mod.buildClient;
+  if (typeof build !== "function") {
+    throw new TypeError(
+      `[${pkgName}] build-client.mjs 没有可调用导出 buildClient：门禁靠它取得内存构建产物。`,
+    );
+  }
+  const artifactPath = path.resolve(pkgDir, "client.js");
   return {
     pkgName,
     pkgDir,
-    onDisk: readFileSync(path.resolve(pkgDir, "client.js"), "utf8"),
-    built: await mod.buildClient(),
+    // 产物缺失时给占位正文：让门禁红在"内容不一致"的比对里（带修复提示），而不是
+    // 红在 ENOENT 的裸栈里。注意 client.js 是 gitignored 的构建产物，git 的换行
+    // 转换碰不到它——不做 BOM/CRLF 规范化，文件被人为改动就该红。
+    onDisk: existsSync(artifactPath)
+      ? readFileSync(artifactPath, "utf8")
+      : "[产物缺失：运行 node build-client.mjs]",
+    built: await build(),
   };
 }

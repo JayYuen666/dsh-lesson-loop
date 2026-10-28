@@ -3,11 +3,13 @@
 // include 不含 test/** 与 src/**：types/ 整目录进 `files`，测试声明不该随包公开；
 // src/** 是客户端那半，与 danger-guard 的 `./client` 一样不带 types 条件。
 // 声明里残留的 `.ts` 后缀由 build-types.mjs 改写，rewriteRelativeImportExtensions 管不到声明。
+// lib 只给 ES2024：本程序产出的是纯 Node 声明面，DOM 全局（window/document 一类）在这里
+// 可用只会让 host 代码误用浏览器 API 通过类型检查，并把 DOM 类型带进消费方的声明解析。
 // removeComments：注释是给维护源码的人看的，不是发布物的一部分；消费方只读类型面。
 {
   "extends": "@jayyuen66/dsh-plugin-shared/config/tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "lib": ["ES2024"],
     "rootDir": ".",
     "outDir": "types",
     "declaration": true,

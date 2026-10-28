@@ -10,7 +10,7 @@
 // 注入帧的不可信文本一律经 fenceUntrusted 定界（见该函数注释）：教训正文来自
 // 工具错误原文/模型输出/人工备注，裸拼进编号列表或 Markdown 分节里就能伪造条目。
 
-import type { RuleCard, RuleStatus } from "./lesson-store.ts";
+import type { RuleCard } from "./lesson-store.ts";
 import { fill } from "./messages.ts";
 import type { LessonLoopMessages } from "./messages.ts";
 
@@ -88,8 +88,12 @@ export function renderSectionText(messages: LessonLoopMessages): string {
 const QUOTE_MARK = "│ ";
 
 /** 行终止符：Markdown 与多数渲染器把裸 CR (U+000D)、LS (U+2028)、PS (U+2029) 也当换行，
- *  只按 `\n` 切行会让它们之间的内容拿不到引用标记（定界在那里断掉）。 */
-const LINE_TERMINATOR = /\r\n|[\n\r\u2028\u2029]/u;
+ *  只按 `\n` 切行会让它们之间的内容拿不到引用标记（定界在那里断掉）。NEL (U+0085)、
+ *  VT (U+000B)、FF (U+000C) 虽不在 CommonMark 的换行集合里，但 ICU/Java 系渲染端把
+ *  它们当换行——本函数的设计前提是"渲染器可能把别的字符也当换行"，归一成本极低，
+ *  宁多勿少。 */
+// oxlint-disable-next-line eslint/no-control-regex -- VT/FF/NEL 是控制字符，但当行终止符正是本正则的目的（误用拦截不适用于刻意用法）。
+const LINE_TERMINATOR = /\r\n|[\n\r\u2028\u2029\u0085\u000B\u000C]/u;
 
 /** 行首结构符：编号（1. / 1）/ 1、）、分隔线、标题、标签、列表与引用符。 */
 const STRUCTURAL_LEAD =
@@ -114,18 +118,6 @@ export function fenceUntrusted(text: string): string {
     .split(LINE_TERMINATOR)
     .map((line) => `${QUOTE_MARK}${defuseLead(line)}`)
     .join("\n");
-}
-
-/** 状态标签：RuleStatus 全集（规则库读取已把漂移状态归一，故无需兜底）。 */
-function statusLabel(messages: LessonLoopMessages, status: RuleStatus): string {
-  const labels: Record<RuleStatus, string> = {
-    armed: messages.statusArmed,
-    candidate: messages.statusCandidate,
-    demoted: messages.statusDemoted,
-    rejected: messages.statusRejected,
-    archived: messages.statusArchived,
-  };
-  return labels[status];
 }
 
 /**
@@ -182,8 +174,13 @@ export function renderRulesDigest(
   const shown = maxRules > 0 ? armed.slice(-maxRules) : armed;
   const lines: string[] = [messages.digestHeading];
   for (const [index, rule] of shown.entries()) {
-    const armedDay =
-      rule.armedAt === undefined ? "?" : new Date(rule.armedAt).toISOString().slice(0, 10);
+    // 越界时间戳（读取层只保证有限数，1e300 这类值超出 Date 的 ±8.64e15）会让
+    // toISOString 抛 RangeError——一张坏卡不该让本项目全部 armed 规则的注入失败，
+    // 日期渲染与 armedAt 缺值走同一个 "?"。
+    const armedTime = rule.armedAt === undefined ? Number.NaN : new Date(rule.armedAt).getTime();
+    const armedDay = Number.isFinite(armedTime)
+      ? new Date(armedTime).toISOString().slice(0, 10)
+      : "?";
     // statement 是模型蒸馏/人工改写正文（不可信），逐行定界后才进编号帧。
     lines.push(
       fill(messages.digestRuleLine, {
@@ -198,24 +195,4 @@ export function renderRulesDigest(
     lines.push(fill(messages.digestOmitted, { total: armed.length, shown: shown.length }));
   }
   return lines.join("\n");
-}
-
-/** 卡片/端点用的规则摘要行（含状态标签；全文，不截断）。 */
-export function describeRule(rule: RuleCard, messages: LessonLoopMessages): string {
-  const metrics =
-    rule.status === "armed"
-      ? fill(messages.ruleSummaryArmed, {
-          violation: rule.violation,
-          suppressed: rule.suppressed,
-          samples: rule.samples,
-        })
-      : "";
-  return fill(messages.ruleSummary, {
-    label: statusLabel(messages, rule.status),
-    statement: rule.statement,
-    category: rule.category,
-    signature: rule.signature,
-    occurrences: rule.occurrences,
-    metrics,
-  });
 }

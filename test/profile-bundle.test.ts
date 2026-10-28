@@ -27,25 +27,31 @@ describe("profile-bundle 解析守卫", () => {
     assert.throws(() => assertBundleListOf("not-an-array", "清单"), /不是数组/u);
   });
 
-  it("const 字面量：标识符含 `$` 不被当正则锚点；空白与单引号形态都认", () => {
+  it("const 字面量：标识符含 `$` 不被当正则锚点；空白与单引号形态都认；拼接不算字面量", () => {
     assert.equal(constLiteral('const $slotKey = "pkg-name";', "$slotKey"), "pkg-name");
     assert.equal(constLiteral("const  NS  =  'lesson-loop' ;", "NS"), "lesson-loop");
     assert.throws(() => constLiteral('const other = "x";', "missing"), /找不到 const missing/u);
+    // 拼接：`const X = "a" + "b"` 不是一条可读常量，静默取 "a" 等于拿假值去比对
+    assert.throws(() => constLiteral('const X = "a" + "b";', "X"), /找不到 const X/u);
   });
 
-  it("slot key 提取：只认 register 对象窗口内的 key:，标识符内嵌与窗口外的 key: 不抓", () => {
+  it("slot key 提取：只认 register 对象里的 key:，标识符内嵌与嵌套对象里的 key: 不抓", () => {
     const bundle =
       'ctx.slots.register({\n\tname: "plugins.bundle.config",\n\tkey: BUNDLE_PKG,\n\tinject: () => ({ inner: "v" })\n}, Card);\nconst BUNDLE_PKG = "pkg-name";';
     // 标识符分支：去产物里查 const 声明取值
     assert.equal(registeredSlotKey(bundle), "pkg-name");
     // 标识符内嵌（slotkey:/monkey: 这类以 key: 结尾的小写词）不命中 key: 判据
     const embedded =
-      'name: "plugins.bundle.config",\n\tslotkey: "wrong",\n\tmonkey: "wronger",\n\tkey: "right",\n\tinject: () => ({})\n})';
+      'ctx.slots.register({\n\tname: "plugins.bundle.config",\n\tslotkey: "wrong",\n\tmonkey: "wronger",\n\tkey: "right",\n\tinject: () => ({})\n}, Card)';
     assert.equal(registeredSlotKey(embedded), "right");
     // 窗口外（register 对象闭合之后）的 key: 不抓
     const outside =
-      'name: "plugins.bundle.config",\n\tkey: "inside",\n\tinject: () => ({})\n});\nconst item = { key: "outside" };';
+      'ctx.slots.register({\n\tname: "plugins.bundle.config",\n\tkey: "inside",\n\tinject: () => ({})\n}, Card);\nconst item = { key: "outside" };';
     assert.equal(registeredSlotKey(outside), "inside");
+    // key 排在 inject 之后、且 inject 的内层对象也有 key：按深度只认顶层那一条
+    const lateKey =
+      'ctx.slots.register({\n\tname: "plugins.bundle.config",\n\tinject: () => ({ nested: { key: "inner" } }),\n\tkey: "outer"\n}, Card)';
+    assert.equal(registeredSlotKey(lateKey), "outer");
     assert.throws(() => registeredSlotKey("没有注册"), /没有 plugins.bundle.config 的注册/u);
   });
 
@@ -55,11 +61,11 @@ describe("profile-bundle 解析守卫", () => {
       "lesson-loop",
     );
     assert.equal(configFormsEntryId('const a = ctx.configForms.get( "plain" );'), "plain");
-    // 嵌套括号：实参按深度取全（旧实现截到第一个右括号，报错信息里的实参只剩半截）
+    // 嵌套括号：实参按深度取全；既非字面量也非标识符的实参（调用表达式）响亮失败，
+    // 报错点名完整实参——漂移针不许拿解析不动的实参继续跑。
     assert.throws(
-      () =>
-        configFormsEntryId("const a = ctx.configForms.get(resolve(ns)); const resolve = (x) => x;"),
-      /找不到 const resolve\(ns\) = /u,
+      () => configFormsEntryId("const a = ctx.configForms.get(resolve(ns));"),
+      /实参不是字面量或标识符（resolve\(ns\)）/u,
       "报错点名完整实参，而不是被截断的那半截",
     );
     // 多处调用各不相同 → 直接红（只取第一处会把断言对到无关的那处上）

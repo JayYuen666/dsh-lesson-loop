@@ -50,6 +50,7 @@ vi.mock("react", async (importOriginal) => {
       (): undefined => undefined,
     ],
     useEffect: (): undefined => undefined,
+    useRef: (initial: unknown): { current: unknown } => ({ current: initial }),
   };
   // default 位不可省：`src/client-entry.ts` 用 default import 取 React，
   // 只铺命名导出会让它在运行时拿到 undefined。
@@ -199,10 +200,11 @@ const CONFIG_FIELDS = [
   "reviveThreshold",
   "decayDays",
   "maxLessonsBytes",
+  "maxStatementChars",
 ];
 
 describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置面）", () => {
-  it("11 个设置字段各有 label/hint，且取自字典（中文与迁移前逐字一致）", () => {
+  it("12 个设置字段各有 label/hint，且取自字典（中文与迁移前逐字一致）", () => {
     const rows = configRows(tZh);
     assert.deepEqual(
       rows.map((item) => item.field),

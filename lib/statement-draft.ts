@@ -15,10 +15,66 @@
 // 防注入契约：正文里的 signature 以原文嵌入，**定界发生在渲染那一刻**——注入模型的
 // 调用点（lib/prompt.ts 的 renderRulesDigest 等）对整条 statement 过 fenceUntrusted；
 // 本函数不自行加框，落库的正文保持原文。
+//
+// 分类 → 模板的对应收成一张表（不再用 switch 逐类枚举）：lib/digest-prompt.ts 的类别白名单、
+// lib/rule-signature.ts 的登记表与本表是三份各自演化的数据，新增登记分类时漏改这里
+// 会落到通用兜底、把稳定签名原文当具体路径嵌进正文——test/digest.test.ts 用
+// digestSystemPrompt 渲染出的类别清单逐个探针本函数，漏登记当场红。
 
 import { isRejectedSummarySignature, isStableSignature } from "./rule-signature.ts";
 import { fill } from "./messages.ts";
 import type { LessonLoopMessages } from "./messages.ts";
+
+/** 消息表里 statement* 模板的键名（编译期钉住：写错键名 tsc 当场红）。 */
+type StatementTemplateKey = {
+  [Key in keyof LessonLoopMessages]: Key extends `statement${string}` ? Key : never;
+}[keyof LessonLoopMessages];
+
+/**
+ * 单个登记分类的正文选型：
+ * - stable-or-drafted：该类有"稳定签名 → 通用正文 / 其余签名 → 嵌占位正文"两档
+ *   （碎片化修复的三个类别）；
+ * - fixed：无论签名是什么，正文都是这一条模板（签名嵌占位或不嵌，随模板本身）；
+ * - passthrough：signature 就是模型产出的正文本身，原样透传（feedback-digest）。
+ */
+/** 选型种类（字面量只此一份，表与分支都从它取）。 */
+const KIND_TWO_TIER = "stable-or-drafted";
+const KIND_FIXED = "fixed";
+const KIND_PASSTHROUGH = "passthrough";
+
+type StatementEntry =
+  | {
+      readonly kind: typeof KIND_TWO_TIER;
+      readonly stable: StatementTemplateKey;
+      readonly drafted: StatementTemplateKey;
+    }
+  | { readonly kind: typeof KIND_FIXED; readonly template: StatementTemplateKey }
+  | { readonly kind: typeof KIND_PASSTHROUGH };
+
+/** 登记分类 → 正文选型。键集与 lib/digest-prompt.ts 的类别白名单同域，
+ *  一致性由 test/digest.test.ts 的逐类探针钉住。 */
+const CATEGORY_STATEMENTS: Readonly<Record<string, StatementEntry>> = {
+  "factgate-deny": {
+    kind: KIND_TWO_TIER,
+    stable: "statementFactgateStable",
+    drafted: "statementFactgatePath",
+  },
+  "dangerous-bash": {
+    kind: KIND_TWO_TIER,
+    stable: "statementDangerousBashStable",
+    drafted: "statementDangerousBash",
+  },
+  "secret-path": {
+    kind: KIND_TWO_TIER,
+    stable: "statementSecretPathStable",
+    drafted: "statementSecretPathTarget",
+  },
+  "gate-failure": { kind: KIND_FIXED, template: "statementGateFailure" },
+  "transient-failure": { kind: KIND_FIXED, template: "statementTransientFailure" },
+  "max-tokens": { kind: KIND_FIXED, template: "statementMaxTokens" },
+  "unfinished-turn": { kind: KIND_FIXED, template: "statementUnfinishedTurn" },
+  "feedback-digest": { kind: KIND_PASSTHROUGH },
+};
 
 /**
  * 候选规则 statement 模板：按分类起草，signature 原文嵌入（可读性优先）。
@@ -34,51 +90,31 @@ export function draftStatement(
 ): string {
   // rejected 归档汇总（`${稳定签名}:rejected`）先于分类模板判定：lesson-store 的
   // migrateRejectedFragments 对每个登记分类都会生成汇总卡，这批正文必须走分类无关的
-  // 归档容器文案——埋进单个 case 里，其余分类会把汇总签名当成路径/命令嵌进正文。
+  // 归档容器文案——埋进单个分类里，其余分类会把汇总签名当成路径/命令嵌进正文。
   // 精确比对（而非后缀探测）保证模型的普通正文不会被误判成汇总卡。
   if (isRejectedSummarySignature(category, signature)) {
     return fill(messages.statementRejectedSummary, { signature });
   }
-  switch (category) {
-    case "factgate-deny": {
-      // 稳定签名 → 通用正文：不再把具体路径嵌进规则（碎片化修复的一部分）。
-      if (isStableSignature(category, signature)) {
-        return messages.statementFactgateStable;
-      }
-      return fill(messages.statementFactgatePath, { signature });
-    }
-    case "dangerous-bash": {
-      // 稳定签名 → 通用正文：具体是哪条命令在 evidence.signature 里，正文不嵌占位
-      // （同 secret-path 的形态；碎片化与"人审看不出该审什么"是同一处修复的两面）。
-      if (isStableSignature(category, signature)) {
-        return messages.statementDangerousBashStable;
-      }
-      return fill(messages.statementDangerousBash, { signature });
-    }
-    case "secret-path": {
-      // 稳定签名 → 通用正文：具体是哪个凭据文件在 evidence.signature 里，正文不嵌占位。
-      if (isStableSignature(category, signature)) {
-        return messages.statementSecretPathStable;
-      }
-      return fill(messages.statementSecretPathTarget, { signature });
-    }
-    case "gate-failure": {
-      return fill(messages.statementGateFailure, { signature });
-    }
-    case "transient-failure": {
-      return fill(messages.statementTransientFailure, { signature });
-    }
-    case "max-tokens": {
-      return messages.statementMaxTokens;
-    }
-    case "unfinished-turn": {
-      return messages.statementUnfinishedTurn;
-    }
-    case "feedback-digest": {
-      return signature;
-    }
-    default: {
-      return fill(messages.statementGeneric, { signature });
-    }
+  if (signature.trim().length === 0) {
+    // 空签名（归一后为空/非字符串兜底）在旧分支会起草出坏正文：feedback-digest 直接
+    // 透传成空 statement（arm 后注入面只剩一行空话），default 分支嵌出"详见证据"
+    // 却无指向的半句。统一退到一条明说缺签名的占位正文，人审时看得见问题。
+    return messages.statementMissingSignature;
   }
+  const entry = CATEGORY_STATEMENTS[category];
+  if (entry === undefined) {
+    // 未登记分类（第三方上报）：通用兜底正文。
+    return fill(messages.statementGeneric, { signature });
+  }
+  if (entry.kind === KIND_TWO_TIER) {
+    // 稳定签名 → 通用正文：不再把具体路径/命令嵌进规则（碎片化修复的一部分）。
+    if (isStableSignature(category, signature)) {
+      return messages[entry.stable];
+    }
+    return fill(messages[entry.drafted], { signature });
+  }
+  if (entry.kind === KIND_FIXED) {
+    return fill(messages[entry.template], { signature });
+  }
+  return signature;
 }

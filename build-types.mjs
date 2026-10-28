@@ -9,14 +9,13 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { buildDeclarations, runTool } from "@jayyuen66/dsh-plugin-shared/lib/build-types";
+import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { invokedDirectly } from "@jayyuen66/dsh-plugin-shared/lib/build-artifacts";
 
 // 声明门禁按同一口径列 types/；runCommand 保留旧名（诊断透传的行为锁在
-// test/build-types.test.ts，签名 (file, args) 不带 cwd）。
-export {
-  canonicalizeDeclarationSpecifiers,
-  listDeclarations,
-} from "@jayyuen66/dsh-plugin-shared/lib/build-types";
+// test/build-types.test.ts，签名 (file, args) 不带 cwd）。canonicalizeDeclarationSpecifiers
+// 不是本文件的消费面（build-types.d.mts 也刻意不声明它），不再转手。
+export { listDeclarations } from "@jayyuen66/dsh-plugin-shared/lib/build-types";
 
 const root = import.meta.dirname;
 const require = createRequire(import.meta.url);
@@ -31,10 +30,21 @@ const require = createRequire(import.meta.url);
  * @returns {string} tsc 入口绝对路径
  */
 function tscEntry() {
-  const pkgPath = require.resolve("typescript/package.json");
+  let pkgPath;
+  try {
+    pkgPath = require.resolve("typescript/package.json");
+  } catch (error) {
+    // 裸 MODULE_NOT_FOUND 只提 "typescript/package.json" 子路径，读不出"缺的是
+    // devDependency typescript"这层成因——包装一次，把修复路径写进消息。
+    throw new Error(
+      `解析不到 typescript 的 package.json（请确认已安装 devDependency typescript）：${String(error)}`,
+      { cause: error },
+    );
+  }
+  /** @type {unknown} */
   const manifest = JSON.parse(readFileSync(pkgPath, "utf8"));
-  const binTable = manifest?.bin;
-  const bin = typeof binTable === "object" && binTable !== null ? binTable.tsc : binTable;
+  const binTable = isRecord(manifest) ? manifest["bin"] : undefined;
+  const bin = isRecord(binTable) ? binTable["tsc"] : binTable;
   if (typeof bin !== "string" || bin.length === 0) {
     throw new Error(`typescript 的 package.json 没有可用的 bin.tsc：${pkgPath}`);
   }

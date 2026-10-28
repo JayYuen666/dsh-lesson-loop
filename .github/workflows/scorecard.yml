@@ -14,7 +14,16 @@ on:
   schedule:
     - cron: "23 4 * * 1"
   push:
+    # 只能写字面分支名（branches 过滤不吃表达式）：默认分支改名后这一条要跟着改，
+    # 否则只剩 schedule 与 branch_protection_rule 两条触发路径。下面的 job 级 if
+    # 用的是仓库当前的默认分支，两处不共享同一个值是有意的分工。
     branches: [main]
+# 同一 ref 上后到的分析取消先到的：branch_protection_rule 事件可能短时连发，
+# 叠加每周定时与 push 会出现多份并发分析，后完成的旧结果还会在 code scanning 里
+# 互相覆盖。组键带事件名与 ref，与 ci/codeql 同款。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 # 工作流级全只读；两个写权限只挂在 analysis job 上。
 permissions: read-all
 jobs:
@@ -23,7 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # publish_results: true 只在默认分支生效，所以在非默认分支上不跑这条。
-    if: github.event.repository.default_branch == github.ref_name
+    # 比较完整 ref：tag 的 ref_name 就是 tag 名——名字恰与默认分支相同的 tag 会让
+    # 名字比较通过，把那棵树的分析结果当默认分支发布。
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
       security-events: write
       id-token: write
@@ -44,6 +55,9 @@ jobs:
           publish_results: true
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # 辅助产物失败（配额/服务抖动）不许挡住后面真正关键的 SARIF 上传——那才是
+        # 这份分析的主结果，artifact 只是留档。
+        continue-on-error: true
         with:
           name: scorecard-sarif
           path: results.sarif

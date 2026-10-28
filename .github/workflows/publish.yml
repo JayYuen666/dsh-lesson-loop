@@ -26,12 +26,15 @@ jobs:
       # 用「失败」而不是 job 级 `if:` 跳过：跳过在结论上是绿的，误点的人只会看到工作流"成功"。
       - name: 确认发布只发生在默认分支
         env:
-          TARGET_REF: ${{ github.ref_name }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # 比较完整 ref 而不是 ref_name：tag 的 ref_name 就是 tag 名——存在一个指向
+          # 任意提交的 tag `main` 时，workflow_dispatch 在它上面派发即可让名字比较
+          # 通过，把那棵树推上 registry（版本号占用撤不回）。refs/tags/… 天然不等。
+          TARGET_REF: ${{ github.ref }}
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          if [ "$TARGET_REF" != "$DEFAULT_BRANCH" ]; then
-            echo "::error::发布只能从默认分支（$DEFAULT_BRANCH）派发，当前是 $TARGET_REF。要发版请先把改动合进默认分支再 dispatch。"
+          if [ "$TARGET_REF" != "$DEFAULT_REF" ]; then
+            echo "::error::发布只能从默认分支派发（$DEFAULT_REF），当前是 $TARGET_REF。要发版请先把改动合进默认分支再 dispatch。"
             exit 1
           fi
       # action 按 tag 引用意味着上游动 tag 就等于本仓换了构建器。钉 commit SHA，
@@ -48,6 +51,8 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          # 与 ci.yml 同款：build job 要装整棵依赖树，缓存 pnpm store 省每次发布从零下载。
+          cache: pnpm
       # 静态 token 是 OIDC 失败时的兜底，不是发布的前提：仓库里没有这枚 secret 是正常状态，
       # 走 trusted publishing 的仓库本来就不该长期存它。所以这一步在值为空时放行，只把
       # 凭据本身不跨步骤传递：步骤输出会落成 RUNNER_TEMP 下的文件，同 job 后续步骤
@@ -98,7 +103,7 @@ jobs:
 
           if [ -n "$PASS_TOKEN" ]; then
             body="$(mktemp)"
-            code=$(curl -s -o "$body" -w "%{http_code}" -H "Authorization: Bearer $PASS_TOKEN" "https://registry.npmjs.org/-/whoami")
+            code=$(curl -sS --max-time 15 --retry 2 --retry-connrefused -o "$body" -w "%{http_code}" -H "Authorization: Bearer $PASS_TOKEN" "https://registry.npmjs.org/-/whoami")
             case "$code" in
               200)
                 login=$(sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$body")
@@ -121,18 +126,67 @@ jobs:
           else
             echo "whoami: 跳过——本次没有静态 token，按 OIDC 发布"
           fi
-          # 本包自身也要查：只查依赖的话，「版本号没进 main 就触发 workflow」这个最常见的
-          # 失败模式预检根本发现不了，只能等 publish 自己以版本冲突收尾。
-          self=$(curl -s -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/@jayyuen66%2fdsh-lesson-loop")
-          echo "读本包：HTTP $self"
+          # 本包自身按**精确版本**查：只查包在不在发现不了「这个版本已经发过」——
+          # 版本号被占用时 publish 必撞版本冲突，提前在这里红比跑完 check + pack 再失败便宜。
+          node -p 'const p = require("./package.json"); p.name + " " + p.version' > /tmp/pkg-ref
+          read -r pkg_name pkg_version < /tmp/pkg-ref
+          encoded_self="${pkg_name/@/%40}"
+          encoded_self="${encoded_self//\//%2f}"
+          self=$(curl -sS --max-time 15 --retry 2 --retry-connrefused -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/${encoded_self}/${pkg_version}")
+          echo "读 ${pkg_name}@${pkg_version}：HTTP $self"
           case "$self" in
-            404) echo "判读：首发（正常）";;
-            200) echo "判读：已发过——确认 package.json 的 version 比 registry 上的新，否则 publish 会撞版本冲突";;
+            404) echo "判读：这个版本还没发过（正常）";;
+            200) echo "::error::${pkg_name}@${pkg_version} 已在 registry 上——版本号不可重用，先抬 package.json 的 version 再发"; exit 1;;
             *) echo "预检失败：本包读取返回 $self"; exit 1;;
           esac
-          code=$(curl -s -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/@jayyuen66%2fdsh-plugin-shared")
-          echo "读 @jayyuen66/dsh-plugin-shared：HTTP $code"
-          echo "判读：200=依赖库已公开，可以发；404=shared 还没发到 npmjs，先发它（本包 pnpm install 会因此取不到依赖）"
+          # 依赖库不只看"包在不在"：pnpm pack 会把 catalog: 解析成 catalog 里的**具体版本**，
+          # 那个版本没发出去时，包存在也没用——消费方安装会在解析依赖时失败。版本从
+          # pnpm-workspace.yaml 的 catalog 读，包名从 package.json 的 catalog: 依赖读，
+          # 都不在 workflow 里硬编码。
+          node --input-type=module - <<'NODE' > /tmp/shared-ref
+          import { readFileSync } from "node:fs";
+
+          const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+          const dependencies = manifest.dependencies ?? {};
+          const name = Object.keys(dependencies).find((key) => dependencies[key] === "catalog:");
+          if (name === undefined) {
+            throw new Error("package.json 里没有 catalog: 依赖，读不出要预检的依赖库");
+          }
+          const lines = readFileSync("pnpm-workspace.yaml", "utf8").split(/\r?\n/u);
+          let inCatalog = false;
+          let version;
+          for (const line of lines) {
+            if (/^catalog:\s*$/u.test(line)) {
+              inCatalog = true;
+              continue;
+            }
+            if (inCatalog && /^\S/u.test(line)) {
+              break;
+            }
+            if (!inCatalog) {
+              continue;
+            }
+            const matched = /^\s+(?:"([^"]+)"|'([^']+)'|([\w@/.-]+)):\s*(\S+)\s*(?:#.*)?$/u.exec(line);
+            const key = matched?.[1] ?? matched?.[2] ?? matched?.[3];
+            if (key === name) {
+              version = matched?.[4];
+              break;
+            }
+          }
+          if (version === undefined) {
+            throw new Error(`pnpm-workspace.yaml 的 catalog 里没有 ${name}`);
+          }
+          if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version)) {
+            throw new Error(`catalog 里的 ${name} 不是精确版本：${version}`);
+          }
+          process.stdout.write(`${name} ${version}\n`);
+          NODE
+          read -r shared_name shared_version < /tmp/shared-ref
+          encoded="${shared_name/@/%40}"
+          encoded="${encoded//\//%2f}"
+          code=$(curl -sS --max-time 15 --retry 2 --retry-connrefused -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/${encoded}/${shared_version}")
+          echo "读 ${shared_name}@${shared_version}：HTTP $code"
+          echo "判读：200=依赖库这个版本已公开，可以发；404=这个版本还没发到 npmjs，先发 shared 再发本包"
           [ "$code" = "200" ] || exit 1
           # 只交结论、不交凭据：发布 job 据此决定导不导出 NODE_AUTH_TOKEN。
           printf 'use_static=%s\n' "$USE_STATIC" >> "$GITHUB_OUTPUT"
@@ -198,6 +252,23 @@ jobs:
           mkdir -p /tmp/stage
           tar -xzf "$tarball" -C /tmp/stage
           test -f /tmp/stage/package/package.json
+          # 发布器写错（npm pack 不解析 catalog:）会把未解析协议原样留在 tarball 的
+          # package.json 里，而本仓的 dependencies 正是 catalog: 写法——装出去必在
+          # EUNSUPPORTEDPROTOCOL 上失败。构建走 pnpm pack 是约定，这里是它的判据。
+          node --input-type=module - <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const manifest = JSON.parse(readFileSync("/tmp/stage/package/package.json", "utf8"));
+          for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+            for (const [name, range] of Object.entries(manifest[section] ?? {})) {
+              if (typeof range === "string" && /^(?:catalog|workspace):/u.test(range)) {
+                console.error(`tarball 的 ${section}.${name} 仍是 ${range}：发布器没有解析协议`);
+                process.exit(1);
+              }
+            }
+          }
+          console.log("tarball 依赖段没有未解析的 catalog:/workspace: 协议");
+          NODE
           echo "PKG_DIR=/tmp/stage/package" >> "$GITHUB_ENV"
       # 凭据优先级：OIDC 在前，这枚 NODE_AUTH_TOKEN 在后（pnpm 的 publish_options.rs 原话
       # "OIDC takes precedence over a configured static token"）。trusted publisher 配好时

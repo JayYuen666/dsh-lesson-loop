@@ -66,6 +66,8 @@ export interface UiMessages {
   readonly decayDaysHint: string;
   readonly maxLessonsBytesLabel: string;
   readonly maxLessonsBytesHint: string;
+  readonly maxStatementCharsLabel: string;
+  readonly maxStatementCharsHint: string;
 
   // ── 规则评审区 ────────────────────────────────────────────────────────
   /** 分节标题模板（{title} + {count}，中/英的全角半角括号由字典自己定）。 */
@@ -84,7 +86,8 @@ export interface UiMessages {
   readonly metaObservations: string;
   /** armed 的三计数（{violation} {suppressed} {samples}）。 */
   readonly metaArmed: string;
-  /** armed 够久却零复发零遵守：机器无从裁定，交人处理。 */
+  /** armed 后从未被遵守过（suppressed === 0），且已挂满 decayDays 或复发已达
+   *  demoteThreshold：机器无从裁定，交人处理（与 lib/decay-policy.ts 的裁决同口径）。 */
   readonly metaUndeterminable: string;
   /** rejected 后又出现的计数（{count}）。 */
   readonly metaRevive: string;
@@ -158,6 +161,17 @@ export type LocaleNs = typeof LOCALE_NS_KEY;
  */
 export type Translate = OfficialTranslateNS<typeof LOCALE_NS_KEY>;
 
+/**
+ * 编译期钉子：`OfficialTranslateNS<LocaleNs>` 的首参必须已收窄成键集联合。merge 键被删
+ * 时 TS 会在上面两处用点各报一条 TS2344 硬红（实测），不怕；真正静默的失窄路是 merge
+ * 的**值**被放宽（如 `"lesson-loop": string`）——那条路上 `t("拼错的键")` 从此不再报错。
+ * 断言失败（首参退化为宽 string）时本类型是 never，赋值当场编译红。
+ */
+type NsKeysAreNarrow = string extends Parameters<OfficialTranslateNS<LocaleNs>>[0] ? never : true;
+/** 本源唯一的值导出：上面的编译期钉子（无运行时消费者，导出只为让断言在
+ *  noUnusedLocals 下存活——私有常量会被判成死值，类型层的红就没了）。 */
+export const nsKeysAreNarrow: NsKeysAreNarrow = true;
+
 export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
   zh: {
     cardTitle: "lesson-loop 自进化环",
@@ -179,13 +193,15 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     reportEnabledHint:
       "danger-guard / quality-gate / session-rescue 的失败事件写入 cache/lesson-loop/events.jsonl 并归并规则卡",
     injectEnabledLabel: "会话开始注入规则",
-    injectEnabledHint: "agent/session-start 按项目注入 armed 规则全文（agent.inject，不唤醒）",
+    injectEnabledHint:
+      "agent/created 时按项目注入 armed 规则全文（agent.inject，不唤醒；子会话跳过）",
     sectionEnabledLabel: "常驻系统提示段",
     sectionEnabledHint: "systemPrompt 固定段：告知模型闭环存在与守卫拒绝的正确应对",
     promoteThresholdLabel: "候选升格门槛（次）",
     promoteThresholdHint: "同 (项目,分类,签名) 教训达此次数 → 候选卡标记待确认（1-20，默认 3）",
     demoteThresholdLabel: "复发降级门槛（次）",
-    demoteThresholdHint: "armed 后复发达此次数且复发率达标 → 自动降级待人审（1-50，默认 3）",
+    demoteThresholdHint:
+      "armed 后复发达此次数、至少被遵守过一次且复发率达标 → 自动降级待人审；从未被遵守的判「不可判定」（1-50，默认 3）",
     demoteMinSamplesLabel: "降级最小证据样本（个）",
     demoteMinSamplesHint:
       "降级判定所需的最小真实证据数 violation+suppressed（暴露 samples 不计入；1-100，默认 5；不足不降级）",
@@ -194,12 +210,15 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       "violation/(violation+suppressed) ≥ 此值 且真实证据足 → 自动降级（0.05-1，默认 0.5）",
     reviveThresholdLabel: "拒绝后复活门槛（次）",
     reviveThresholdHint:
-      "rejected 规则同签名再次出现在此次数 → 自动转回候选待人工重审（1-20，默认 3）",
-    decayDaysLabel: "不可判定阈值（天）",
+      "rejected 规则同签名再次出现达此次数 → 自动转回候选待人工重审（1-20，默认 3）",
+    decayDaysLabel: "不可判定观察窗口（天）",
     decayDaysHint:
       "armed 超此天数却从未被遵守过 → 卡片标记「不可判定」交人工停用/归档（不再自动归档；复发已达降级门槛同样触发）（1-365，默认 30）",
     maxLessonsBytesLabel: "events.jsonl 磁盘保险丝（字节）",
     maxLessonsBytesHint: "0 = 不设上限（默认，内容零截断）；硬上限 1 GiB；仅在磁盘需要保护时设置",
+    maxStatementCharsLabel: "规则正文上限（字符）",
+    maxStatementCharsHint:
+      "arm/edit 时生效正文的字符上限（按 UTF-16 码元计；1-100000，默认 4000）；超限的写入被拒，已落库的正文不受影响",
 
     sectionHeading: "{title}（{count}）",
     sectionCandidates: "待确认候选（人工升格）",
@@ -251,7 +270,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       "Failure events from danger-guard / quality-gate / session-rescue are written into cache/lesson-loop/events.jsonl and merged into rule cards",
     injectEnabledLabel: "Inject rules at session start",
     injectEnabledHint:
-      "agent/session-start injects full armed rules per project (agent.inject, without waking the driver)",
+      "injects full armed rules per project on agent/created (agent.inject, without waking the driver; subagent sessions are skipped)",
     sectionEnabledLabel: "Standing system prompt section",
     sectionEnabledHint:
       "Fixed systemPrompt section: tells the model the loop exists and how to react to guard denials",
@@ -260,7 +279,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       "Lessons with the same (project, category, signature) reaching this count mark the candidate card as pending review (1-20, default 3)",
     demoteThresholdLabel: "Demotion threshold (times)",
     demoteThresholdHint:
-      "After arming, this many violations plus a qualifying recurrence rate demotes the rule for human review (1-50, default 3)",
+      "After arming, this many violations, at least one followed hit and a qualifying recurrence rate demote the rule for human review; one that was never followed is marked undeterminable (1-50, default 3)",
     demoteMinSamplesLabel: "Minimum evidence samples for demotion",
     demoteMinSamplesHint:
       "Smallest amount of real evidence violation+suppressed required to demote (exposure samples never count; 1-100, default 5; below it never demote)",
@@ -270,12 +289,15 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     reviveThresholdLabel: "Revive threshold after rejection (times)",
     reviveThresholdHint:
       "A rejected rule whose signature reappears this many times goes back to candidates for human re-review (1-20, default 3)",
-    decayDaysLabel: "Undeterminable threshold (days)",
+    decayDaysLabel: "Undeterminable observation window (days)",
     decayDaysHint:
       "Armed longer than this with never a follow-through marks the card as undeterminable for a human to disable/archive (no more silent archiving; reaching the violation threshold triggers it too) (1-365, default 30)",
     maxLessonsBytesLabel: "events.jsonl disk fuse (bytes)",
     maxLessonsBytesHint:
       "0 = no cap (default, content never truncated); hard cap 1 GiB; set only to protect the disk",
+    maxStatementCharsLabel: "Rule statement length limit (characters)",
+    maxStatementCharsHint:
+      "Character limit for an armed rule statement on arm/edit (UTF-16 units; 1-100000, default 4000); longer writes are refused, stored statements are unaffected",
 
     sectionHeading: "{title} ({count})",
     sectionCandidates: "Pending candidates (human promotion)",

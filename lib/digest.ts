@@ -279,9 +279,35 @@ interface ResolvedModelSelection {
  * 发一次模型流并收取全文。墙钟只约束这一段（LLM 阶段）：串行落库不可中止，不该顶着
  * 已无意义的定时器跑。超时与其他失败分开讲：适配器对 abort 的收场形态不一（AbortError、
  * 流提前结束、finish kind=aborted），直接透出就是一句未本地化的底层错误文本，甚至会被
- * 误报成"缺 finish 块"；流在 abort 后自己恢复并交出合法 finish 的情形不算失败
- * （墙钟只保证不再干等，结果照收）。
+ * 误报成"缺 finish 块"。到点必返回由竞速门兜底（见实现内注释）：abort 之后、门触发
+ * 之前自己恢复并交出合法 finish 的流照常算成功；门已触发才到的 finish 等于超时，
+ * 一律按 errDigestTimeout 收场。
  */
+/**
+ * 等一条已被竞速放弃的流落定：落定值无人消费，这里只防 unhandledRejection。
+ * 正常路径下（没超时就落定）走不到日志——那次落定是竞速的赢家。
+ */
+async function awaitStreamSettled(stream: Promise<string>, timedOut: () => boolean): Promise<void> {
+  try {
+    await stream;
+  } catch (error) {
+    if (!timedOut()) {
+      console.error(
+        `[lesson-loop] digest stream settled after the command already failed: ${errorText(error)}`,
+      );
+    }
+  }
+}
+
+/** 超时门的哨兵：门以 resolve 交出它（不 reject），竞速里它一出现即按超时收场。 */
+const TIMEOUT_MARK = Symbol("lesson-loop-digest-timeout");
+
+/** 墙钟到点后的**收尾宽限**（毫秒）：到点先 abort，给协作式适配器一小段时间自行收场
+ *  ——abort 后立刻恢复并交出合法 finish 的流不算失败（test/digest.test.ts 钉着这条）；
+ *  宽限期内还没落定的（不监听 signal 的实现）按超时收场，/lessons-digest 不许被一条
+ *  永不结束的流无限挂住。宽限只影响"报错的最晚时刻"，不影响 abort 的时机。 */
+const DIGEST_ABORT_GRACE_MS = 250;
+
 async function streamDigestText(
   llm: LlmService,
   selection: ResolvedModelSelection,
@@ -293,9 +319,22 @@ async function streamDigestText(
   // 用对象持窄化逃不掉的"跨回调改写"标记：裸 let 的字面量初始化会被流程分析钉成
   // 恒 false（回调里的赋值不进它的图），对象属性不参与那个窄化。
   const timeoutState = { fired: false };
+  // 超时以两级钟收场，不只靠 abort：适配器若不监听 signal（或第三方 provider 实现不
+  // 协作），for await 永远拿不到下一块也不结束，单靠 abort 兜不住"到点必收场"。
+  // 主钟到点 → abort；宽限钟到点（流仍未落定）→ 门以哨兵 resolve，竞速按超时收场。
+  // 门的哨兵形态让"竞速落定后门才落定"不再产生没人等的 rejection。
+  // 门用**resolve 哨兵**而不是 reject：竞速已按正常路径落定之后才到点的定时器会
+  // 落定一只没人等的门，reject 形态会冒 unhandledRejection（测试的假定时器路径会
+  // 走到），resolve 形态无人消费则无害。
+  const { promise: timeoutGate, resolve: timeoutResolve } =
+    Promise.withResolvers<typeof TIMEOUT_MARK>();
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
   const timer = setTimeout(() => {
     timeoutState.fired = true;
     controller.abort();
+    graceTimer = setTimeout(() => {
+      timeoutResolve(TIMEOUT_MARK);
+    }, DIGEST_ABORT_GRACE_MS);
   }, timeoutMs);
   try {
     const stream = llm.stream({
@@ -323,23 +362,45 @@ async function streamDigestText(
       system: digestSystemPrompt(messages),
       signal: controller.signal,
     });
+    const drained = drainStreamToText(stream, messages);
+    // 门赢了（超时收场）之后流才会落定：abort 引发的失败已按超时呈报，这一次落定
+    // 无人等待——接住它只是防 unhandledRejection，不是吞掉正常路径的错误（竞速
+    // 赢家若是流自己的错误，走的是下面 catch 的原样透出）。
+    void awaitStreamSettled(drained, () => timeoutState.fired);
     try {
-      return await drainStreamToText(stream, messages);
+      const settled = await Promise.race([drained, timeoutGate]);
+      if (settled === TIMEOUT_MARK) {
+        throw new Error(fill(messages.errDigestTimeout, { ms: timeoutMs }));
+      }
+      return settled;
     } catch (error) {
-      if (timeoutState.fired) {
+      if (timeoutState.fired && !(error instanceof Error && error.message.includes("蒸馏超时"))) {
         // 超时的一档把底层错误拴在 cause 上（排障可见），给人看的是本地化文案。
         throw new Error(fill(messages.errDigestTimeout, { ms: timeoutMs }), { cause: error });
       }
       throw error;
     } finally {
-      // 墙钟只约束 LLM 阶段：落库在 timer 清掉之后才跑。
+      // 墙钟只约束 LLM 阶段：落库在定时器清掉之后才跑；宽限钟一并清（正常收场时不留）。
       clearTimeout(timer);
+      if (graceTimer !== undefined) {
+        clearTimeout(graceTimer);
+      }
     }
   } finally {
     // stream 构造即同步抛错的那条路走这里兜底；已清过的定时器再清一次是幂等的。
     clearTimeout(timer);
   }
 }
+
+/** 单次蒸馏的候选条数上限：落库是"读全库 + CAS 整片写"的串行链（每条一次），模型
+ *  输出不受我们控制——被注入或异常放大的输出可以拖住命令并让 profile 文档反复整写。
+ *  超出部分按"没写进去"回执（与拒写同一档），并留一条日志点名真实原因。 */
+const MAX_DIGEST_CANDIDATES = 20;
+
+/** 蒸馏候选的 detail 落库上限（字符）：同一批候选每条都会带一份 detail，整段 prompt
+ *  （含全部差评原文与项目教训）逐条存就是 N 份全文；写侧 capEvidence 还会再截一次，
+ *  而且它保的是开头——截剩的往往是分节标题，不是本条规则对应的证据。上报前先收敛。 */
+const MAX_CANDIDATE_DETAIL_CHARS = 400;
 
 /** 单条候选的落库回执：null = 落库抛 I/O 异常（已记日志），调用方记 dropped。 */
 type CandidateAttempt = Awaited<ReturnType<LessonStore["addCandidate"]>> | null;
@@ -358,7 +419,7 @@ async function attemptCandidate(
       category: entry.category,
       signature: entry.signature,
       statement: entry.statement,
-      detail: prompt,
+      detail: prompt.slice(0, MAX_CANDIDATE_DETAIL_CHARS),
       source: "lessons-digest",
     });
   } catch (error) {
@@ -382,8 +443,26 @@ async function persistCandidates(
     created: [],
     dropped: [],
   };
+  // 条数上限在解析结果上收口：超出部分按"没写进去"处理（与拒写同一档），回执里
+  // 它们就在 dropped 里，用户重试也无济于事——所以超额必须留一条日志点名真实原因。
+  const overflow = Math.max(0, parsed.length - MAX_DIGEST_CANDIDATES);
+  if (overflow > 0) {
+    console.warn(
+      `[lesson-loop] digest output: ${String(overflow)} candidate(s) beyond the per-run limit of ${String(MAX_DIGEST_CANDIDATES)} were not persisted`,
+    );
+  }
+  const accepted = parsed.slice(0, MAX_DIGEST_CANDIDATES);
+  // 超出上限的条目按"模型提出了、但没写进规则库"回执（与拒写同一档 dropped），
+  // 回显口径一致：那些卡同样不在库里。
+  for (const entry of parsed.slice(MAX_DIGEST_CANDIDATES)) {
+    acc.dropped.push({
+      category: entry.category,
+      signature: entry.signature,
+      statement: entry.statement,
+    });
+  }
   const addInOrder = async (index: number): Promise<void> => {
-    const entry = parsed[index];
+    const entry = accepted[index];
     if (entry === undefined) {
       return;
     }
@@ -421,15 +500,18 @@ export async function runDigest(
   options: DigestRunOptions,
 ): Promise<DigestResult> {
   const { messages, extra, events, timeoutMs } = options;
-  const provider = selection?.provider;
-  const model = selection?.model;
-  const reasoningEffort = selection?.reasoningEffort;
-  if (
-    provider === undefined ||
-    model === undefined ||
-    provider.trim().length === 0 ||
-    model.trim().length === 0
-  ) {
+  // 选择是宿主 currentSelection() 的跨边界交付（可能是缺位的半截对象）：类型面说的
+  // 是宿主的承诺，守卫只认 string。统一取 trim 后的值——既挡住 `{ provider: null,
+  // model: 5 }` 一类的穿透（它们会在 .trim() 处 TypeError，把一句未本地化的底层错误
+  // 甩给用户），也让 " p " 这种带空白的取值不再原样进 llm.stream。
+  const providerRaw = selection?.provider;
+  const modelRaw = selection?.model;
+  const effortRaw = selection?.reasoningEffort;
+  const provider = typeof providerRaw === "string" ? providerRaw.trim() : "";
+  const model = typeof modelRaw === "string" ? modelRaw.trim() : "";
+  const reasoningEffort =
+    typeof effortRaw === "string" && effortRaw.trim().length > 0 ? effortRaw.trim() : undefined;
+  if (provider.length === 0 || model.length === 0) {
     throw new Error(messages.errNoModelSelection);
   }
   // 交付面守卫：events 非数组（host 取数失败交回了别的形状）退空表继续跑，但必须留下
@@ -457,11 +539,18 @@ export async function runDigest(
   if (raw.length === 0) {
     throw new Error(messages.errEmptyDigest);
   }
-  const { rules: parsed, parsed: readable } = parseDigestOutput(raw);
+  const { rules: parsed, parsed: readable, rejected } = parseDigestOutput(raw);
   if (!readable) {
     // 模型给了读不懂的输出：不能走成"蒸馏出 0 条"的正常路径，那会让人以为模型
     // 确实没提出任何条目。
     throw new Error(messages.errUnreadableDigest);
+  }
+  // 模型提了条目、但全被类别白名单/正文校验拒收：回执与"真的没提出"同形（都是
+  // 0 条），没有这条日志，白名单漂移会长期隐形。
+  if (parsed.length === 0 && rejected > 0) {
+    console.warn(
+      `[lesson-loop] digest output: ${String(rejected)} candidate(s) proposed by the model were all rejected by category/statement validation`,
+    );
   }
   const { created, dropped } = await persistCandidates(store, project, parsed, prompt);
   return {

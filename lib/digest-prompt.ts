@@ -15,16 +15,23 @@ import { fill } from "./messages.ts";
 import type { LessonLoopMessages } from "./messages.ts";
 import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
+/** 背景去重的**事件扫描窗**（条数）：先取更宽的窗口再按 category+signature 去重——
+ *  只扫 limit 条事件时，热点签名（每拒绝一次就写一条的 dangerous-bash 一类）能把
+ *  窗口吃满，去重后只剩一行，其它更早但互不相同的教训全被挤掉；背景的多样性反而
+ *  被热点吃掉。扫描窗按解析缓存的承受力取，去重排序后的**行数**仍由 limit 收口。 */
+const DEDUP_SCAN_EVENTS = 400;
+
 /** 近期教训去重压背景：键 = 类别 + 签名（签名可空——存量行只校验了 typeof string，
  *  空签名合法），空签名回退到 detail 本身，避免一组空签名行互相吞掉；同键只留
- *  最新一条 detail，时间戳相同（同毫秒批量写入）时后出现者算"最新"。全量文本。 */
+ *  最新一条 detail，时间戳相同（同毫秒批量写入）时后出现者算"最新"。全量文本，
+ *  行数至多 limit（最近 N 条**不同**教训，不是最近 N 条事件内的去重）。 */
 export function lessonsBackground(
   store: LessonStore,
   project: string,
   messages: LessonLoopMessages,
   limit = 40,
 ): string {
-  const rows = store.recentLessons(project, limit);
+  const rows = store.recentLessons(project, DEDUP_SCAN_EVENTS);
   if (rows.length === 0) {
     return messages.lessonsNoHistory;
   }
@@ -34,7 +41,9 @@ export function lessonsBackground(
   >();
   for (const row of rows) {
     const sig = row.signature;
-    const key = `${row.category}\u0000${sig.length > 0 ? sig : row.detail}`;
+    // 键用 JSON 序列化拼装而不是分隔符连接：category 与 detail 都是上报方可控文本，
+    // 含 `\u0000` 时分隔符拼法会让两条不同的教训折进同一个键。
+    const key = JSON.stringify([row.category, sig.length > 0 ? sig : row.detail]);
     const prev = bySig.get(key);
     if (prev === undefined || row.ts >= prev.ts) {
       bySig.set(key, {
@@ -48,6 +57,7 @@ export function lessonsBackground(
   }
   const lines = [...bySig.values()]
     .toSorted((left, right) => right.ts - left.ts)
+    .slice(0, limit)
     .map(
       (row) =>
         // 四个字段全来自上报方（工具错误原文/模型输出），逐个定界后再拼背景条目行。
@@ -140,10 +150,31 @@ export interface DigestParseResult {
    *  true 但 rules 为空 = 合法的空数组（模型确实没提出条目）。两者必须可区分，
    *  否则输出损坏会被当成"蒸馏出 0 条"静默成功。 */
   readonly parsed: boolean;
+  /** 被白名单/校验拒收的条目数（取自"赢下"的那个切片）：0 条结果既可能是"模型
+   *  没提出"，也可能是"提了但全被拒收"——后者长期隐形会让类别白名单的漂移没人看见。 */
+  readonly rejected: number;
 }
 
 /** category 取值域的查询表（解析侧白名单；与上面那条渲染行同源）。 */
 const DIGEST_CATEGORY_SET: ReadonlySet<string> = new Set(DIGEST_CATEGORIES);
+
+/** 空签名时的兜底长度：从正文截一段当签名（按码点截，避免把代理对劈成孤立代理项）。 */
+const SIGNATURE_FALLBACK_MAX = 60;
+
+/** 按码点截断：字符串展开（[...text]）会被 no-misused-spread / prefer-spread 两条
+ *  规则各打一板，for..of 按码点迭代两边都不犯。 */
+function truncateCodePoints(text: string, max: number): string {
+  let out = "";
+  let counted = 0;
+  for (const char of text) {
+    if (counted >= max) {
+      return out;
+    }
+    out += char;
+    counted += 1;
+  }
+  return out;
+}
 
 /** 单条模型输出 → 候选：字段缺失、表外类别、空白 statement 一律拒收（返回 null）。
  *  表外类别丢弃的理由：category 是机器读的存储契约，落一张 `pass()` 永远匹配不到、
@@ -168,21 +199,27 @@ function ruleFromItem(item: unknown): DigestParsedRule | null {
     signature:
       typeof signature === "string" && signature.trim().length > 0
         ? signature
-        : statement.slice(0, 60),
+        : truncateCodePoints(statement.trim(), SIGNATURE_FALLBACK_MAX),
     statement,
   };
 }
 
-/** 已解析数组 → 候选数组（逐项过滤，非对象项跳过）。 */
-function rulesFromArray(parsed: readonly unknown[]): DigestParsedRule[] {
+/** 已解析数组 → 候选数组（逐项过滤，非对象项跳过），连同被拒收的条数。 */
+function rulesFromArray(parsed: readonly unknown[]): {
+  rules: DigestParsedRule[];
+  rejected: number;
+} {
   const rules: DigestParsedRule[] = [];
+  let rejected = 0;
   for (const item of parsed) {
     const rule = ruleFromItem(item);
-    if (rule !== null) {
+    if (rule === null) {
+      rejected += 1;
+    } else {
       rules.push(rule);
     }
   }
-  return rules;
+  return { rules, rejected };
 }
 
 /** 切片解析：能 JSON.parse 就交 unknown（不经 any 扩散）；语法坏回 null（null 永远
@@ -201,32 +238,62 @@ function asArrayOrUndefined(value: unknown): readonly unknown[] | undefined {
   return Array.isArray(value) ? value : undefined;
 }
 
-/** 逐档回退扫描：第一个能提出候选的切片赢（正文夹带的方括号、只含噪音的数组都被
- *  跳过）；一个都提不出时回 null。 */
-function rulesFromBestSlice(text: string): DigestParsedRule[] | null {
+/** 解析尝试上限：输入是模型输出原文（长度不受限），双指针逐切片 JSON.parse 的最坏
+ *  成本随方括号数量平方增长，而墙钟在解析前已经清掉——超限直接判不可解析（输出
+ *  本来就不正常），把主线程被卡住的代价挡在常数内。 */
+const MAX_PARSE_SLICES = 500;
+/** 单个切片的长度上限：合法的候选数组只有几 KB；超长切片只可能是把大半个输出
+ *  包进方括号的病态形态，跳过它比解析它便宜，也让上面那条尝试上限真正封顶。 */
+const MAX_SLICE_CHARS = 65_536;
+
+/** 逐档候选切片：每个 `[` 配其后的每个 `]`，按位置序交出（正文夹带的方括号被逐档
+ *  剥在外面）；超长切片不产出。 */
+function* candidateSlices(text: string): Generator<string> {
   for (let start = text.indexOf("["); start !== -1; start = text.indexOf("[", start + 1)) {
     for (let end = text.indexOf("]", start + 1); end !== -1; end = text.indexOf("]", end + 1)) {
-      // 这一档切不上（JSON 语法坏）就换下一个 `]` 再试（多候选切片）。
-      const parsed = asArrayOrUndefined(parseSlice(text.slice(start, end + 1)));
-      if (parsed !== undefined) {
-        const rules = rulesFromArray(parsed);
-        if (rules.length > 0) {
-          return rules;
-        }
+      if (end + 1 - start <= MAX_SLICE_CHARS) {
+        yield text.slice(start, end + 1);
       }
     }
   }
-  return null;
+}
+
+/** 逐档回退扫描：第一个能提出候选的切片赢（正文夹带的方括号、只含噪音的数组都被
+ *  跳过）；一个都提不出时回 null。 */
+function rulesFromBestSlice(text: string): { rules: DigestParsedRule[]; rejected: number } | null {
+  let attempts = 0;
+  // "解析成了合法数组但条目全被过滤"的那一档：后续切片都提不出候选时，它就是
+  // 最佳结果——rejected 计数要能带到日志（全拒收与"模型什么都没提"必须可区分）。
+  let parsedButEmpty: { rules: DigestParsedRule[]; rejected: number } | undefined;
+  for (const slice of candidateSlices(text)) {
+    attempts += 1;
+    if (attempts > MAX_PARSE_SLICES) {
+      return null;
+    }
+    // 这一档切不上（JSON 语法坏）就换下一个 `]` 再试（多候选切片）。
+    const parsed = asArrayOrUndefined(parseSlice(slice));
+    if (parsed !== undefined) {
+      const counted = rulesFromArray(parsed);
+      if (counted.rules.length > 0) {
+        return counted;
+      }
+      parsedButEmpty ??= { rules: [], rejected: counted.rejected };
+    }
+  }
+  return parsedButEmpty ?? null;
 }
 
 /** 首个能解析成数组的切片；找不到回 null（全部切片都切不上）。 */
 function firstArraySlice(text: string): readonly unknown[] | null {
-  for (let start = text.indexOf("["); start !== -1; start = text.indexOf("[", start + 1)) {
-    for (let end = text.indexOf("]", start + 1); end !== -1; end = text.indexOf("]", end + 1)) {
-      const parsed = asArrayOrUndefined(parseSlice(text.slice(start, end + 1)));
-      if (parsed !== undefined) {
-        return parsed;
-      }
+  let attempts = 0;
+  for (const slice of candidateSlices(text)) {
+    attempts += 1;
+    if (attempts > MAX_PARSE_SLICES) {
+      return null;
+    }
+    const parsed = asArrayOrUndefined(parseSlice(slice));
+    if (parsed !== undefined) {
+      return parsed;
     }
   }
   return null;
@@ -241,7 +308,8 @@ function firstArraySlice(text: string): readonly unknown[] | null {
  * （输出损坏/被截断）。
  */
 export function parseDigestOutput(text: string): DigestParseResult {
-  const rules = rulesFromBestSlice(text) ?? [];
+  const best = rulesFromBestSlice(text);
+  const rules = best?.rules ?? [];
   const readable = rules.length > 0 || firstArraySlice(text) !== null;
-  return { rules, parsed: readable };
+  return { rules, parsed: readable, rejected: best?.rejected ?? 0 };
 }

@@ -10,6 +10,7 @@ import type { OxlintOverride } from "oxlint";
  *  mkdirSync → lib/lesson-jsonl.ts（流水文件落盘前补建目录）。 */
 const PROD_SYNC_WRITES: string[] = [
   "appendFileSync",
+  "chmodSync",
   "mkdirSync",
   "renameSync",
   "rmSync",
@@ -17,9 +18,9 @@ const PROD_SYNC_WRITES: string[] = [
 ];
 
 /** 仅测试用：用例在临时目录里造夹具（mkdtempSync）、把锁文件 mtime 做旧驱动
- *  「陈旧锁接管」分支（utimesSync）。生产代码不豁免——lib/、src/、host.ts 再出现
- *  这两个调用会被 lint 拦下。 */
-const TEST_ONLY_SYNC_WRITES: string[] = ["mkdtempSync", "utimesSync"];
+ *  「陈旧锁接管」分支（utimesSync）、门禁的源码收集按 lstatSync 跳过软链。
+ *  生产代码不豁免——lib/、src/、host.ts 再出现这些调用会被 lint 拦下。 */
+const TEST_ONLY_SYNC_WRITES: string[] = ["lstatSync", "mkdtempSync", "utimesSync"];
 
 /** test/ 的覆盖规则整体替换基线那条 node/no-sync，故只读白名单必须一起带上，
  *  否则用例里的 readFileSync/statSync 一类会跟着红。 */
@@ -38,5 +39,9 @@ const TEST_SYNC_OVERRIDE: OxlintOverride = {
 export default definePluginConfig({
   syncWrites: PROD_SYNC_WRITES,
   extraOverrides: [TEST_SYNC_OVERRIDE],
+  // prefer-lowercase-title 的免检前缀（shared 基线的 allowedPrefixes 口径）：四项都是
+  // 本仓文案/断言里以大写开头的技术名——Config（卡片标题字面量）、DSH_HOME（环境变量）、
+  // JSONL / PLUGIN_NAME（本仓术语）。非技术名不该借这条豁免留在标题里（基线 note 的
+  // 同一条取舍），新增大写开头的标题先问"它是不是技术名"。
   titlePrefixes: ["Config", "DSH_HOME", "JSONL", "PLUGIN_NAME"],
 });

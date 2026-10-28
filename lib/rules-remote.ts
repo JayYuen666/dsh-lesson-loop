@@ -29,6 +29,7 @@ import { fill } from "./messages.ts";
 import type { LessonLoopMessages } from "./messages.ts";
 import { RULES_REMOTE_NAMESPACE } from "./rules-shape.ts";
 import type {
+  LessonView,
   LessonsRequest,
   LessonsResult,
   RuleActionName,
@@ -65,6 +66,16 @@ export type RulesStore = Pick<
   "rules" | "recentLessons" | "ruleAction" | "isUndeterminable"
 >;
 
+/** events 流水读面的条数口径：缺省/≤0 取默认条数，显式请求封顶——事件流水只追加不
+ *  修剪，"缺省 = 全量"会让一次调用把整份流水（含每条工具输出全文）序列化过网关，
+ *  载荷随使用时长线性增长；而这枚读面挂在公开命名空间上，第三方客户端按默认参数
+ *  调用就该拿到有界的载荷。存储侧的零截断承诺不受影响（ lesson-jsonl 层不截断）。 */
+const LESSONS_DEFAULT_LIMIT = 50;
+const LESSONS_MAX_LIMIT = 500;
+/** 单条流水 detail 的下发上限（字符）：detail 是门禁输出/拒绝理由原文，可能含路径、
+ *  命令串等敏感面，下发前定长截断；与规则卡证据的 detail 上限同量级。 */
+const MAX_LESSON_DETAIL_CHARS = 400;
+
 /** 规则评审读面的全部依赖。 */
 export interface LessonRulesDeps {
   store: RulesStore;
@@ -87,6 +98,16 @@ function ruleViewOf(store: RulesStore, rule: RuleCard): RuleView {
 }
 
 /**
+ * 编译期钉子：RuleView 逐枚重述只防"改名/删字段"，而 ruleViewOf 用 rest 摊开——TS 对
+ * spread 属性**不做**多余属性检查，RuleCard 将来新增的任何字段（体积大或含敏感面的
+ * 尤其危险）会被 `...rest` 静默带上网线。断言"除刻意剔除的 evidence 外，RuleCard 的
+ * 键集 ⊆ RuleView 的键集"；失败时本类型是 never，下一行的赋值当场编译红——新增字段
+ * 必须先在 rules-shape.ts 的 RuleView 里显式表态（投影或显式排除）。
+ */
+type UnviewedCardKeys = Exclude<keyof RuleCard, keyof RuleView | "evidence">;
+export const noUnviewedCardKeys: [UnviewedCardKeys] extends [never] ? true : never = true;
+
+/**
  * 规则列表的 project 过滤：缺省 = 全量。
  * 入参来自网线（源模式已按签名解出），仍按 unknown 面收——类型说的是网关的承诺，
  * 交付由守卫负责。
@@ -97,16 +118,48 @@ function projectOf(request: unknown): string | undefined {
 }
 
 /**
- * lessons 的 limit 归一：≤ 0 / 非数 / 缺省一律 0（= 全量，内容零截断）。
- * 旧 HTTP 面的 `Number(...)` 那套字符串解析随 query 一起消失；这里只认数字，
- * 因为 descriptor 的 strict codec 已经在客户端把非数字挡在网线之前。
+ * lessons 的 limit 归一：≤ 0 / 非数 / 缺省一律取默认条数，显式请求封顶在
+ * {@link LESSONS_MAX_LIMIT}。旧 HTTP 面的 `Number(...)` 那套字符串解析随 query 一起消失；
+ * 这里只认数字，因为 descriptor 的 strict codec 已经在客户端把非数字挡在网线之前。
  */
 function limitOf(request: unknown): number {
   const raw = isRecord(request) ? request["limit"] : undefined;
   if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
-    return 0;
+    return LESSONS_DEFAULT_LIMIT;
   }
-  return Math.floor(raw);
+  return Math.min(Math.floor(raw), LESSONS_MAX_LIMIT);
+}
+
+/**
+ * 流水记录的**读面投影**：detail 定长截断、不外借原始 evidence（它带着工具输出原文，
+ * 与规则卡的 evidence 同一条剔除理由）。投影逐字段写而不是展开——`LessonRecord`
+ * 将来新增的敏感字段不会因为 `...rest` 静默上网线。
+ */
+function lessonViewOf(record: {
+  ts: number;
+  source: string;
+  category: string;
+  project: string;
+  cwd?: string;
+  sessionId?: string;
+  turn?: number;
+  signature: string;
+  detail: string;
+}): LessonView {
+  return {
+    ts: record.ts,
+    source: record.source,
+    category: record.category,
+    project: record.project,
+    ...(record.cwd === undefined ? {} : { cwd: record.cwd }),
+    ...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+    ...(record.turn === undefined ? {} : { turn: record.turn }),
+    signature: record.signature,
+    detail:
+      record.detail.length > MAX_LESSON_DETAIL_CHARS
+        ? `${record.detail.slice(0, MAX_LESSON_DETAIL_CHARS)}…`
+        : record.detail,
+  };
 }
 
 /**
@@ -129,9 +182,11 @@ export class LessonRulesService extends TypertRemoteService {
   public stats(): Record<string, unknown> {
     const rules = this.deps.store.rules();
     return {
-      ok: true,
+      // ok 写在展开之后：stats 快照对返回键没有约束，快照哪天带上 ok:false/error，
+      // 一次正常轮询就会被卡片判成失败——成功码不许被展开覆盖。
       ...this.deps.stats(rules),
       rules: rules.map((rule) => ruleViewOf(this.deps.store, rule)),
+      ok: true,
     };
   }
 
@@ -145,10 +200,13 @@ export class LessonRulesService extends TypertRemoteService {
     return { ok: true, rules };
   }
 
-  /** 事件流水只读投影，零写面。 */
+  /** 事件流水只读投影（detail 截断、不外借原始 evidence），零写面；条数有默认值与
+   *  上限（见 limitOf），detail 是门禁输出/命令串一类的敏感面，不设界等于把整份流水
+   *  一次性序列化给浏览器。 */
   public lessons(request: LessonsRequest): LessonsResult {
     const lessons = this.deps.store.recentLessons(projectOf(request), limitOf(request));
-    return { ok: true, count: lessons.length, lessons };
+    const views = lessons.map((lesson) => lessonViewOf(lesson));
+    return { ok: true, count: views.length, lessons: views };
   }
 
   /**
@@ -176,11 +234,22 @@ export class LessonRulesService extends TypertRemoteService {
       if (outcome === "not-found") {
         return { ok: false, error: messages.errRuleNotFound, status: 404 };
       }
+      if (outcome === "invalid-statement") {
+        // arm/edit 带空正文被库拒了：库未动。回 400 而不是 200——卡片显示"成功"
+        // 而正文/状态一格未动，是"装作生效"的那类谎报。
+        return { ok: false, error: messages.errStatementRequired, status: 400 };
+      }
+      if (outcome === "statement-too-long") {
+        // armed 正文整段注入提示词：超限时库同样没动，回 400 并点名可调的设置项。
+        return { ok: false, error: messages.errStatementTooLong, status: 400 };
+      }
       if (outcome === "persist-failed") {
         // 回显走消息表（卡片直接显示 error 串）：PERSIST_FAILED 是 report() 回执的内部
         // 判等码，不是给人读的文案——把它原样贴给用户，用户看到的是一句没有出处的话。
         return { ok: false, error: messages.errRulePersistFailed, status: 500 };
       }
+      // "unchanged"（edit 与现文相同）请求的终态本就成立，按成功回执——卡片刷新后
+      // 看到的正文与用户提交的一致。
       return { ok: true, id, action };
     } catch (error) {
       // 兜住每一处抛错：漏到网关只会让卡片显示一句英文的内部错误，而这句是本包的话。

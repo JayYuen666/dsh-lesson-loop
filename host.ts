@@ -49,7 +49,7 @@ import type { SystemPrompt } from "@deepseek-ai/dsh-system-prompt";
 import type { TimerService } from "@deepseek-ai/cordis-plugin-timer";
 // catch 值转日志文本：直接用 shared 的 errorText。
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
-import { LessonStore, deriveProject } from "./lib/lesson-store.ts";
+import { DEFAULT_MAX_STATEMENT_CHARS, LessonStore, deriveProject } from "./lib/lesson-store.ts";
 import type {
   LessonRecord,
   LessonSource,
@@ -248,7 +248,8 @@ function isHostCtx(value: unknown): value is HostCtx {
 export type SettingsProvider = SettingsCasSurface;
 
 /**
- * `ctx.inject(deps, callback)` 回调收到的子上下文（本包只用到 settings + effect）。
+ * `ctx.inject(deps, callback)` 回调收到的子上下文（本包用到 settings + effect，以及
+ * commands / systemPrompt / timer 三个可选服务的就绪回调）。
  * 与 SettingsProvider 分开声明是有意的：子上下文里的 settings 只有页面策略要调，
  * 规则库那条读写链走的是主 ctx 的 service 实例。
  */
@@ -257,7 +258,11 @@ interface InjectedCtx {
    *  （`configure(presentation, owner?: Fiber)`，dsh-settings index.d.ts:80-82）更松，
    *  owner 传错东西编译期抓不到。 */
   settings: Pick<SettingsForms, "configure">;
-  effect: (factory: () => (() => void) | undefined, label?: string) => void;
+  /** 服务就绪回调里对三个可选服务只做守卫收窄，签名面各自另有 isXxx 判据。 */
+  commands: unknown;
+  systemPrompt: unknown;
+  timer: unknown;
+  effect: (factory: () => (() => void | Promise<void>) | undefined, label?: string) => void;
 }
 
 /**
@@ -288,6 +293,8 @@ interface ResolvedSettings {
   decayDays: number;
   reviveThreshold: number;
   maxLessonsBytes: number;
+  /** 规则正文写入上限（字符；arm/edit 与继承存量正文时判）。 */
+  maxStatementChars: number;
   /** 部署值（非 volatile）：/lessons-digest 一次蒸馏的墙钟（毫秒）。 */
   digestTimeoutMs: number;
   /** 部署值（非 volatile）：周期衰减的武装间隔（毫秒）。 */
@@ -441,6 +448,9 @@ export interface Config {
   reviveThreshold: Volatile<number>;
   /** lessons.jsonl 磁盘保险丝（字节）。0 = 不设上限（默认；内容零截断）。 */
   maxLessonsBytes: Volatile<number>;
+  /** 规则正文写入上限（字符）。armed 正文整段注入每次会话的提示词；超出时 arm/edit
+   *  被拒（蒸馏建候选不受限，人审改写后再 arm）。 */
+  maxStatementChars: Volatile<number>;
   /**
    * 规则卡库（人工升格的用户数据）。本包**不从这里读**：读要走 `describe()` 才能同时拿到
    * revision（CAS 条件），见 lib/rules-namespace.ts 的 createRulesRepository；这里列出来是
@@ -501,6 +511,14 @@ const configSchema = Schema.object({
   maxLessonsBytes: Schema.natural()
     .max(1024 * 1024 * 1024)
     .default(0)
+    .volatile(),
+  // 规则正文的写入上限：armed 正文整段注入提示词，没有这条闸门时一次写请求就能把它塞满。
+  // 默认与 lib/lesson-store.ts 的 DEFAULT_MAX_STATEMENT_CHARS 同源；硬上界防一个离谱的
+  // 配置把闸门变成空门。
+  maxStatementChars: Schema.natural()
+    .min(1)
+    .max(100_000)
+    .default(DEFAULT_MAX_STATEMENT_CHARS)
     .volatile(),
   // 0.2.1-alpha.2 只有"一个条目一份 Config"，规则库因此与开关同段（旧的第二段 `lesson-loop-rules`
   // 无处安放）。`.loose()` / `.default([])` / 读侧"user 层坏形状即不可用"三段闸门各自的
@@ -587,11 +605,6 @@ type SettledSessions = Map<string, true>;
  */
 type MessagesOf = () => LessonLoopMessages;
 
-/** commands 服务缺失只 warn 一次（模块级：一次进程内多次装载不刷屏）。
- *  位装在 const 盒子里而不是裸 `let`：模块级可变声明正是"谁都能改"的那种面，
- *  盒子只暴露这一位，改的对象仍是同一份进程内状态。 */
-const commandsWarnState: { warned: boolean } = { warned: false };
-
 /** 数组性判据（**不是** type predicate，故不产生收窄；理由见 digestEvents 内注释）。 */
 function isArrayDelivery(value: unknown): boolean {
   return Array.isArray(value);
@@ -647,100 +660,102 @@ function registerDigestCommand(
   settingsOf: SettingsOf,
   messagesOf: MessagesOf,
 ): void {
-  svc.effect(() => {
-    const commandsRaw = svc.get?.("commands");
-    if (!isCommandsService(commandsRaw)) {
-      if (!commandsWarnState.warned) {
-        commandsWarnState.warned = true;
-        console.warn("[lesson-loop] commands service unavailable — /lessons-digest not registered");
+  // commands 服务晚于本条目到位是常态（兄弟条目装载次序/热插拔）：effect 里 get 一次
+  // 只能看见"此刻"，晚到即永久注册不上。inject 让宿主在服务就绪时回调（cordis 注入
+  // 语义，applySettingsPagePolicy 同款）。缺席语义随之从"warn 一次"变成"静默等"——
+  // "还没来"与"永远不来"在 apply 时刻不可区分，为可能晚到的服务打缺席告警是误报。
+  svc.inject(["commands"], (child) => {
+    child.effect(() => {
+      const commandsRaw = child.commands;
+      if (!isCommandsService(commandsRaw)) {
+        return noDisposer;
       }
-      return noDisposer;
-    }
-    const commands = commandsRaw;
-    const description = messagesOf().digestCommandDescription;
-    return commands.register({
-      name: "lessons-digest",
-      description,
-      input: { hint: messagesOf().digestInputHint },
-      recordInput: false,
-      handler: async (invocationRaw) => {
-        const messages = messagesOf();
-        const cfg = settingsOf();
-        if (!cfg.enabled || !cfg.reportEnabled) {
-          return {
-            kind: "error" as const,
-            text: messages.digestRejectedDisabled,
-          };
-        }
-        const agent = fieldOf(invocationRaw, "agent");
-        const sessionRaw = isRecord(agent) ? fieldOf(agent, "session") : undefined;
-        if (!isSessionLike(sessionRaw)) {
-          return {
-            kind: "error" as const,
-            text: messages.digestRejectedNoSession,
-          };
-        }
-        const session = sessionRaw;
-        const llmRaw = svc.get?.("llm");
-        if (!isLlmService(llmRaw)) {
-          return { kind: "error" as const, text: messages.digestRejectedNoLlm };
-        }
-        const llm = llmRaw;
-        const modelSvcRaw = svc.get?.("agentDefaultModel");
-        const selection = isAgentDefaultModel(modelSvcRaw)
-          ? modelSvcRaw.currentSelection()
-          : undefined;
-        const rawInput = fieldOf(invocationRaw, "rawInput");
-        const extra =
-          typeof rawInput === "string" && rawInput.trim().length > 0 ? rawInput : undefined;
-        // 本会话事件流经**官方** `ctx.sessionQuery.observeSession()` 取（见上面
-        // SessionQueryFace 的注记）：旧写法是 `session.snapshotEvents()`，而官方把那条同步读
-        // 面标了 `@deprecated` 并禁止新增调用。取不到（服务缺位 / 会话已卸载 / 品牌位读不出 /
-        // 观察抛错）一律退**空背景**——蒸馏照跑，只是少了差评证据；命令绝不能因为读面缺失而炸。
-        const events = await digestEvents(svc, session);
-        try {
-          const result = await runDigest(store, session, llm, selection, {
-            messages,
-            events,
-            timeoutMs: settingsOf().digestTimeoutMs,
-            ...(extra === undefined ? {} : { extra }),
-          });
-          if (result.created.length === 0 && result.dropped.length === 0) {
-            return {
-              kind: "success" as const,
-              text: fill(messages.digestNoNewRules, { count: result.feedbackCount }),
-            };
-          }
-          // 没落盘的那批**不能**并进"已蒸馏"：库里没有那些卡，回显成成功会让人去卡片上找
-          // 一张不存在的卡（落盘失败与成功因此是两条回显，见 lib/digest.ts 的 acc）。
-          if (result.dropped.length > 0) {
+      const commands = commandsRaw;
+      const description = messagesOf().digestCommandDescription;
+      return commands.register({
+        name: "lessons-digest",
+        description,
+        input: { hint: messagesOf().digestInputHint },
+        recordInput: false,
+        handler: async (invocationRaw) => {
+          const messages = messagesOf();
+          const cfg = settingsOf();
+          if (!cfg.enabled || !cfg.reportEnabled) {
             return {
               kind: "error" as const,
-              text: fill(messages.digestPartialFailure, {
-                count: result.created.length,
-                failed: result.dropped.length,
-              }),
+              text: messages.digestRejectedDisabled,
             };
           }
-          const lines = result.created.map((rule, index) =>
-            digestCreatedLine(rule, index + 1, messages),
-          );
-          return {
-            kind: "success" as const,
-            text: fill(messages.digestCreated, {
-              count: result.created.length,
-              lines: lines.join("\n"),
-            }),
-          };
-        } catch (error) {
-          return {
-            kind: "error" as const,
-            text: fill(messages.digestFailed, { reason: errorText(error) }),
-          };
-        }
-      },
-    });
-  }, "lesson-loop: /lessons-digest command");
+          const agent = fieldOf(invocationRaw, "agent");
+          const sessionRaw = isRecord(agent) ? fieldOf(agent, "session") : undefined;
+          if (!isSessionLike(sessionRaw)) {
+            return {
+              kind: "error" as const,
+              text: messages.digestRejectedNoSession,
+            };
+          }
+          const session = sessionRaw;
+          const llmRaw = svc.get?.("llm");
+          if (!isLlmService(llmRaw)) {
+            return { kind: "error" as const, text: messages.digestRejectedNoLlm };
+          }
+          const llm = llmRaw;
+          const modelSvcRaw = svc.get?.("agentDefaultModel");
+          const selection = isAgentDefaultModel(modelSvcRaw)
+            ? modelSvcRaw.currentSelection()
+            : undefined;
+          const rawInput = fieldOf(invocationRaw, "rawInput");
+          const extra =
+            typeof rawInput === "string" && rawInput.trim().length > 0 ? rawInput : undefined;
+          // 本会话事件流经**官方** `ctx.sessionQuery.observeSession()` 取（见上面
+          // SessionQueryFace 的注记）：旧写法是 `session.snapshotEvents()`，而官方把那条同步读
+          // 面标了 `@deprecated` 并禁止新增调用。取不到（服务缺位 / 会话已卸载 / 品牌位读不出 /
+          // 观察抛错）一律退**空背景**——蒸馏照跑，只是少了差评证据；命令绝不能因为读面缺失而炸。
+          const events = await digestEvents(svc, session);
+          try {
+            const result = await runDigest(store, session, llm, selection, {
+              messages,
+              events,
+              timeoutMs: settingsOf().digestTimeoutMs,
+              ...(extra === undefined ? {} : { extra }),
+            });
+            if (result.created.length === 0 && result.dropped.length === 0) {
+              return {
+                kind: "success" as const,
+                text: fill(messages.digestNoNewRules, { count: result.feedbackCount }),
+              };
+            }
+            // 没落盘的那批**不能**并进"已蒸馏"：库里没有那些卡，回显成成功会让人去卡片上找
+            // 一张不存在的卡（落盘失败与成功因此是两条回显，见 lib/digest.ts 的 acc）。
+            if (result.dropped.length > 0) {
+              return {
+                kind: "error" as const,
+                text: fill(messages.digestPartialFailure, {
+                  count: result.created.length,
+                  failed: result.dropped.length,
+                }),
+              };
+            }
+            const lines = result.created.map((rule, index) =>
+              digestCreatedLine(rule, index + 1, messages),
+            );
+            return {
+              kind: "success" as const,
+              text: fill(messages.digestCreated, {
+                count: result.created.length,
+                lines: lines.join("\n"),
+              }),
+            };
+          } catch (error) {
+            return {
+              kind: "error" as const,
+              text: fill(messages.digestFailed, { reason: errorText(error) }),
+            };
+          }
+        },
+      });
+    }, "lesson-loop: /lessons-digest command");
+  });
 }
 
 /** 启动时的存量碎片迁移：路径型签名的候选/armed 碎片并入类别级
@@ -840,15 +855,42 @@ function settleOpenSessionsOnDispose(args: {
  * 规则摘要（根会话；项目按 cwd 归因；全文不截断）。摘要帧的骨架行由消息表给，
  * 规则正文（statement）原样透传——那是规则库里的用户数据，不随界面语言改写。
  */
+/**
+ * 预种（或刷新）一条会话台账。已清算的会话不再预种：这条台账的下一 dispose 边
+ * countExposure 已是 false、passed 也进不来（recordPass 的 hasSettled 判据），重建只会
+ * 把注定不会被清算的死条目塞回容量的台账里。
+ */
+function seedSessionWatch(
+  sessionWatch: SessionWatch,
+  pruneWatch: () => void,
+  hasSettled: (sessionId: string) => boolean,
+  sid: string | undefined,
+  project: string,
+): void {
+  if (sid === undefined) {
+    return;
+  }
+  const seeded = sessionWatch.get(sid);
+  if (seeded === undefined) {
+    if (!hasSettled(sid)) {
+      sessionWatch.set(sid, { project, violated: new Set(), passed: new Set() });
+    }
+  } else {
+    seeded.project = project;
+  }
+  pruneWatch();
+}
+
 function onSessionStart(args: {
   agent: StartAgent;
   settingsOf: SettingsOf;
   store: LessonStore;
   sessionWatch: SessionWatch;
   pruneWatch: () => void;
+  hasSettled: (sessionId: string) => boolean;
   messages: LessonLoopMessages;
 }): void {
-  const { agent, settingsOf, store, sessionWatch, pruneWatch, messages } = args;
+  const { agent, settingsOf, store, sessionWatch, pruneWatch, hasSettled, messages } = args;
   try {
     const cfg = settingsOf();
     if (!cfg.enabled) {
@@ -857,15 +899,7 @@ function onSessionStart(args: {
     const { session } = agent;
     const sid = typeof session?.id === "string" ? session.id : undefined;
     const project = deriveProject(session?.header?.cwd);
-    if (sid !== undefined) {
-      const seeded = sessionWatch.get(sid);
-      if (seeded === undefined) {
-        sessionWatch.set(sid, { project, violated: new Set(), passed: new Set() });
-      } else {
-        seeded.project = project;
-      }
-      pruneWatch();
-    }
+    seedSessionWatch(sessionWatch, pruneWatch, hasSettled, sid, project);
     if (!cfg.injectEnabled) {
       return;
     }
@@ -971,6 +1005,9 @@ interface ApplyRuntime {
   pruneWatch: () => void;
   /** 登记一次清算，重复会话返回 false（见 createSessionWatch）。 */
   markSettled: (sessionId: string) => boolean;
+  /** 撤销清算标记：清算没落盘时回滚，让 resume 出来的下一边带着全量台账重试
+   *  （见 onDisposedSession）。 */
+  unsettle: (sessionId: string) => void;
   /** 这条会话是否已清算；两处记账入口共用它决定要不要重建条目。 */
   hasSettled: (sessionId: string) => boolean;
   syncStore: () => ResolvedSettings;
@@ -1003,6 +1040,7 @@ function settingsSnapshot(config: Config): ResolvedSettings {
     decayDays: config.decayDays.get(),
     reviveThreshold: config.reviveThreshold.get(),
     maxLessonsBytes: config.maxLessonsBytes.get(),
+    maxStatementChars: config.maxStatementChars.get(),
     // 三枚是**非 volatile** 的部署值：cordis 交进来的是值而不是引用（改值随重启生效）
     // ——带 .get() 会读到一个函数。
     digestTimeoutMs: config.digestTimeoutMs,
@@ -1027,6 +1065,7 @@ function buildLessonStore(
     // 起草规则卡正文用的模板表：给取用口而非当下那份，换语言即刻生效（不重启）。
     messages: localeMessages,
     maxLessonsBytes: boot.maxLessonsBytes,
+    maxStatementChars: boot.maxStatementChars,
     promoteThreshold: boot.promoteThreshold,
     demoteThreshold: boot.demoteThreshold,
     demoteMinSamples: boot.demoteMinSamples,
@@ -1069,6 +1108,7 @@ function createSessionWatch(): {
   pruneWatch: () => void;
   hasSettled: (sessionId: string) => boolean;
   markSettled: (sessionId: string) => boolean;
+  unsettle: (sessionId: string) => void;
 } {
   const sessionWatch: SessionWatch = new Map();
   /**
@@ -1096,7 +1136,9 @@ function createSessionWatch(): {
    * 一轮一条），而同一 durable 会话每被 resume 一次就重走一轮。只按 disposed 边数清算，
    * samples 数出来的是"重开过几次"，而它的语义是"这条规则在场几场会话"。
    *
-   * 容量与台账同口径：超上限丢最旧，防长驻进程无界。
+   * 容量与台账同口径：超上限丢最旧，防长驻进程无界。一个可观测的后果是：被丢出集合的
+   * 已清算会话若再次 dispose，会被当成"首个边"重新计一次 exposure——这是有界内存换来的
+   * 已知取舍（test/host.test.ts 钉着同一句话），不是无界正确性的缺陷。
    */
   const settledSessions: SettledSessions = new Map();
   return {
@@ -1108,6 +1150,11 @@ function createSessionWatch(): {
      * 已结束的会话再算一次。
      */
     hasSettled: (sessionId: string): boolean => settledSessions.has(sessionId),
+    /** 撤销清算标记（清算没落盘时的回滚，见 onDisposedSession）：下一 dispose 边
+     *  重新按"首个边"清算。 */
+    unsettle: (sessionId: string): void => {
+      settledSessions.delete(sessionId);
+    },
     /**
      * 登记一次清算；首次返回 `true`（该清算），重复返回 `false`（跳过）。
      */
@@ -1138,6 +1185,7 @@ function syncStoreFrom(store: LessonStore, settingsOf: SettingsOf): ResolvedSett
     decayDays: cfg.decayDays,
     reviveThreshold: cfg.reviveThreshold,
     maxLessonsBytes: cfg.maxLessonsBytes,
+    maxStatementChars: cfg.maxStatementChars,
   });
   return cfg;
 }
@@ -1145,9 +1193,10 @@ function syncStoreFrom(store: LessonStore, settingsOf: SettingsOf): ResolvedSett
 /**
  * 把这次命中的 armed 规则记进会内台账，供收尾清算判"本会话违规过"。
  *
- * 条目已被清算时**不重建**：那说明会话在 report 的 await 期间结束了。重建出来的条目要
- * 等到进程退出才清算，等于把一场已结束的会话又算一次 exposure。违规计数本身已在
- * `store.report` 里落定，这里丢掉的只是"本会话违规过"这条标记。
+ * 条目已被清算时**不重建**（与 recordPass 的 hasSettled 判据同源）：那说明会话在 report
+ * 的 await 期间结束了。重建出来的条目要等到进程退出才清算，等于把一场已结束的会话又算
+ * 一次 exposure。违规计数本身已在 `store.report` 里落定，这里丢掉的只是"本会话违规过"
+ * 这条标记（它在收尾清算里只作排除用，不另计任何数）。
  */
 function noteViolationForSettle(
   runtime: ApplyRuntime,
@@ -1156,6 +1205,9 @@ function noteViolationForSettle(
   ruleId: string | undefined,
 ): void {
   if (sessionId === undefined || ruleId === undefined) {
+    return;
+  }
+  if (runtime.hasSettled(sessionId)) {
     return;
   }
   const entry = runtime.sessionWatch.get(sessionId);
@@ -1194,8 +1246,12 @@ async function reportLesson(
       // 日志要能分辨"哪一条命令、哪一类命中"。规则正文是**同一张卡共用**的长文案，
       // 截断后每条都一模一样，读日志的人分不出这是 74 次里的哪一次；真正区分它们的是
       // 这一条上报的原始签名（卡片上的签名是折叠后的稳定键，同键的每条都一样）。
+      // 原始签名可能内嵌路径/命令参数，日志里截到 64 字符——完整原文本就按设计落在
+      // 事件流水与证据里，日志只留辨认所需的头部。
+      const rawText =
+        input.signature.length > 64 ? `${input.signature.slice(0, 64)}…` : input.signature;
       const rawSignature =
-        input.signature === receipt.violationOf.signature ? "" : ` raw=${input.signature}`;
+        input.signature === receipt.violationOf.signature ? "" : ` raw=${rawText}`;
       console.warn(
         `[lesson-loop] armed rule violated: ${receipt.violationOf.category} / ${receipt.violationOf.signature}（violation=${receipt.violationOf.violation}${rawSignature}）`,
       );
@@ -1231,7 +1287,9 @@ function recordPass(runtime: ApplyRuntime, input: LessonPassInput): { ok: boolea
       // 已清算的会话不重建条目：那说明会话在 store.pass 之前就结束了。重建出来的条目要
       // 等到进程退出才清算，那一轮 countExposure 为 false 而 passed 非空，会给一条
       // 实际违反过的规则记一次 suppressed——分母多一个，与本次去重的目的相反。
-      // 与 noteViolationForSettle 共用同一个判据，避免两条写入口各行其是。
+      // 与 noteViolationForSettle 共用同一个判据（hasSettled），避免两条写入口各行其是。
+      // 取舍明说：resume 出来的同一 durable 会话在宿主侧没有"复活"信号可依，它的 pass
+      // 一律不计 suppressed——宁少记，不给已结束的会话补账。
       if (runtime.hasSettled(input.sessionId)) {
         return { ok: true };
       }
@@ -1274,6 +1332,7 @@ function statsSnapshot(
       demoteThreshold: cfg.demoteThreshold,
       decayDays: cfg.decayDays,
       maxLessonsBytes: cfg.maxLessonsBytes,
+      maxStatementChars: cfg.maxStatementChars,
       // 注入条数上限与它兜的那条缺口一起暴露：卡片读得到才知道"还有更老的规则没被注入"。
       maxInjectedRules: cfg.maxInjectedRules,
     },
@@ -1334,6 +1393,7 @@ function onAgentCreated(runtime: ApplyRuntime, payloadRaw: AgentCreatedPayload):
     store,
     sessionWatch,
     pruneWatch,
+    hasSettled: runtime.hasSettled,
     messages: localeMessages(),
   });
 }
@@ -1344,7 +1404,7 @@ function onAgentCreated(runtime: ApplyRuntime, payloadRaw: AgentCreatedPayload):
  *  按 durable session 身份去重：`session/disposed` 每条 store 条目生命周期各发一次，
  *  同一个会话每被 resume 一次就多一条边；不去重则 samples 数的是"重开过几次"。 */
 function onDisposedSession(runtime: ApplyRuntime, sessionRaw: unknown): void {
-  const { store, settingsOf, sessionWatch, markSettled } = runtime;
+  const { store, settingsOf, sessionWatch, pruneWatch, markSettled, unsettle } = runtime;
   if (!settingsOf().enabled) {
     return;
   }
@@ -1356,26 +1416,51 @@ function onDisposedSession(runtime: ApplyRuntime, sessionRaw: unknown): void {
   const firstSettle = markSettled(sid);
   const watchEntry = sessionWatch.get(sid);
   sessionWatch.delete(sid);
-  if (watchEntry !== undefined) {
-    void settleQuietly(
-      store.sessionEnded(
-        watchEntry.project,
-        watchEntry.violated,
-        watchEntry.passed,
+  // 清算回执落到"真写进了库"之后：写失败（CAS 耗尽/端口拒写/读不可信）时把清算标记
+  // 与台账条目一并还原——只回滚标记不还原条目的话，resume 出来的下一边读到的是空表，
+  // samples 照样永久丢失（"retry on the next session end" 的承诺只有在数据还在时才
+  // 成立）。旧替身若回传 undefined（按"已落定"读），不触发回滚。
+  const restoreOnFailure = (persisted: boolean | undefined): void => {
+    if (persisted !== false) {
+      return;
+    }
+    unsettle(sid);
+    if (watchEntry !== undefined) {
+      sessionWatch.set(sid, watchEntry);
+      pruneWatch();
+    }
+  };
+  // 事件处理器保持同步；落库的等待与失败回滚收进一只自执行的异步体（账本的
+  // prefer-await-to-then 不认 then/catch 链），错误口径同 settleQuietly。
+  void (async (): Promise<void> => {
+    try {
+      if (watchEntry !== undefined) {
+        const persisted = await store.sessionEnded(
+          watchEntry.project,
+          watchEntry.violated,
+          watchEntry.passed,
+          sid,
+          firstSettle,
+        );
+        restoreOnFailure(persisted);
+        return;
+      }
+      // 兜底：无 start 预种（插件中途装载/旧档续跑）→ 从 header 回填项目，按零复发/零 pass 清算。
+      const header = fieldOf(sessionRaw, "header");
+      const headerCwd = isRecord(header) ? fieldOf(header, "cwd") : undefined;
+      const persisted = await store.sessionEnded(
+        deriveProject(headerCwd),
+        new Set(),
+        new Set(),
         sid,
         firstSettle,
-      ),
-      SESSION_ENDED_FAILURE_LABEL,
-    );
-    return;
-  }
-  // 兜底：无 start 预种（插件中途装载/旧档续跑）→ 从 header 回填项目，按零复发/零 pass 清算。
-  const header = fieldOf(sessionRaw, "header");
-  const headerCwd = isRecord(header) ? fieldOf(header, "cwd") : undefined;
-  void settleQuietly(
-    store.sessionEnded(deriveProject(headerCwd), new Set(), new Set(), sid, firstSettle),
-    SESSION_ENDED_FAILURE_LABEL,
-  );
+      );
+      restoreOnFailure(persisted);
+    } catch (error) {
+      // sessionEnded 不外抛（内部吞错）；这一层兜"将来改出抛错"的意外。
+      console.error(`[lesson-loop] ${SESSION_ENDED_FAILURE_LABEL}: ${errorText(error)}`);
+    }
+  })();
 }
 
 /** 两枚会话事件的接线（顺序即注册顺序，与拆出前一致）。 */
@@ -1392,31 +1477,39 @@ function wireSessionEvents(runtime: ApplyRuntime): void {
 /** 常驻 systemPrompt 段（项目无关；timer/commands 皆可选读）。
  *  开关用动态 text 而不是「注册时读一次」：section 注册在 effect 里只跑一次，
  *  读一次的写法要让设置卡改动生效必须重启。renderPrompt 会丢掉空 text 段
- *  （core/system-prompt/src/index.ts:283），所以关闭时返回空串即完全不参与拼装。 */
+ *  （core/system-prompt/src/index.ts:283），所以关闭时返回空串即完全不参与拼装。
+ *  systemPrompt 服务同样走 inject：晚于本条目到位时 effect 的单次 get 永远等不到。 */
 function registerPromptSection(runtime: ApplyRuntime): void {
   const { svc, settingsOf, localeMessages } = runtime;
-  svc.effect(() => {
-    const spRaw = svc.get?.("systemPrompt");
-    if (!isSystemPromptService(spRaw)) {
-      return noDisposer;
-    }
-    return spRaw.section({
-      name: SECTION_NAME,
-      order: SECTION_ORDER,
-      // 总开关优先：README 承诺 enabled=false 时常驻段一并停用，故两位都要看。
-      text: () => {
-        const cfg = settingsOf();
-        return cfg.enabled && cfg.sectionEnabled ? renderSectionText(localeMessages()) : "";
-      },
-    });
-  }, "lesson-loop: systemPrompt section");
+  svc.inject(["systemPrompt"], (child) => {
+    child.effect(() => {
+      const spRaw = child.systemPrompt;
+      if (!isSystemPromptService(spRaw)) {
+        return noDisposer;
+      }
+      return spRaw.section({
+        name: SECTION_NAME,
+        order: SECTION_ORDER,
+        // 总开关优先：README 承诺 enabled=false 时常驻段一并停用，故两位都要看。
+        text: () => {
+          const cfg = settingsOf();
+          return cfg.enabled && cfg.sectionEnabled ? renderSectionText(localeMessages()) : "";
+        },
+      });
+    }, "lesson-loop: systemPrompt section");
+  });
 }
 
-/** 衰减一轮：阈值现读 + 跑 decay；失败只记日志（一轮炸了不许带走后面的轮次）。 */
+/** 衰减一轮：阈值现读 + 跑 decay；失败只记日志（一轮炸了不许带走后面的轮次）。
+ *  总关闭期间跳过：关闭状态下不该产生"自动降级并写库"这类持久化副作用（定时器
+ *  照排、跑空一轮，重新打开后下一轮恢复裁决）。 */
 async function decayOnce(runtime: ApplyRuntime): Promise<void> {
   const { store, syncStore } = runtime;
   try {
-    syncStore();
+    const cfg = syncStore();
+    if (!cfg.enabled) {
+      return;
+    }
     await store.runDecay();
   } catch (error) {
     console.error(`[lesson-loop] decay failed: ${errorText(error)}`);
@@ -1424,49 +1517,62 @@ async function decayOnce(runtime: ApplyRuntime): Promise<void> {
 }
 
 /** 周期衰减：apply 时立即跑一次，此后每 `decayIntervalMs`（部署值，默认 24h）一轮
- *  （timer 可选读；缺失退化为主管人工）。 */
+ *  （timer 可选读；服务晚于本条目到位是常态——兄弟条目装载次序/热插拔——effect 里
+ *  get 一次只能看见"此刻"，故走 inject 让宿主在服务就绪时回调，与
+ *  applySettingsPagePolicy 同款）。 */
 function registerDecayTimer(runtime: ApplyRuntime): void {
   const { svc, settingsOf } = runtime;
-  svc.effect(() => {
-    const timerRaw = svc.get?.("timer");
-    if (!isTimerService(timerRaw)) {
-      return noDisposer;
-    }
-    const timer = timerRaw;
-    // 非 volatile 的部署值：装载期读一次即可（改值随重启生效），故不进 tick 现读。
-    const intervalMs = settingsOf().decayIntervalMs;
-    let stopped = false;
-    let last: TimerDisposer | undefined;
-    // 退出位只经这个读口读：直接读 `stopped` 时，类型检查把它收窄成字面量 `false`
-    // （赋值发生在另一个闭包里，tsc 看不见），`if (stopped)` 会被判成恒假的分支；
-    // 经函数返回的 `boolean` 不再收窄，判据才真的是运行期的值。
-    const isStopped = (): boolean => stopped;
-    // 排下一轮而不是在起点就排：`runDecay` 要跨 provider 落盘，耗时可能超过间隔。
-    // 固定间隔重排会让两轮衰减重叠（两笔整片写互相撞 revision），改成上一轮结算后
-    // 再武装。自引用只在**调度那一刻**发生：`arm` 先跑完这一轮，再判退出位并武装下一轮。
-    // 这样"上一轮结算后才排下一轮"写在同一个函数里，读的人不必跨两处拼次序。
-    const arm = async (): Promise<void> => {
-      // 入口也读一次退出位：timer 回调已入队、disposer 先置位时，这一轮不该再起——
-      // 它会跨 provider 整片写盘，与退出清算的 CAS 写并发，输方按失败上报。
-      if (isStopped()) {
-        return;
+  svc.inject(["timer"], (child) => {
+    child.effect(() => {
+      const timerRaw = child.timer;
+      if (!isTimerService(timerRaw)) {
+        return noDisposer;
       }
-      await decayOnce(runtime);
-      // 这轮衰减等待期间 disposer 可能已置位。
-      if (isStopped()) {
-        return;
-      }
-      last = timer.timeout(() => {
-        void arm();
-      }, intervalMs);
-    };
-    // 装载期那一轮也走 arm：它与后续每一轮共用同一条"结算后再排"的次序。
-    void arm();
-    return () => {
-      stopped = true;
-      last?.();
-    };
-  }, "lesson-loop: decay timer");
+      const timer = timerRaw;
+      // 非 volatile 的部署值：装载期读一次即可（改值随重启生效），故不进 tick 现读。
+      const intervalMs = settingsOf().decayIntervalMs;
+      let stopped = false;
+      let last: TimerDisposer | undefined;
+      // 在飞的那轮衰减：disposer 要等它落定（见下方 disposer 注释）。
+      let inflight: Promise<void> | undefined;
+      // 退出位只经这个读口读：直接读 `stopped` 时，类型检查把它收窄成字面量 `false`
+      // （赋值发生在另一个闭包里，tsc 看不见），`if (stopped)` 会被判成恒假的分支；
+      // 经函数返回的 `boolean` 不再收窄，判据才真的是运行期的值。
+      const isStopped = (): boolean => stopped;
+      // 排下一轮而不是在起点就排：`runDecay` 要跨 provider 落盘，耗时可能超过间隔。
+      // 固定间隔重排会让两轮衰减重叠（两笔整片写互相撞 revision），改成上一轮结算后
+      // 再武装。自引用只在**调度那一刻**发生：`arm` 先跑完这一轮，再判退出位并武装下一轮。
+      // 这样"上一轮结算后才排下一轮"写在同一个函数里，读的人不必跨两处拼次序。
+      const arm = async (): Promise<void> => {
+        // 入口也读一次退出位：timer 回调已入队、disposer 先置位时，这一轮不该再起——
+        // 它会跨 provider 整片写盘，与退出清算的 CAS 写并发，输方按失败上报。
+        if (isStopped()) {
+          return;
+        }
+        const round = decayOnce(runtime);
+        inflight = round;
+        await round;
+        // 这轮衰减等待期间 disposer 可能已置位。
+        if (isStopped()) {
+          return;
+        }
+        last = timer.timeout(() => {
+          void arm();
+        }, intervalMs);
+      };
+      // 装载期那一轮也走 arm：它与后续每一轮共用同一条"结算后再排"的次序。
+      void arm();
+      // Dispose must reach quiescence（本文件 settleOpenSessionsOnDispose 同一纪律）：
+      // 卸载不等同步 disposer 里的异步任务，在飞的 runDecay（跨 provider 整片 CAS 写）
+      // 必须在这里等完——否则卸载完成后幽灵写才落地（降级在卸载后才生效），或与卸载
+      // 清算的写互撞 revision。decayOnce 内部自捕错误，await 不会 reject。
+      return async () => {
+        stopped = true;
+        last?.();
+        await inflight;
+      };
+    }, "lesson-loop: decay timer");
+  });
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -1503,14 +1609,23 @@ export function apply(ctx: Context, config: Config): void {
     }
   });
   const localeMessages: MessagesOf = () => {
-    // **缺席不缓存**：locale 条目可能晚于本条目才到位，缓存一次缺席就把语言跟随永久钉死。
+    // **缺席与读取失败都不缓存**：locale 条目可能晚于本条目才到位，缓存一次缺席/失败
+    // 就把语言跟随永久钉死（test 钉着"条目迟到时每趟都重读"这条保证）。代价明说：
+    // 缺席的 profile——最常见的默认情形——每趟都付一次 describe()；那是有意的取舍，
+    // 不用三态缓存换（宿主对静默新增条目是否 emit 失效事件没有本仓判据）。
+    // describe() 抛错（provider 半装配、文档解析失败）按"这趟没读到"处理，退中文默认——
+    // 可选读一律降级，不许把最坏情况炸进提示词装配/命令注册（rules-namespace 的 load 同款）。
     if (!hasCachedPreference) {
-      const row = svc.settings
-        .describe()
-        .find((item) => fieldOf(item, "ns") === LOCALE_SETTINGS_NAMESPACE);
-      if (row !== undefined) {
-        cachedPreference = fieldOf(row, "value");
-        hasCachedPreference = true;
+      try {
+        const row = svc.settings
+          .describe()
+          .find((item) => fieldOf(item, "ns") === LOCALE_SETTINGS_NAMESPACE);
+        if (row !== undefined) {
+          cachedPreference = fieldOf(row, "value");
+          hasCachedPreference = true;
+        }
+      } catch {
+        // 这趟没读到：下次再试（不缓存失败态）。
       }
     }
     // 偏好已注册（装且投影出了 client-locale 那条）→ 设置优先。
@@ -1527,7 +1642,7 @@ export function apply(ctx: Context, config: Config): void {
   startBootMigrations(svc, store);
 
   // sessionId → 台账：会话内复发记账，session/disposed 时清算 suppressed。
-  const { sessionWatch, pruneWatch, markSettled, hasSettled } = createSessionWatch();
+  const { sessionWatch, pruneWatch, markSettled, unsettle, hasSettled } = createSessionWatch();
 
   // settings → store 的阈值同步（pull：每次 report/decay 前执行）。
   const syncStore = (): ResolvedSettings => syncStoreFrom(store, settingsOf);
@@ -1541,6 +1656,7 @@ export function apply(ctx: Context, config: Config): void {
     sessionWatch,
     pruneWatch,
     markSettled,
+    unsettle,
     hasSettled,
     syncStore,
   };

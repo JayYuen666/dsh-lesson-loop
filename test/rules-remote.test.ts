@@ -11,7 +11,14 @@ import { RULES_REMOTE_NAMESPACE } from "../lib/rules-shape.ts";
 import { MESSAGES } from "../lib/messages.ts";
 import { RULES_DESCRIPTORS } from "../src/rules-reader.ts";
 
-type Outcome = "persisted" | "not-found" | "persist-failed" | "throw";
+type Outcome =
+  | "persisted"
+  | "not-found"
+  | "persist-failed"
+  | "throw"
+  | "invalid-statement"
+  | "statement-too-long"
+  | "unchanged";
 
 function depsOf(outcome: Outcome = "persisted"): LessonRulesDeps {
   const rules = [
@@ -21,7 +28,18 @@ function depsOf(outcome: Outcome = "persisted"): LessonRulesDeps {
   const store: RulesStore = {
     rules: () => rules,
     recentLessons: (project?: string, limit?: number) => {
-      const rows: { project: string }[] = [{ project: "p1" }, { project: "p2" }];
+      const rows: {
+        project: string;
+        detail: string;
+        cwd?: string;
+        sessionId?: string;
+        turn?: number;
+      }[] = [
+        // 首条 detail 超过读面的 400 字上限：lessons 投影要把它截断；可选字段齐全
+        // （cwd/sessionId/turn 的投影分支也要走到）。
+        { project: "p1", detail: "d".repeat(500), cwd: "/repo", sessionId: "s1", turn: 3 },
+        { project: "p2", detail: "短" },
+      ];
       const filtered = project === undefined ? rows : rows.filter((row) => row.project === project);
       return (limit !== undefined && limit > 0 ? filtered.slice(0, limit) : filtered) as never;
     },
@@ -55,6 +73,16 @@ describe("规则读面（官方 Typert Remote 源模式）", () => {
       .map((marker) => marker.method)
       .toSorted();
     assert.deepEqual(markers, ["lessons", "ruleAction", "rules", "stats"]);
+    // 每个自有方法都必须带标记：新增方法漏写 markRemote 时 descriptor 与标记两边都不变
+    // （下面那条对质仍绿），卡片却永远读不到新方法。按原型面逐名对账钉住这类漏项。
+    const ownMethods = Object.getOwnPropertyNames(LessonRulesService.prototype)
+      .filter(
+        (name) =>
+          name !== "constructor" &&
+          typeof Reflect.get(LessonRulesService.prototype, name) === "function",
+      )
+      .toSorted();
+    assert.deepEqual(ownMethods, markers, "每个自有方法都要有 @Remote 标记");
     assert.deepEqual(RULES_DESCRIPTORS.map((descriptor) => descriptor.method).toSorted(), markers);
     for (const descriptor of RULES_DESCRIPTORS) {
       assert.equal(descriptor.service, RULES_REMOTE_NAMESPACE);
@@ -92,13 +120,42 @@ describe("规则读面（官方 Typert Remote 源模式）", () => {
     assert.equal(service.rules(null as never).rules.length, 2);
   });
 
-  it("lessons 的 project/limit 过滤与缺省全量", () => {
+  it("lessons 的 project/limit 过滤：缺省/≤0 取默认条数；detail 截断、不外借 evidence", () => {
     const service = serviceOf(depsOf());
     assert.equal(service.lessons({ project: "p1" }).count, 1);
     assert.equal(service.lessons({ limit: 1 }).count, 1);
-    assert.equal(service.lessons({ limit: -1 }).count, 2, "≤ 0 与缺省同义：全量");
+    // 缺省 / ≤0 / 非数字：取默认条数（事件流水只增不减，"缺省 = 全量"会让一次调用
+    // 把整份流水序列化过网关）。
+    assert.equal(service.lessons({ limit: -1 }).count, 2, "≤0 与缺省同义：默认条数");
     assert.equal(service.lessons(null as never).count, 2);
     assert.equal(service.lessons({ limit: Number.NaN }).count, 2);
+    // 读面投影：detail 是门禁输出原文一类的敏感面，下发前截断（400 字 + 省略号）；
+    // 原始 evidence 不外借。
+    const view = service.lessons({}).lessons[0]!;
+    assert.ok(view.detail.endsWith("…") && view.detail.length === 401, "detail 已截断");
+    assert.ok(!("evidence" in view), "原始 evidence 不上网线");
+  });
+
+  it("ruleAction：invalid-statement / statement-too-long → 400（本地化文案）；unchanged → 按成功回执", async () => {
+    const invalid = await serviceOf(depsOf("invalid-statement")).ruleAction({
+      id: "r",
+      action: "arm",
+    });
+    assert.deepEqual([invalid.ok, invalid.ok ? 0 : invalid.status], [false, 400]);
+    assert.equal(invalid.ok ? "" : invalid.error, MESSAGES.zh.errStatementRequired);
+    const tooLong = await serviceOf(depsOf("statement-too-long")).ruleAction({
+      id: "r",
+      action: "edit",
+      statement: "x",
+    });
+    assert.deepEqual([tooLong.ok, tooLong.ok ? 0 : tooLong.status], [false, 400]);
+    assert.equal(tooLong.ok ? "" : tooLong.error, MESSAGES.zh.errStatementTooLong);
+    const unchanged = await serviceOf(depsOf("unchanged")).ruleAction({
+      id: "r",
+      action: "edit",
+      statement: "同文",
+    });
+    assert.deepEqual([unchanged.ok, unchanged.ok ? unchanged.id : 0], [true, "r"]);
   });
 
   it("ruleAction：缺字段/未知动作 → 400，找不到 → 404，落盘失败 → 500", async () => {

@@ -3,7 +3,7 @@
 // 口径：拦截只对被瞄准的那个文件生效，其余路径穿透到真实实现）。
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { readJsonl } from "../lib/lesson-jsonl.ts";
@@ -54,5 +54,63 @@ describe("readJsonl 读侧窗口", () => {
     const rows = readJsonl(file);
     assert.equal(rows.length, 1);
     assert.equal(rows[0]?.["detail"], "d2", "旧解析缓存已随 forgetFile 清空");
+  });
+});
+
+// 新增分支的补测：statSync 的非 ENOENT 读失败（与 ENOENT 分开）与"读成功即清去重闩"。
+describe("readJsonl 的读失败口径（补测）", () => {
+  it("statSync 非 ENOENT（路径是目录）→ warn 一次 + 空表；恢复后再犯同样的错要能再报", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dsh-lesson-jsonl-"));
+    try {
+      const file = path.join(dir, "lessons.jsonl");
+      // 文件先正常写一行 → 读一次（建立缓存）；随后把它换成目录触发 statSync 的 EISDIR。
+      writeFileSync(
+        file,
+        `${JSON.stringify({ ts: 1, source: "manual", category: "c", signature: "s", detail: "d", project: "p" })}\n`,
+      );
+      assert.equal(readJsonl(file).length, 1);
+      rmSync(file);
+      mkdirSync(file);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      assert.equal(readJsonl(file).length, 0, "读不到按空表，不外抛");
+      assert.match(String(warn.mock.calls[0]?.[0]), /lesson ledger unreadable/u);
+      // 第一次失败只报一次（去重）；修好再坏，同样的错误必须能再报一次。
+      assert.equal(readJsonl(file).length, 0);
+      assert.equal(warn.mock.calls.length, 1, "错误没变不重复刷");
+      rmSync(file, { recursive: true });
+      writeFileSync(
+        file,
+        `${JSON.stringify({ ts: 2, source: "manual", category: "c", signature: "s", detail: "d", project: "p" })}\n`,
+      );
+      assert.equal(readJsonl(file).length, 1, "恢复可读");
+      rmSync(file);
+      mkdirSync(file);
+      assert.equal(readJsonl(file).length, 0);
+      assert.equal(warn.mock.calls.length, 2, "读成功清了去重闩：同样的错误第二次照样报");
+      warn.mockRestore();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("statSync 非 ENOENT（父路径是普通文件 → ENOTDIR）→ warn 一次 + 空表", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dsh-lesson-jsonl-stat-"));
+    try {
+      // 父路径是文件，不是目录：statSync 抛 ENOTDIR（非 ENOENT），走 warnReadFailure
+      // 而不是"文件不存在"的静默分支。
+      const blocker = path.join(dir, "blocker");
+      writeFileSync(blocker, "x");
+      const file = path.join(blocker, "lessons.jsonl");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      assert.deepEqual(readJsonl(file), [], "读不到按空表，不外抛");
+      assert.match(String(warn.mock.calls[0]?.[0]), /lesson ledger unreadable/u);
+      warn.mockRestore();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

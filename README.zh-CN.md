@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/v/@jayyuen66/dsh-lesson-loop?style=flat-square&logo=npm&logoColor=white" alt="npm version" /></a>
-  <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/dm/@jayyuen66/dsh-lesson-loop?style=flat-square" alt="npm downloads" /></a>
+  <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/d18m/@jayyuen66/dsh-lesson-loop?style=flat-square" alt="npm downloads (total)" /></a>
   <a href="https://github.com/JayYuen666/dsh-lesson-loop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-lesson-loop/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
   <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
   <img src="https://img.shields.io/badge/node-%3E%3D22.12-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
@@ -125,7 +125,7 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 
 ## <img src="https://api.iconify.design/lucide/sliders-horizontal.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 设置项
 
-命名空间 = 条目 id `lesson-loop`。四个开关默认都是 `true`：`enabled`（总开关——关掉即不上报、不注入、不做退出清算、没有常驻段，且 `/lessons-digest` 拒绝执行）、`reportEnabled`、`injectEnabled`、`sectionEnabled`。
+命名空间 = 条目 id `lesson-loop`。四个开关默认都是 `true`：`enabled`（总开关——关掉即不上报、不注入、不做退出清算、没有常驻段、周期衰减暂停，且 `/lessons-digest` 拒绝执行）、`reportEnabled`（教训**入口**闸门：只停 `report()` 与 `/lessons-digest`——pass 记账与退出清算只随 `enabled`）、`injectEnabled`、`sectionEnabled`。
 
 | 字段 | 默认值 | 取值范围 | 作用 |
 | --- | --- | --- | --- |
@@ -136,6 +136,7 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 | `decayDays` | `30` | 1–365 | armed 满这么久仍无干净命中，卡片转为不可判定；之后的复发不会重置窗口 |
 | `reviveThreshold` | `3` | 1–20 | 被拒的规则再见到此次数就回到候选 |
 | `maxLessonsBytes` | `0` | 0–1 GiB | 磁盘保险丝；`0` = 不设上限，内容绝不为了省上下文被截断 |
+| `maxStatementChars` | `4000` | 1–100000 | arm/edit 时生效正文的字符上限（UTF-16 码元）；超限的写入被拒，已落库正文不受影响 |
 | `digestTimeoutMs` | `120000` | ≥ 1000 | 一次蒸馏的墙钟（ms）；卡片上没有这一行 |
 | `decayIntervalMs` | `86400000` | ≥ 1000 | 周期衰减轮次的间隔（ms）；卡片上没有这一行 |
 | `maxInjectedRules` | `50` | 0–1000 | 每个会话注入的 armed 规则条数，最新的在前；`0` = 不设上限；卡片上没有这一行 |
@@ -153,7 +154,7 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 | `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`；`limit` 不是有限数、≤ 0 或缺省都表示全量 |
 | `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`，或 `{ ok: false, error, status }` |
 
-- `action` 必须是那六个白名单值之一；`statement` 只由 `arm` 与 `edit` 读取，会被 trim，空白串按「没给」处理。
+- `action` 必须是那六个白名单值之一；`statement` 只由 `arm` 与 `edit` 读取，会被 trim，空白串按「没给」处理。生效正文超过 `maxStatementChars` 时回 `{ ok: false, status: 400 }`，库不动。
 - 拒绝回执里的 `status` 是**保留下来的语义码，不是 HTTP 状态**：缺字段或动作不在白名单是 400，未知的卡片是 404，规则库拒绝落盘是 500（带 `rules-not-persisted`）。
 - 读数是拉的，不是推的：打开面板时、保存之后、每次人工动作之后各一次。这里没有轮询循环，也没有客户端墙钟。
 

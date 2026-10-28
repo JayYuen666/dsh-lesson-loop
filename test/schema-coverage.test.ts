@@ -47,6 +47,22 @@ describe("host schema 解析器（卡片覆盖门禁的读数面）", () => {
     assert.deepEqual(hostSchemaFields(src), ["outer", "tail"]);
   });
 
+  it("文件头注释里出现 Schema.object 示例不会把解析锚到注释上", () => {
+    const src = `/**
+ * 注册形态示例：settings.register(ns, Schema.object({ example: 1 }), base)
+ */
+const configSchema = Schema.object({
+  enabled: Schema.boolean(),
+  port: Schema.natural(),
+});`;
+    assert.deepEqual(hostSchemaFields(src), ["enabled", "port"]);
+  });
+
+  it('单行对象写法照样解析（不能靠"字段必须缩进"这种前提）', () => {
+    const src = `const configSchema = Schema.object({ enabled: Schema.boolean(), port: Schema.natural() });`;
+    assert.deepEqual(hostSchemaFields(src), ["enabled", "port"]);
+  });
+
   it("找不到 Schema.object 时交回空数组（调用方据此报「解析失败」而不是静默通过）", () => {
     assert.deepEqual(hostSchemaFields("const x = 1;"), []);
   });

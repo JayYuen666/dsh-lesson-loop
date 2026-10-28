@@ -30,6 +30,9 @@ export const DEFAULT_DECAY: DecayPolicy = {
   decayDays: 30,
 };
 
+/** 一天的毫秒数（挂满 decayDays 的窗口换算）。 */
+const MS_PER_DAY = 86_400_000;
+
 /** 单条 armed 规则的衰减裁决：'demote'（有真实证据的高复发率）| 'undeterminable'
  *  （armed 后从没有被遵守过，且要么已挂满 decayDays、要么复发已达门槛，机器无从
  *  裁定）| 'keep'。 */
@@ -47,9 +50,13 @@ export function decayVerdict(
   const evidence = rule.violation + rule.suppressed;
   // 不可判定的"挂满"锚定在升格那一刻：lastViolationAt 一类的最近证据时间戳一旦进来，
   // 每次复发都会重置窗口——一条零星复发、又从未被遵守的规则就永远到不了"挂满"，
-  // 既降不了级也判不成不可判定，只能一直 keep。
-  const anchor = rule.armedAt ?? rule.createdAt;
-  const matured = now - anchor > policy.decayDays * 86_400_000;
+  // 既降不了级也判不成不可判定，只能一直 keep。锚点还必须落回"现在"当它缺位或被
+  // 漂移写坏（0 / 负数 / NaN）：锚 0 会让一张刚升格的卡立刻判"早已挂满"，NaN 会让
+  // "挂满"这条路径无声失效。
+  const candidateAnchor = rule.armedAt ?? rule.createdAt;
+  const anchor = Number.isFinite(candidateAnchor) && candidateAnchor > 0 ? candidateAnchor : now;
+  // 恰好挂满 decayDays 也算"挂满"（与注释的语义一致；`>` 会把判定推迟一整轮）。
+  const matured = now - anchor >= policy.decayDays * MS_PER_DAY;
   // **分母必须含至少一次干净命中**：suppressed 为 0 时复发率结构上恒为 1.0（分母只剩
   // 违规自己），宿主不发 pass 的类别（典型是 transient-failure）会被自己的分子判有罪。
   // 无分母即不可判定：既不降级也不归档，保留 armed 交人工——挂满 decayDays 或违规已达
@@ -59,9 +66,11 @@ export function decayVerdict(
   }
   // 复发率裁决：armed 后复发 ≥ demoteThreshold、真实证据样本 ≥ demoteMinSamples、
   // 复发率 ≥ demoteRatio，且确有干净命中可比照 → 规则本身有问题（写错了/没被遵守/
-  // 无效），降级待人审。走到这里 suppressed 必然 > 0（为零的情形已被上面的守卫接走），
-  // 分母不再为零。
+  // 无效），降级待人审。走到这里 suppressed 必然 !== 0（为零的情形已被上面的守卫
+  // 接走），但存量脏数据仍可能交来负数（violation=3, suppressed=-3 → 分母 0）——
+  // 除法前显式要求分母为正，别让 Infinity 替一张脏卡做降级决定。
   if (
+    evidence > 0 &&
     rule.violation >= policy.demoteThreshold &&
     evidence >= policy.demoteMinSamples &&
     rule.violation / evidence >= policy.demoteRatio

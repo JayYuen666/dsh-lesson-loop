@@ -1,8 +1,9 @@
 # actionlint 的按文件豁免（1.7.12 实测：只有在本 git 仓库里才会被自动发现）。
 #
-# 为什么需要这一层：命令行上的 `-ignore` 是全局正则，而本仓的 actionlint 步骤一次传四份
-# 工作流（`.github/workflows/*.yml`），于是任何一处 `-ignore` 都会在那四份文件里同时失效。
-# `paths` 段按文件收窄，豁免只落在写它的那一份上。
+# 为什么需要这一层：命令行上的 `-ignore` 是全局正则——ci.yml 的 actionlint 步骤已改为
+# 显式 `-config-file` 走本文件且不再带命令行 `-ignore`，豁免只落在写它的那一份上。
+# 注意：任何一处命令行 `-ignore` 都会在全部被检文件上**同时生效**，让本文件的 paths
+# 收窄变成死配置——将来若在命令行加 ignore，先删这里的对应条目。
 #
 # 为什么只有 ci.yml：它的探针步骤刻意用单引号包住一段 JS（脚本体里有 JS 模板串，交给 shell
 # 展开就坏了），shellcheck 对「单引号里出现 $」报 SC2016，是误报。其余三份工作流里如果真出现
@@ -10,4 +11,4 @@
 paths:
   .github/workflows/ci.yml:
     ignore:
-      - "SC2016"
+      - "SC2016:"

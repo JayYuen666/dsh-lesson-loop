@@ -82,11 +82,6 @@ function isPlain(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** 数组守卫：`Array.isArray` 只把值收成 `any[]`，读原文要的是 `unknown[]`。 */
-function isUnknownArray(value: unknown): value is readonly unknown[] {
-  return Array.isArray(value);
-}
-
 /**
  * mergeLayers 的等价实现：普通对象递归合并，数组与其它值整体覆盖。
  * 自有键判定用 Object.hasOwn（`key in merged` 会把原型链上的继承键当成"本层已有"，
@@ -94,6 +89,18 @@ function isUnknownArray(value: unknown): value is readonly unknown[] {
  * 走的是 Object.prototype 的 setter，改的是 merged 的原型而不是落自有属性
  * （structuredClone 把 JSON 里的 `__proto__` 保留成自有属性，这条路径真实可达）。
  */
+/** 以 defineProperty 落**自有**属性：直接赋值对 `__proto__` 键会触发原型 setter
+ *  （改的是目标的原型而不是落自有属性）。本文件里两处逐键落段（mergeLayers、
+ *  storeSection）共用这一条守卫——原型污染防线只该有一份，改一处漏一处就会被绕过。 */
+function defineOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
 function mergeLayers(under: unknown, over: unknown): unknown {
   if (over === undefined) {
     return under;
@@ -104,12 +111,7 @@ function mergeLayers(under: unknown, over: unknown): unknown {
   const merged: Record<string, unknown> = { ...under };
   for (const [key, value] of Object.entries(over)) {
     const next = Object.hasOwn(merged, key) ? mergeLayers(merged[key], value) : value;
-    Object.defineProperty(merged, key, {
-      value: next,
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    });
+    defineOwn(merged, key, next);
   }
   return merged;
 }
@@ -170,7 +172,12 @@ function resolveSection(section: Record<string, unknown>): Record<string, unknow
     throw new TypeError(`entry config rejected by schema: ${JSON.stringify(result.issues)}`);
   }
   const plain = plainConfig(result.value);
-  return deepFreeze(isPlain(plain) ? plain : {});
+  if (!isPlain(plain)) {
+    // 本包 Config 是 Schema.object：正常解析不会到这里；真解析出非对象说明 schema
+    // 面变了——按"坏 config 悄悄通过"的禁令显式炸，别把它洗成空段。
+    throw new TypeError(`entry config resolved to a non-object value: ${typeof plain}`);
+  }
+  return deepFreeze(plain);
 }
 
 /** 规则库假件的对外面（测试侧钩子齐在 SettingsProviderFake 上）。 */
@@ -241,17 +248,13 @@ export function makeSettingsProvider(
       return;
     }
     for (const key of Object.keys(held)) {
-      Reflect.deleteProperty(held, key);
+      // 不可配置键删不掉（返回 false 不抛）：旧键静默留在段里，"整层已替换"就成了谎话。
+      if (!Reflect.deleteProperty(held, key)) {
+        throw new TypeError(`settings section has a non-configurable key "${key}"`);
+      }
     }
-    // 与 mergeLayers 同一条守卫：Object.assign 走 [[Set]]，对 `__proto__` 键会触发
-    // 原型 setter（改掉 held 的原型而不是落自有属性）；defineProperty 才是自有属性。
     for (const [key, value] of Object.entries(next)) {
-      Object.defineProperty(held, key, {
-        value,
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
+      defineOwn(held, key, value);
     }
   };
 
@@ -312,7 +315,12 @@ export function makeSettingsProvider(
     },
     update: (ns, patch, expectedRevision) => write(ns, patch, expectedRevision),
     externalSet(ns, section) {
-      storeSection(ns, { ...sectionOf(document, ns), ...detach(section) });
+      // 与 write 同口径：先解析后落段。真宿主里"另一进程写了校验不过的内容"表现为
+      // 该条目装载失败（本进程的 describe 不投影它），而不是把坏内容读成合法值——
+      // 假件在注入点就炸，别让 describe()/resolvedOf() 之后才炸、难与"真的写坏了"区分。
+      const merged = { ...sectionOf(document, ns), ...detach(section) };
+      resolveSection(merged);
+      storeSection(ns, merged);
       bump(ns);
     },
     forceConflicts(times) {
@@ -392,7 +400,9 @@ export function makeRulesFacet(initialRows: readonly unknown[] = []): RulesFacet
       const section = provider.peek(SETTINGS_NAMESPACE);
       const rows = section?.[RULES_FIELD];
       // 深拷贝交出：读面隔离——调用方 push/splice 不许污染假件内部状态。
-      return isUnknownArray(rows) ? detach(rows) : [];
+      // 非数组的原文原样交回（不折成空数组）："坏存量没被覆写"与"被写成空库"两种
+      // 情形的断言面必须不同，拿它做断言的用例才不会假绿。
+      return detach(rows) as readonly unknown[];
     },
   };
 }
@@ -428,11 +438,14 @@ export interface ScriptedRepository {
   batches: () => readonly SavedBatch[];
 }
 
-/** 排好的读面（partial 补默认值），避免测试重复写 usable: true。 */
+/** 排好的读面（partial 补默认值），避免测试重复写 usable: true。
+ *  卡数组深拷贝：RulesRead 的契约是"每次 load 交出新对象，调用方可就地改写"——
+ *  排布的 reads 数组是调用方的排布，被 plan 就地改脏后同一条排布第二次 load 会
+ *  读到被上一轮改过的卡，用例就自相污染了。 */
 function readOf(partial: Partial<RulesRead> | undefined): RulesRead {
   return {
     revision: partial?.revision ?? OPEN_READ.revision,
-    cards: partial?.cards ?? [],
+    cards: detach(partial?.cards ?? []),
     usable: partial?.usable ?? OPEN_READ.usable,
   };
 }
@@ -460,12 +473,15 @@ export function scriptedRulesRepository(input: ScriptedRepositoryInput = {}): Sc
         return readOf(taken);
       },
       async save(cards: readonly RuleCard[], revision: number): Promise<RulesWriteOutcome> {
-        writes.push({ cards: [...cards], revision });
+        // 深拷贝入账：调用方（commit 的工作数组）在 save 返回后还会继续被改——记账面
+        // 留活引用会让已断言过的批次随调用方的后续操作悄悄变样。
+        writes.push({ cards: detach(cards), revision });
         return pick(outcomes, writes.length - 1) ?? "persisted";
       },
     },
     loads: () => loadCount,
     saves: () => writes.length,
-    batches: () => writes,
+    batches: () =>
+      writes.map((batch) => ({ cards: detach(batch.cards), revision: batch.revision })),
   };
 }

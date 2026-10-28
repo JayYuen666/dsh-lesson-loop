@@ -11,9 +11,10 @@
 // signature/project 与端点回传的 error 都是**数据**（规则库里的用户数据、host 回执），
 // 一律原样显示，不查表、不翻译。
 
-import { createElement, useEffect, useState } from "react";
+import { createElement, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Context } from "@deepseek-ai/cordis";
+import { RULES_BUNDLE_PACKAGE } from "../lib/rules-shape.ts";
 import type { BuiltInLocaleId } from "@deepseek-ai/dsh-client-locale/client";
 import type { LocaleDictOf } from "@deepseek-ai/dsh-client-ui-slots";
 import type { SlotRegistry } from "@deepseek-ai/dsh-client-ui-renderer/client";
@@ -64,7 +65,7 @@ const NS: LocaleNs = "lesson-loop";
 // 写成裸条目 id（`lesson-loop`）时 ledger 里没有这个键 → 插件页永不出卡。
 // 包名真源：`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`；
 // test/profile-bundle.ts 把真源读进测试，test/build-client.test.ts 的漂移针据此钉。
-const BUNDLE_PKG = "@jayyuen66/dsh-lesson-loop";
+const BUNDLE_PKG = RULES_BUNDLE_PACKAGE;
 
 // SVG path 的 `d` 属性是固定方法名，改用变量作计算键以绕过短名检查
 const PATH_KEY = "d";
@@ -217,6 +218,7 @@ const CARD_CSS = [
   ".llc-row{display:flex;flex-direction:row;justify-content:space-between;align-items:center;gap:12px;padding:9px 0}",
   ".llc-label{font-size:13px;color:var(--dsw-alias-label-primary,inherit)}",
   ".llc-hint{font-size:12px;color:var(--dsw-alias-label-tertiary,#8a8f99);line-height:1.5;margin-top:2px}",
+  ".llc-digest-hint{margin-top:8px}",
   ".llc-switch{appearance:none;position:relative;width:34px;height:20px;border-radius:10px;background:var(--dsw-alias-fill-primary,#d8dbe2);transition:background .16s;cursor:pointer;border:0;flex:none}",
   '.llc-switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-bg-layer-1,#fff);transition:left .16s}',
   ".llc-switch-on{background:var(--dsw-alias-brand-primary,#e07856)}",
@@ -261,7 +263,8 @@ export interface RuleCardView {
   suppressed: number;
   /** 暴露度：armed 后在场且未违规的会话数（非正确性度量，不进复发率分母）。 */
   samples: number;
-  /** 派生态：armed 够久却零复发零遵守，机器无从裁定，等人停用/归档。 */
+  /** 派生态：armed 后从未被遵守过（suppressed === 0），且已挂满 decayDays 或复发已达
+   *  demoteThreshold——机器无从裁定，等人停用/归档。与 lib/decay-policy.ts 的裁决同口径。 */
   undeterminable: boolean;
   /** rejected 后同签名再次出现的次数（后续新增字段）。 */
   recurrences?: number;
@@ -379,6 +382,9 @@ function ToggleRow(props: ToggleRowProps): ReactNode {
       className: `llc-switch${props.checked ? " llc-switch-on" : ""}`,
       role: "switch",
       "aria-checked": props.checked,
+      // 可访问名：开关按钮没有文本子节点，旁边的 label 是兄弟节点——屏幕阅读器
+      // 没有它只会念"switch"，同一张卡多个开关无法区分。
+      "aria-label": props.label,
       "data-field": props.field,
       disabled: props.disabled === true,
       onClick: props.onToggle,
@@ -386,8 +392,15 @@ function ToggleRow(props: ToggleRowProps): ReactNode {
   );
 }
 
-const fmtDay = (ts: number | undefined): string =>
-  typeof ts === "number" && ts > 0 ? new Date(ts).toISOString().slice(0, 10) : "?";
+const fmtDay = (ts: number | undefined): string => {
+  if (typeof ts !== "number" || ts <= 0) {
+    return "?";
+  }
+  // 上游只保证有限数：超出 Date 可表示范围（±8.64e15）的漂移值会让 toISOString 抛
+  // RangeError，而本函数在规则卡渲染路径上——一张坏卡不许炸整张卡，退 "?"。
+  const day = new Date(ts);
+  return Number.isFinite(day.getTime()) ? day.toISOString().slice(0, 10) : "?";
+};
 
 /**
  * 单条规则卡的元信息行。首段是纯数据（分类 · 项目桶），其余是包自己的文案：
@@ -574,18 +587,37 @@ function RuleItem(props: RuleItemProps): ReactNode {
   const { t, rule } = props;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(rule.statement);
+  // 同 tick 的第二次触发（双击/键盘+点击，在 busy 渲染生效前到达）不许发出第二笔请求：
+  // ref 在同步路径上就能拦住，不用等下一轮渲染把按钮置灰。
+  const inflight = useRef(false);
+  // 宿主侧会改写 statement（归并继承人工正文、arm/edit）：非编辑态让草稿跟随最新值，
+  // 否则确认升格会把过期草稿盖回宿主。编辑态不跟（用户正在改的就是草稿）。
+  useEffect(() => {
+    if (!editing) {
+      setDraft(rule.statement);
+    }
+  }, [editing, rule.statement]);
   const act = async (action: string, statement?: string): Promise<void> => {
+    if (inflight.current) {
+      return;
+    }
+    inflight.current = true;
     props.setBusy(true);
     try {
       const result = await postAction(props.rulesRemote, rule.id, action, statement);
+      inflight.current = false;
       props.setBusy(false);
       props.onDone(
         result.ok === true,
         result.ok === true ? undefined : (result.error ?? t("actionFailed")),
       );
     } catch (error) {
+      inflight.current = false;
       props.setBusy(false);
-      props.onDone(false, String(error instanceof Error ? error.message : error));
+      // 网关/传输失败与 stats 面同一口径：本地化兜底文案给人，原文只进 console——
+      // 底层错误原文（gateway/internal 一类）不该当成用户文案上屏。
+      console.error("[lesson-loop] rule action failed:", error);
+      props.onDone(false, t("actionFailed"));
     }
   };
   const meta = ruleMetaLines(t, rule).join(" · ");
@@ -775,6 +807,9 @@ function NumberInputRow(props: NumberInputRowProps): ReactNode {
         "data-field": props.field,
         value: text,
         disabled: props.disabled === true,
+        // 可访问名：输入框只有前置兄弟 label，没有 id/htmlFor 关联——没有它屏幕
+        // 阅读器只会念"输入框"。
+        "aria-label": props.label,
         onChange: onEntry,
         onBlur: onLeave,
       }),
@@ -804,6 +839,9 @@ function buildConfigRows(deps: {
   const frozen = !writable || deps.busy;
   const toggle = (row: { field: string; label: string; hint: string }): ReactNode =>
     createElement(ToggleRow, {
+      // 数组子节点按 key diff：字段名是稳定锚点，缺了会退化成按数组下标配对，
+      // NumberInputRow 内部的输入草稿会随字段增删错配到别的行上。
+      key: row.field,
       label: row.label,
       hint: row.hint,
       field: row.field,
@@ -821,6 +859,7 @@ function buildConfigRows(deps: {
     max: number;
   }): ReactNode =>
     createElement(NumberInputRow, {
+      key: row.field,
       label: row.label,
       hint: row.hint,
       field: row.field,
@@ -896,6 +935,13 @@ function buildConfigRows(deps: {
       hint: t("maxLessonsBytesHint"),
       min: 0,
       max: 1_073_741_824,
+    }),
+    num({
+      field: "maxStatementChars",
+      label: t("maxStatementCharsLabel"),
+      hint: t("maxStatementCharsHint"),
+      min: 1,
+      max: 100_000,
     }),
   ];
 }
@@ -1156,7 +1202,7 @@ function renderCardBody(view: CardView): ReactNode {
     renderRuleSection(view, "demoted", demotedTitle, view.groups.demoted),
     renderRuleSection(view, "armed", armedTitle, view.groups.armed),
     retiredToggle,
-    createElement("div", { className: "llc-hint", style: { marginTop: "8px" } }, hintLabel),
+    createElement("div", { className: "llc-hint llc-digest-hint" }, hintLabel),
   );
 }
 

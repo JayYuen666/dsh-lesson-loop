@@ -26,7 +26,8 @@
 // 引入非确定性，改为规范哈希比较并在 build-host.mjs 里输出 canonical 形态。
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -61,10 +62,20 @@ const ABSENT = "[产物缺失：运行 node build-host.mjs]";
  * @returns 正文，或 ABSENT
  */
 function readText(file: string): string {
-  if (existsSync(file)) {
+  try {
     return readFileSync(file, "utf8");
+  } catch (error) {
+    if (isRecord(error) && error["code"] === "ENOENT") {
+      return ABSENT;
+    }
+    // 权限/目录/断链一类不是"产物缺失"：包装成带路径的可读错误，别让原始异常冒进用例。
+    throw new Error(
+      `读取产物失败：${file}（${String(error instanceof Error ? error.message : error)}）`,
+      {
+        cause: error,
+      },
+    );
   }
-  return ABSENT;
 }
 
 /**
@@ -82,11 +93,17 @@ function digestOf(text: string): string {
  * @returns package.json 的 name，抠不到时为 unknown
  */
 function packageNameOf(pkgDir: string): string {
-  return (
-    /"name":\s*"(?<pkgName>[^"]+)"/u.exec(readText(path.resolve(pkgDir, "package.json")))?.groups?.[
-      "pkgName"
-    ] ?? "unknown"
-  );
+  try {
+    const parsed: unknown = JSON.parse(readText(path.resolve(pkgDir, "package.json")));
+    const name =
+      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)["name"]
+        : undefined;
+    return typeof name === "string" ? name : "unknown";
+  } catch {
+    // package.json 缺失/损坏按 unknown 标身份：失败的比对行里仍带得有路径可追。
+    return "unknown";
+  }
 }
 
 /**
@@ -135,6 +152,21 @@ export async function hostFreshnessEvidence(
   const built = await build();
   if (typeof built === "string") {
     return { pkgName, pkgDir, onDisk: readText(path.resolve(pkgDir, artifact)), built };
+  }
+  if (!(built instanceof Map)) {
+    // 既非字符串也非 Map：builder 契约不符（误导出了 rolldown 的 Output[] 一类）——
+    // 报"哪一枚 builder 违反了契约"，别让它在 manifestOf 里以
+    // "files.entries is not a function" 的堆栈收场。
+    throw new TypeError(
+      `[${pkgName}] build-host.mjs 的 ${builder}() 必须返回字符串或 Map<落盘路径, 正文>，实际是 ${Object.prototype.toString.call(built)}`,
+    );
+  }
+  if (options.artifact !== undefined) {
+    // Map 分支按清单逐项对账，单文件 artifact 位对它无意义：配置写错了要当场点破，
+    // 别让选项被静默丢弃（看似在验 artifact，实际根本没读到它）。
+    throw new TypeError(
+      `[${pkgName}] build-host.mjs 的 ${builder}() 交回多产物清单时，artifact 选项（${artifact}）没有意义——删掉它`,
+    );
   }
   return {
     pkgName,

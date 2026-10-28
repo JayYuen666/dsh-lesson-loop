@@ -12,7 +12,6 @@ import {
   SECTION_ORDER,
   PLUGIN_NAME,
   LESSON_SOURCE_KIND,
-  describeRule,
 } from "../lib/prompt.ts";
 import { MESSAGES, fill } from "../lib/messages.ts";
 import type { LessonLoopMessages } from "../lib/messages.ts";
@@ -285,29 +284,8 @@ describe("注入帧的伪造防护（可证定界）", () => {
   });
 });
 
-describe("describeRule", () => {
-  it("armed 带度量，candidate 带 pending 标签", () => {
-    assert.match(describeRule(card(), tZh), /生效中/u);
-    assert.match(describeRule(card(), tZh), /复发 1 \/ 被遵守 7/u);
-    assert.match(
-      describeRule(card({ status: "candidate", violation: 0, suppressed: 0 }), tZh),
-      /待确认/u,
-    );
-  });
-
-  it("五种状态各有标签（RuleStatus 全集，无兜底分支）", () => {
-    const labeled: [RuleCard["status"], string][] = [
-      ["candidate", "待确认"],
-      ["armed", "生效中"],
-      ["demoted", "已降级待人审"],
-      ["rejected", "已拒绝"],
-      ["archived", "已归档"],
-    ];
-    for (const [status, label] of labeled) {
-      assert.ok(describeRule(card({ status }), tZh).includes(label), `${status} 缺标签 ${label}`);
-    }
-  });
-});
+// describeRule / statusLabel 与状态标签、ruleSummary 键已随「零生产调用方的导出」清理
+// 移除：卡片与端点的摘要行走的是规则读面自己的投影，不再经 prompt 层这副模板。
 
 // ── 双语（host 半消息表注入；规则正文是用户数据，两语下都原样透传）────────
 describe("注入帧与摘要行的双语", () => {
@@ -329,7 +307,7 @@ describe("注入帧与摘要行的双语", () => {
     assert.ok(digest.includes(asciiRule.statement));
   });
 
-  it("en 的 armed 无触发尾巴 + 摘要行状态标签", () => {
+  it("en 的 armed 无触发尾巴", () => {
     const idle = renderRulesDigest(
       [card({ statement: ASCII_ONLY_STATEMENT, violation: 0, suppressed: 0, samples: 12 })],
       "p1",
@@ -337,20 +315,6 @@ describe("注入帧与摘要行的双语", () => {
     )!;
     assert.ok(idle.includes("present in 12 sessions since arming but never triggered"));
     assert.doesNotMatch(idle, /\p{Script=Han}/u);
-    assert.ok(describeRule(card({ statement: ASCII_ONLY_STATEMENT }), tEn).includes("[armed]"));
-    assert.ok(
-      describeRule(card({ statement: ASCII_ONLY_STATEMENT }), tEn).includes("1 violations"),
-      "armed 度量尾巴走 en 模板",
-    );
-    assert.ok(
-      describeRule(card({ statement: ASCII_ONLY_STATEMENT, status: "candidate" }), tEn).includes(
-        "[pending review]",
-      ),
-    );
-    assert.doesNotMatch(
-      describeRule(card({ statement: ASCII_ONLY_STATEMENT, status: "archived" }), tEn),
-      /\p{Script=Han}/u,
-    );
   });
 
   it("en 常驻段：闭环说明在位且无中文", () => {
@@ -365,8 +329,6 @@ describe("注入帧与摘要行的双语", () => {
       "digestRuleLine",
       "armedMetrics",
       "armedNoTrigger",
-      "ruleSummary",
-      "ruleSummaryArmed",
       "digestCategorySuffix",
       "digestNoNewRules",
       "digestCreated",

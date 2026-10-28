@@ -1,0 +1,11 @@
+// lesson-loop/tsconfig.client-tests.json —— 客户端测试的类型程序。
+// 测试直接用 node:fs / node:path 造夹具，故显式加载 node 类型；src/** 只经由测试的
+// import 进入这个程序。纯客户端程序（tsconfig.client.json）保持 types: [] 的纯净度，
+// 两者不要合并——合并会把 node 类型注入 src 的判定面。
+{
+  "extends": "@jayyuen66/dsh-plugin-shared/config/tsconfig.client.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "test/client-*.test.ts"]
+}

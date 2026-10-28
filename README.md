@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/v/@jayyuen66/dsh-lesson-loop?style=flat-square&logo=npm&logoColor=white" alt="npm version" /></a>
-  <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/dm/@jayyuen66/dsh-lesson-loop?style=flat-square" alt="npm downloads" /></a>
+  <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/d18m/@jayyuen66/dsh-lesson-loop?style=flat-square" alt="npm downloads (total)" /></a>
   <a href="https://github.com/JayYuen666/dsh-lesson-loop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-lesson-loop/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
   <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
   <img src="https://img.shields.io/badge/node-%3E%3D22.12-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
@@ -125,7 +125,7 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 
 ## <img src="https://api.iconify.design/lucide/sliders-horizontal.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Settings
 
-Namespace = the entry id `lesson-loop`. Four switches default to `true`: `enabled` (master — off means no reporting, injection, exit settlement or standing section, and `/lessons-digest` refuses), `reportEnabled`, `injectEnabled`, `sectionEnabled`.
+Namespace = the entry id `lesson-loop`. Four switches default to `true`: `enabled` (master — off means no reporting, injection, exit settlement or standing section, periodic decay pauses, and `/lessons-digest` refuses), `reportEnabled` (lesson **entry** gate: it stops `report()` and `/lessons-digest` only — `pass()` accounting and the dispose-time settlement follow `enabled` alone), `injectEnabled`, `sectionEnabled`.
 
 | Field | Default | Range | Purpose |
 | --- | --- | --- | --- |
@@ -136,6 +136,7 @@ Namespace = the entry id `lesson-loop`. Four switches default to `true`: `enable
 | `decayDays` | `30` | 1–365 | Armed this long without a clean hit turns the card undeterminable; later violations do not reset the window |
 | `reviveThreshold` | `3` | 1–20 | A rejected rule seen this often returns to candidates |
 | `maxLessonsBytes` | `0` | 0–1 GiB | Disk fuse; `0` = no cap, content never truncated to save context |
+| `maxStatementChars` | `4000` | 1–100000 | Character limit for an armed rule statement on arm/edit (UTF-16 units); longer writes are refused, stored statements are unaffected |
 | `digestTimeoutMs` | `120000` | ≥ 1000 | Wall clock for one digest run (ms); no card row |
 | `decayIntervalMs` | `86400000` | ≥ 1000 | Interval arming the periodic decay pass (ms); no card row |
 | `maxInjectedRules` | `50` | 0–1000 | Armed rules injected per session, newest first; `0` = no cap; no card row |
@@ -153,7 +154,7 @@ Four methods on one official Typert Remote namespace, `lessonLoopRules`.
 | `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`; a non-finite, ≤ 0 or absent `limit` means everything |
 | `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`, or `{ ok: false, error, status }` |
 
-- `action` must be one of the six whitelisted values; `statement` is read by `arm` and `edit` only, trimmed, and a blank string counts as "not given".
+- `action` must be one of the six whitelisted values; `statement` is read by `arm` and `edit` only, trimmed, and a blank string counts as "not given". A statement longer than `maxStatementChars` returns `{ ok: false, status: 400 }` and the library stays untouched.
 - A refusal's `status` is a **retained semantic code, not an HTTP status**: 400 for a missing field or an off-whitelist action, 404 for an unknown card, 500 for a change the library refused to persist (carrying `rules-not-persisted`).
 - Reads are pulled, not pushed: on panel open, after a save, and after each manual action. There is no polling loop and no client-side wall clock.
 

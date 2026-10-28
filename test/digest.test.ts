@@ -138,8 +138,18 @@ function fakeSession(cwd = "/repo/proj"): SessionLike {
  * 这样只有蒸馏超时真的中止了请求信号，drainStreamToText 才走得完。
  * 借 node:events 的 once（promise/avoid-new：不手搓 Promise）。
  */
+/** 无 id 的 message-put 夹具（同一载荷换 rating：清槽用例的两侧）。 */
+const messageFeedbackPut = (rating: string): Record<string, unknown> => ({
+  type: EVENT_MESSAGE_PUT,
+  data: { item: { note: "太慢", rating } },
+});
+
 const untilAborted = (signal: AbortSignal | undefined): Promise<unknown> =>
   signal === undefined ? Promise.resolve() : once(signal, "abort");
+
+/** 永不落定的 Promise（"适配器完全不协作"的夹具）：withResolvers 的 resolve/reject
+ *  刻意无人持有，这枚 Promise 不会落定。 */
+const { promise: NEVER } = Promise.withResolvers<never>();
 
 /** 墙钟到点后适配器以错误收场 → 本地化超时文案，不是底层 AbortError 原文。 */
 const makeAbortThrowingLlm = (): LlmService => ({
@@ -174,6 +184,46 @@ describe("digest 蒸馏管线", () => {
 
   afterEach(() => {
     rmSync(scratch, { recursive: true, force: true });
+  });
+
+  describe("collectNegativeFeedback（交付面兜底补测）", () => {
+    it("note 是 toJSON 返回 undefined 的对象 → 不落 undefined，退辨认形态", () => {
+      const out = collectNegativeFeedback([
+        { type: EVENT_RECORD, data: { text: { toJSON: (): null => null }, category: "c" } },
+      ]);
+      assert.equal(out.length, 1);
+      assert.ok(out[0]!.note.length > 0, "note 不是 undefined/空串");
+    });
+
+    it("note 是 toJSON 返回 undefined 的对象 → stringify 的运行时值是 undefined，退辨认形态", () => {
+      const out = collectNegativeFeedback([
+        {
+          type: EVENT_RECORD,
+          data: { text: { toJSON: (): undefined => undefined }, category: "c" },
+        },
+      ]);
+      assert.equal(out.length, 1);
+      assert.ok(
+        out[0]!.note.includes("Object"),
+        "不是 undefined/空串，退 Object.prototype.toString 形态",
+      );
+    });
+
+    it("note 是循环引用对象 → stringify 抛错被兜住，投影不炸", () => {
+      const circular: Record<string, unknown> = {};
+      circular["self"] = circular;
+      const out = collectNegativeFeedback([{ type: "feedback/record", data: { text: circular } }]);
+      assert.equal(out.length, 1);
+      assert.ok(out[0]!.note.includes("Object"), "退 Object.prototype.toString 形态");
+    });
+
+    it("无 id 的差评被同载荷好评清槽（按内容指纹）", () => {
+      const out = collectNegativeFeedback([
+        messageFeedbackPut("negative"),
+        messageFeedbackPut("positive"),
+      ]);
+      assert.deepEqual(out, [], "同载荷改好评后不再是负面信号");
+    });
   });
 
   describe("collectNegativeFeedback", () => {
@@ -614,6 +664,23 @@ describe("digest 蒸馏管线", () => {
       assert.match(zhLine, /同类问题的稳定短键/u, "zh 的说明是中文");
       assert.doesNotMatch(enLine, HAN, "en 的契约行不该残留中文");
       assert.notEqual(enLine, zhLine, "两段说明确实换了语言");
+      // 说明文字是 fill 原样嵌进 JSON 骨架的：引号/反斜杠会改坏 JSON，花括号会造出新的
+      // 占位符，尖括号会提前关掉 `<>` 包住的说明位。两语逐条钉住，改文案时漏一条即红。
+      for (const [name, catalog] of [
+        ["zh", MESSAGES.zh],
+        ["en", MESSAGES.en],
+      ] as const) {
+        for (const [key, hint] of [
+          ["digestSystemShapeSignature", catalog.digestSystemShapeSignature],
+          ["digestSystemShapeStatement", catalog.digestSystemShapeStatement],
+        ] as const) {
+          assert.doesNotMatch(
+            hint,
+            /["\\{}<>]/u,
+            `${name}.${key} 含 JSON/骨架元字符，会把输出契约行改坏`,
+          );
+        }
+      }
     });
   });
 
@@ -945,6 +1012,13 @@ describe("digest 蒸馏管线", () => {
           .rules[0]?.signature,
         "兜底正文",
       );
+      // 方括号噪音把尝试次数撑过上限：判不可解析（把主线程的扫描成本封在常数内），
+      // 而不是一直逐切片 JSON.parse 下去。
+      const noisy = parseDigestOutput("[a]".repeat(600));
+      assert.equal(noisy.parsed, false);
+      assert.deepEqual(noisy.rules, []);
+      // 单个切片超过长度上限：跳过不解析（合法的候选数组只有几 KB）。
+      assert.equal(parseDigestOutput(`[${"x".repeat(70_000)}]`).parsed, false);
     });
 
     it("蒸馏消息声明 form:'instructions'", async () => {
@@ -960,6 +1034,72 @@ describe("digest 蒸馏管线", () => {
       };
       await runDigest(store, fakeSession(), llm, selection, runZh);
       assert.deepEqual(source, { kind: "plugin:lesson-loop", form: "instructions" });
+    });
+
+    it("适配器不协作（流永不落定）→ 宽限期后按超时收场，命令不被无限挂住", async () => {
+      vi.useFakeTimers();
+      try {
+        const store = makeStore();
+        const llm: LlmService = {
+          // 流挂起且不监听 signal：旧实现会在这里永远 await 下去。await 模块级那枚
+          // 永不落定的 NEVER（Promise 构造器形态会被账本的 avoid-new / require-yield 拦）。
+          stream: () => ({
+            [Symbol.asyncIterator]: () => ({
+              next: (): Promise<never> => NEVER,
+            }),
+          }),
+        };
+        const expectation = assert.rejects(
+          runDigest(store, fakeSession(), llm, selection, runZh),
+          /蒸馏超时/u,
+        );
+        await vi.advanceTimersByTimeAsync(120_000 + 250);
+        await expectation;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("单次蒸馏的候选条数超上限 → 超出部分不落库并留日志点名真实原因", async () => {
+      const store = makeStore();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      const many = Array.from({ length: 25 }, (_unused: unknown, index: number) =>
+        [
+          `{ "category": "max-tokens", "signature": "sig-${String(index)}", "statement": "s${String(index)}" }`,
+        ].join(""),
+      );
+      const raw = `[${many.join(",")}]`;
+      const result = await runDigest(store, fakeSession(), fakeLlm(raw), selection, runZh);
+      assert.equal(result.created.length, 20, "上限 20 条落库");
+      assert.equal(result.dropped.length, 5, "超出上限的按未落库计");
+      assert.match(
+        String(warn.mock.calls.at(-1)?.[0]),
+        /5 candidate\(s\) beyond the per-run limit of 20/u,
+      );
+      warn.mockRestore();
+    });
+
+    it("模型提出的条目全被白名单拒收 → 留日志，白名单漂移不隐形", async () => {
+      const store = makeStore();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      const result = await runDigest(
+        store,
+        fakeSession(),
+        fakeLlm('[{ "category": "unknown-cat", "signature": "s", "statement": "x" }]'),
+        selection,
+        runZh,
+      );
+      assert.equal(result.created.length, 0);
+      assert.equal(result.dropped.length, 0);
+      assert.match(
+        String(warn.mock.calls.at(-1)?.[0]),
+        /1 candidate\(s\) proposed by the model were all rejected/u,
+      );
+      warn.mockRestore();
     });
 
     it("120s 超时中止请求信号", async () => {
@@ -1029,7 +1169,7 @@ describe("digest 蒸馏管线", () => {
     it("timeoutMs 配成 0 / 负数 / NaN → 当场拒（配置漂移不许等流才炸）", async () => {
       await assert.rejects(
         runDigest(makeStore(), fakeSession(), fakeLlm("[]"), selection, { ...runZh, timeoutMs: 0 }),
-        /必须是正数/u,
+        /不小于 1000 的整数/u,
         "0 不合法",
       );
       await assert.rejects(
@@ -1037,7 +1177,7 @@ describe("digest 蒸馏管线", () => {
           ...runZh,
           timeoutMs: -5,
         }),
-        /必须是正数/u,
+        /不小于 1000 的整数/u,
         "负数不合法",
       );
       await assert.rejects(
@@ -1045,7 +1185,7 @@ describe("digest 蒸馏管线", () => {
           ...runZh,
           timeoutMs: Number.NaN,
         }),
-        /必须是正数/u,
+        /不小于 1000 的整数/u,
         "NaN 不合法",
       );
     });

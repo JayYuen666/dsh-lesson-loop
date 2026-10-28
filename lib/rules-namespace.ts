@@ -134,8 +134,13 @@ function isUsableRevision(value: unknown): value is number {
  * 提交顺手把整段（连人还没修好的那部分一起）覆掉。`describe().user` 是文档原文那一层
  * （宿主用 projectForm(form, override) 投出来，只丢 undefined、不做类型修正），坏值在
  * 那里现形。修好之后这条判定自然放行，不必重启（热加载）。
+ * user 存在但不是记录（整段被写成字符串一类）同样算读不懂：那是唯一能看见原文的
+ * 通道，通道本身坏了不能当成"原文干净"放行。
  */
 function rulesCorrupted(user: unknown): boolean {
+  if (user !== undefined && !isRecord(user)) {
+    return true;
+  }
   const raw = fieldOf(user, RULES_FIELD);
   return raw !== undefined && !Array.isArray(raw);
 }
@@ -153,8 +158,16 @@ function rulesValueCorrupted(value: unknown): boolean {
   return !isRecord(value) || !Array.isArray(fieldOf(value, RULES_FIELD));
 }
 
-/** 不可用回执：读返回空、写一律拒绝（调用方按 persist-failed 语义处理）。 */
-const UNUSABLE_READ: RulesRead = { revision: 0, cards: [], usable: false };
+/** 不可用回执：读返回空、写一律拒绝（调用方按 persist-failed 语义处理）。
+ *  revision 用 **-1** 当哨兵而不是 0：0 是官方合法的版本号，拿它当"不可用"的记号，
+ *  任何只读 revision 的新调用方都会拿一个并不成立的 CAS 条件去写；-1 过不了
+ *  isUsableRevision，误用当场显形。整枚对象（含空数组）冻结——这是跨调用共享的
+ *  单例，被谁改一笔就是全局状态被污染。 */
+const UNUSABLE_READ: RulesRead = Object.freeze({
+  revision: -1,
+  cards: Object.freeze([]),
+  usable: false,
+});
 
 /** 没有可用 CAS 面（provider 缺位 / 该段读不出可信值）时的规则库端口。 */
 function unavailableRulesRepository(): RulesRepository {
@@ -215,6 +228,10 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
     }
     lastDroppedRows = dropped;
   };
+  // describe() 抛错那一路同样按"状态翻转才报"的节流：load() 在 /stats 轮询与每次
+  // report 上都会被调用，provider 持续抛错（文档解析失败、服务半装配）时每次都刷
+  // 一条 error 会淹没日志；修好（读成功）就重新武装，再犯要再报。
+  let readErrorReported = false;
   return {
     load(): RulesRead {
       try {
@@ -235,6 +252,7 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
           return UNUSABLE_READ;
         }
         reportCorruption(false);
+        readErrorReported = false;
         const projection = cardsOfValue(found.value);
         reportDroppedRows(projection.dropped);
         return {
@@ -243,7 +261,10 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
           usable: true,
         };
       } catch (error) {
-        console.error(`[${SETTINGS_NAMESPACE}] rules read failed: ${errorText(error)}`);
+        if (!readErrorReported) {
+          readErrorReported = true;
+          console.error(`[${SETTINGS_NAMESPACE}] rules read failed: ${errorText(error)}`);
+        }
         return UNUSABLE_READ;
       }
     },

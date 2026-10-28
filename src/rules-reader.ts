@@ -22,7 +22,7 @@ import type {
 } from "@deepseek-ai/dsh-typert-protocol";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
-import { RULES_REMOTE_NAMESPACE } from "../lib/rules-shape.ts";
+import { RULES_BUNDLE_PACKAGE, RULES_REMOTE_NAMESPACE } from "../lib/rules-shape.ts";
 import type {
   LessonsRequest,
   LessonsResult,
@@ -36,8 +36,9 @@ import type {
  *  所以只能在挂载后按这个键去读，而不是提前 inject。 */
 const RULES_SERVICE_KEY = `remote.${RULES_REMOTE_NAMESPACE}`;
 
-/** 卡片所在 bundle 的包名（`$mount` 的 `package` 位与槽位键同源，见 client-entry.ts 的 BUNDLE_PKG）。 */
-const PACKAGE_NAME = "@jayyuen66/dsh-lesson-loop";
+/** 卡片所在 bundle 的包名（`$mount` 的 `package` 位与槽位键同源）：真源在 lib/rules-shape.ts，
+ *  client-entry 的 BUNDLE_PKG 与这里都从它取——字面量只有一份。 */
+const PACKAGE_NAME = RULES_BUNDLE_PACKAGE;
 
 /** 规则列表请求的客户端 parser：只核本方法真正读的那一位（`project` 是串或缺失）。 */
 const RULES_CODEC: TypertCodec<RulesRequest> = {
@@ -71,8 +72,14 @@ const LESSONS_CODEC: TypertCodec<LessonsRequest> = {
       if (project !== undefined && typeof project !== "string") {
         throw new TypeError("lessons request project must be a string");
       }
-      if (limit !== undefined && typeof limit !== "number") {
-        throw new TypeError("lessons request limit must be a number");
+      if (
+        limit !== undefined &&
+        (typeof limit !== "number" || !Number.isFinite(limit) || limit < 0)
+      ) {
+        // NaN/Infinity/负数不该被当成"合法请求"放给宿主——宿主对非有限与 ≤0 一律取
+        // 默认条数，非法值静默降级成一次正常请求会让调用方看不出自己传错了。0 是
+        // 有语义的显式形态（与缺省同走默认条数），放行。
+        throw new TypeError("lessons request limit must be a non-negative finite number");
       }
       return {
         ...(project === undefined ? {} : { project }),
@@ -158,7 +165,10 @@ interface RemoteMounter {
   }) => Promise<unknown>;
 }
 
-/** 挂载后由网关提供的命名空间服务面（方法名 = descriptor.method，位置参数）。 */
+/** 挂载后由网关提供的命名空间服务面。方法名在此文件里有**四份手写副本**：本接口、
+ *  isRulesNamespace 的逐名守卫、RULES_DESCRIPTORS 的 method 位、以及 createRulesReader
+ *  返回面里的 ns.xxx() 调用——任何一份与宿主实际方法名分叉，先红的是 descriptor 对质
+ *  那条测试（test/rules-remote.test.ts），改方法名时四处一起动。 */
 interface RulesNamespace {
   stats: () => Promise<RemoteResult<Record<string, unknown>>>;
   rules: (request: RulesRequest) => Promise<RemoteResult<RulesResult>>;
@@ -175,6 +185,15 @@ export interface RulesReader {
   rules: (request?: RulesRequest) => Promise<RulesResult>;
   lessons: (request?: LessonsRequest) => Promise<LessonsResult>;
   ruleAction: (id: string, action: string, statement?: string) => Promise<RuleActionReply>;
+}
+
+/** 网关拒绝回执 → 抛错（四个读取方法同一段判据，抽出来保证口径一致：错误前缀
+ *  `code: message` 不许某一处悄悄变体）。 */
+function unwrapRemote<Value>(result: RemoteResult<Value>): Value {
+  if (!result.ok) {
+    throw new Error(`${result.error.code}: ${result.error.message}`);
+  }
+  return result.value;
 }
 
 /** 这个值能当远程面用吗（只核我们要调的那一位；服务来自别的实现或版本时保守当作没有）。 */
@@ -218,36 +237,24 @@ function buildRulesReader(ctx: RemoteHost, remote: RemoteMounter): RulesReader {
     async stats(): Promise<Record<string, unknown>> {
       const ns = await namespaceOf();
       const result = await ns.stats();
-      if (!result.ok) {
-        throw new Error(`${result.error.code}: ${result.error.message}`);
-      }
-      return result.value;
+      return unwrapRemote(result);
     },
     async rules(request: RulesRequest = {}): Promise<RulesResult> {
       const ns = await namespaceOf();
       const result = await ns.rules(request);
-      if (!result.ok) {
-        throw new Error(`${result.error.code}: ${result.error.message}`);
-      }
-      return result.value;
+      return unwrapRemote(result);
     },
     async lessons(request: LessonsRequest = {}): Promise<LessonsResult> {
       const ns = await namespaceOf();
       const result = await ns.lessons(request);
-      if (!result.ok) {
-        throw new Error(`${result.error.code}: ${result.error.message}`);
-      }
-      return result.value;
+      return unwrapRemote(result);
     },
     async ruleAction(id: string, action: string, statement?: string): Promise<RuleActionReply> {
       const ns = await namespaceOf();
       const result = await ns.ruleAction(
         statement === undefined ? { id, action } : { id, action, statement },
       );
-      if (!result.ok) {
-        throw new Error(`${result.error.code}: ${result.error.message}`);
-      }
-      return result.value;
+      return unwrapRemote(result);
     },
   };
 }

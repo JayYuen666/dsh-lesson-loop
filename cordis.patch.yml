@@ -5,7 +5,8 @@
 # ctx.get('lessonLoop') 可选读，总线缺失只丢报告、绝不拖垮报告方。
 #
 # 组合包层：本文件由 package.json 的 dsh.bundle.patch 指向，随
-# `dsh plugin --profile web add/remove ./plugins/lesson-loop` 维护。
+# `dsh plugin --profile web add/remove <本仓根目录>` 维护（单包仓库，包根即包目录；
+# 按 npm 包名安装同样可行）。
 # 行按裸包名引用本包（client-modules 只扫描裸包名条目的 dsh.client 声明）。
 - insert:
     - id: lesson-loop

@@ -247,10 +247,15 @@ function makeCtx(
     get(name: string) {
       return ctx.services[name] ?? ctx.provided[name];
     },
-    /** ctx.inject(deps, fn)：cordis 立即用带齐依赖的子上下文回调一次。 */
+    /** ctx.inject(deps, fn)：cordis 立即用带齐依赖的子上下文回调一次——依赖名对应的
+     *  服务从本假件的服务面取（缺位即 undefined，与真宿主"还没来"同形）。 */
     inject(deps: readonly string[], attach: (child: unknown) => void) {
       ctx.injectDeps.push([...deps]);
+      const injected = Object.fromEntries(
+        deps.map((name) => [name, ctx.services[name] ?? ctx.provided[name]]),
+      );
       attach({
+        ...injected,
         settings: {
           configure: ctx.settings.configure,
         },
@@ -583,7 +588,7 @@ function isThenable(value: unknown): boolean {
   return "then" in value && typeof value["then"] === "function";
 }
 
-/** 设置卡该能编辑的字段：11 项开关/阈值 + 规则库那枚数组，一个都不该漏。 */
+/** 设置卡该能编辑的字段：12 项开关/阈值 + 规则库那枚数组，一个都不该漏。 */
 /** 字段化的三枚部署值：在 Config 上但**不标** volatile ⇒ 不进设置卡。 */
 const DEPLOYMENT_FIELDS = ["digestTimeoutMs", "decayIntervalMs", "maxInjectedRules"];
 
@@ -595,6 +600,7 @@ const EDITABLE_FIELDS = [
   "enabled",
   "injectEnabled",
   "maxLessonsBytes",
+  "maxStatementChars",
   "promoteThreshold",
   "reportEnabled",
   "reviveThreshold",
@@ -1431,7 +1437,7 @@ describe("host：lesson-loop 的宿主半", () => {
   });
 
   describe("可选服务缺失（一律空清理，不注册任何面）", () => {
-    it("webServer/commands/systemPrompt/timer 全缺 → 装载照跑；commands 只在首个实例 warn", () => {
+    it("webServer/commands/systemPrompt/timer 全缺 → 装载照跑；缺席静默（inject 语义下不误报）", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {
         // 断言在下方
       });
@@ -1448,15 +1454,15 @@ describe("host：lesson-loop 的宿主半", () => {
       for (const dispose of ctx.effects) {
         dispose();
       }
-      const warned = (): number =>
-        warn.mock.calls.filter((call) => String(call[0]).includes("commands service")).length;
-      assert.equal(warned(), 1);
-      // 同进程内二次装载不再刷屏（模块级命令闸门）
+      // 缺席不再 warn：三个服务都改走 inject（服务就绪才回调），"还没来"与"永远不来"
+      // 在 apply 时刻不可区分——为可能晚到的服务打缺席告警是误报；晚到时注册照常发生。
+      assert.equal(warn.mock.calls.length, 0);
+      // 二次装载同样静默：缺席语义不随实例数变化
       const second = makeCtx();
       Reflect.deleteProperty(second.services, "commands");
       apply(second);
       assert.equal(second.command, null);
-      assert.equal(warned(), 1);
+      assert.equal(warn.mock.calls.length, 0);
     });
 
     it("ctx.provide 不可用 → error 日志点破，报告方看不见总线", () => {
@@ -1707,7 +1713,7 @@ describe("host：lesson-loop 的宿主半", () => {
       );
     });
 
-    it("volatileForm(Config) 的字段集恰为十二项（十一开关/阈值 + rules）", () => {
+    it("volatileForm(Config) 的字段集恰为十三项（十二开关/阈值 + rules）", () => {
       const form = volatileFormOf(plugin.Config as unknown as SchemaNode);
       assert.ok(form !== null, "没有任何 volatile 字段 → 宿主 describe() 整条跳过本条目");
       assert.deepEqual(form.toSorted(), EDITABLE_FIELDS, "投影字段集与设置面预期可编辑项不一致");
@@ -1733,6 +1739,8 @@ describe("host：lesson-loop 的宿主半", () => {
         reviveThreshold: 3,
         // 0 = 不设上限：用户拍板"不为省 token 截断内容"。
         maxLessonsBytes: 0,
+        // 规则正文写入上限：4000 字符（armed 正文整段注入提示词）。
+        maxStatementChars: 4000,
         // 原 RULES_BASE 的 { rules: [] }：数组整片覆盖，空库的完整默认就是 []。
         rules: [],
         // 两枚部署值：默认与旧常量同值（120s 蒸馏墙钟 / 24h 衰减周期），行为冻结。
@@ -1756,8 +1764,8 @@ describe("host：lesson-loop 的宿主半", () => {
       // 才交得出实例），只在 apply 里读一次的结果是四条路由永不注册。
       assert.deepEqual(
         ctx.injectDeps,
-        [["settings"]],
-        "只留 settings 一份子依赖：规则读面已迁到官方 Remote，不再等 webServer",
+        [["settings"], ["systemPrompt"], ["commands"], ["timer"]],
+        "四份子依赖：settings 页面策略 + 三个可选服务（晚到即由 inject 补注册）",
       );
       assert.equal(ctx.configureCalls.length, 1, "一次装载一次策略登记（重复登记宿主会抛）");
       const [call] = ctx.configureCalls;
@@ -2450,9 +2458,10 @@ describe("host：lesson-loop 的宿主半", () => {
       "demoteRatio",
       "reviveThreshold",
       "decayDays",
+      "maxStatementChars",
     ] as const;
 
-    it("六个阈值字段的 hint 写着 schema 的区间与默认（zh/en 同查，期望从 schema 现量读）", () => {
+    it("七个数值字段的 hint 写着 schema 的区间与默认（zh/en 同查，期望从 schema 现量读）", () => {
       for (const field of NUMERIC_HINT_FIELDS) {
         const meta = plugin.Config.dict?.[field]?.meta;
         assert.ok(meta !== undefined, `configSchema 里该有 ${field} 这一位`);
@@ -2500,9 +2509,9 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.deepEqual(ctx.timerMs, [60_000], "衰减定时器是本包唯一的 timer.timeout 消费点");
     });
 
-    it("两枚部署值不标 volatile ⇒ 设置表单仍是十二项", () => {
+    it("两枚部署值不标 volatile ⇒ 设置表单仍是十三项", () => {
       const form = volatileFormOf(plugin.Config as unknown as SchemaNode);
-      assert.equal(form?.length, 12, "部署值不进表单，投影字段集不变");
+      assert.equal(form?.length, 13, "部署值不进表单，投影字段集不变");
       for (const key of DEPLOYMENT_FIELDS) {
         assert.equal(configDict()[key]?.meta?.["volatile"], undefined, `${key} 不该是 volatile`);
       }
@@ -2528,6 +2537,7 @@ describe("host：lesson-loop 的宿主半", () => {
       vi.spyOn(LessonStore.prototype, "sessionEnded").mockImplementation(async () => {
         await Promise.resolve();
         settled.push("s-w4");
+        return true;
       });
       const pending = Promise.all(ctx.effects.map((dispose) => dispose()));
       assert.deepEqual(settled, [], "await 之前不许声称已经静默（defensive-patterns:19-21）");
@@ -2575,6 +2585,39 @@ describe("host：lesson-loop 的宿主半", () => {
       await Promise.all(ctx.effects.map((dispose) => dispose()));
       const exited = ended.mock.calls.slice(settledCount).filter((call) => call[3] === "s-race");
       assert.equal(exited.length, 0, "已结束的会话不该因为一条迟到的命中而重新进台账");
+    });
+
+    it("armed 命中的告警日志：原始签名截到 64 字符（完整原文只进流水与证据）", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      // factgate-deny 的任意签名都折叠到类别级稳定键：先用一条路径签名建卡并升格，
+      // 再用一条 80 字符的签名命中同一张 armed 卡（raw 段 = 原始签名，与折叠键不同）。
+      const first = await svc.report({
+        source: SOURCE_DANGER_GUARD,
+        category: CATEGORY_FACTGATE_DENY,
+        cwd: GATE_PROJECT_CWD,
+        signature: "/repo/src/some-file.ts",
+        detail: "raw-truncation-seed",
+      });
+      await svc.ruleAction(first.candidate!.id, "arm");
+      const longSignature = "x".repeat(80);
+      const hit = await svc.report({
+        source: SOURCE_DANGER_GUARD,
+        category: CATEGORY_FACTGATE_DENY,
+        cwd: GATE_PROJECT_CWD,
+        signature: longSignature,
+        detail: "raw-truncation",
+      });
+      assert.ok(hit.violationOf !== undefined, "前置：命中 armed 规则");
+      const line = String(warn.mock.calls.at(-1)?.[0]);
+      assert.match(line, /armed rule violated:/u);
+      assert.match(line, /raw=x{64}…/u, "raw 段截到 64 字符加省略号");
+      assert.doesNotMatch(line, /x{65}/u, "原文第 65 个字符起不进日志");
+      warn.mockRestore();
     });
 
     it("会话已结束后命中的 pass 不得重建台账条目（否则收尾多记一次 suppressed）", async () => {
@@ -2650,11 +2693,53 @@ describe("host：lesson-loop 的宿主半", () => {
       // 事件路径先清算一次（首个边）
       fireDisposed(ctx, { id: "s-dup", header: { cwd: GATE_PROJECT_CWD } });
       assert.equal(ended.mock.calls[0]?.[4], true);
-      // 再让退出清算处理同一个会话：它已经被 markSettled 过，不该再计 exposure。
+      // 已清算的会话再出现（resume）：台账不再预种（它注定不会再被清算），退出清算
+      // 因此也不会为它再起一笔——去重收敛成"两个入口合计只清算一次"。
       fireCreated(ctx, { session: { id: "s-dup", header: { cwd: GATE_PROJECT_CWD } } });
       await Promise.all(ctx.effects.map((dispose) => dispose()));
-      const exitCall = ended.mock.calls.findLast((call) => call[3] === "s-dup");
-      assert.equal(exitCall?.[4], false, "退出清算必须沿用事件路径的去重结果");
+      assert.equal(
+        ended.mock.calls.filter((call) => call[3] === "s-dup").length,
+        1,
+        "已清算会话不重建台账：两个入口合计只清算一次",
+      );
+    });
+
+    it("清算没落盘 → 回滚清算标记与台账条目，下一边带全量数据重试", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const id = await armedRule(ctx);
+      svc.pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd: GATE_PROJECT_CWD,
+        sessionId: "s-r",
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      const ended = vi.spyOn(LessonStore.prototype, "sessionEnded").mockResolvedValue(false);
+      fireDisposed(ctx, { id: "s-r", header: { cwd: GATE_PROJECT_CWD } });
+      await flushAsync();
+      // 第一边没落盘：标记与台账条目都还原了。
+      fireDisposed(ctx, { id: "s-r", header: { cwd: GATE_PROJECT_CWD } });
+      await flushAsync();
+      const retryCall = ended.mock.calls[1]!;
+      assert.deepEqual(retryCall[2], new Set([id]), "重试边带全量 pass 集");
+      assert.equal(retryCall[4], true, "标记回滚后按首个边重试（exposure 不丢）");
+      ended.mockRestore();
+    });
+
+    it("无预种台账的会话清算失败 → 只回滚清算标记，不凭空重建条目", async () => {
+      // 与上一条对称：restoreOnFailure 在 watchEntry === undefined 时只 unsettle，
+      // 不能为了"重试"重建一条没有来源的空台账。
+      const ctx = makeCtx();
+      apply(ctx);
+      const ended = vi.spyOn(LessonStore.prototype, "sessionEnded").mockResolvedValue(false);
+      // 没有 agent/created 预种：走 header 回填的兜底清算。
+      fireDisposed(ctx, { id: "s-orphan", header: { cwd: GATE_PROJECT_CWD } });
+      await flushAsync();
+      fireDisposed(ctx, { id: "s-orphan", header: { cwd: GATE_PROJECT_CWD } });
+      await flushAsync();
+      assert.equal(ended.mock.calls[1]?.[4], true, "标记回滚后重试边按首个边清算");
+      ended.mockRestore();
     });
 
     it("退出清算交回的是异步 disposer（形状钉：不靠宏任务赌一拍）", async () => {

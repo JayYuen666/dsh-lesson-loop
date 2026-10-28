@@ -6,8 +6,11 @@
 // 拿不到锁的一方走裸追加，它落进别人的 read→rename 窗口时会被整片覆盖（事件静默消失）。
 //
 // 那条窗口无法在单进程里用真实 fs 稳定制造（临界区全是同步调用），故只有它走 `statSync`
-// 拦截：对**同一个路径**的第 1、2 次 stat 报真值（让快照取对），第 3 次起谎报"文件长了"。
-// 真实 end-to-end 的竞争由 /tmp 下的双进程夹具体现，不放进本文件（那会是一条靠时序的用例）。
+// 拦截：对**同一个路径**的第 1 次 stat 报真值（快照基准取在读取之前，超限判定与快照是
+// 同一次 stat），第 2 次起谎报"文件长了"——rename 前的判据因此必见失配。若实现把快照
+// 退回"读取之后"，第 2 次就成了快照本身（被谎报）而判据在第 3 次（同样被谎报），两次
+// 相等、裁剪放行，本用例当场红。真实 end-to-end 的竞争由 /tmp 下的双进程夹具体现，
+// 不放进本文件（那会是一条靠时序的用例）。
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
 import assert from "node:assert/strict";
 import {
@@ -24,12 +27,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { appendUnderFuse } from "../lib/jsonl-fuse.ts";
 
-/** statSync 拦截开关：`armed` 时对 `file` 的第 3 次起 stat 谎报尺寸；`mode = "throw"` 抛错。 */
+/** statSync 拦截开关：`armed` 时对 `file` 的第 3 次起 stat 谎报尺寸；`mode = "throw"` 抛错；
+ *  `"grave-throw"` 只让 `<file>.*` 开头的墓碑路径抛错（接管验明正身那一次 stat）。 */
 const statHook = vi.hoisted(() => ({
   armed: false,
   file: "",
   calls: 0,
-  mode: "" as "" | "throw",
+  mode: "" as "" | "throw" | "swap" | "grave-throw",
 }));
 /** renameSync 拦截开关：`armed` 时对目标为 `file` 的 rename 抛错；`anyFile` 时对任何源抛错。 */
 const renameHook = vi.hoisted(() => ({
@@ -38,25 +42,60 @@ const renameHook = vi.hoisted(() => ({
   calls: 0,
   anyFile: false,
 }));
-/** readFileSync 拦截开关：`mode = "throw"` 抛 ENOENT，`"truncate"` 返回截断后的正文。 */
-const readHook = vi.hoisted(() => ({ mode: "" as "" | "throw" | "truncate", file: "" }));
+/** readFileSync 拦截开关：`mode = "throw"` 抛 ENOENT，`"truncate"` 返回截断后的正文。
+ *  `prefix` 时按 `file` 与 `file.` 前缀匹配——释放锁的令牌读的是 rename 后的
+ *  `<lock>.<token>.released` 路径，测试拿不到那枚随机令牌，只能按前缀瞄准。 */
+const readHook = vi.hoisted(() => ({
+  mode: "" as "" | "throw" | "truncate",
+  file: "",
+  prefix: false,
+}));
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
+  type fsStatsPath = Parameters<(typeof actual)["statSync"]>[0];
   /** 只对"被瞄准的那个文件"计数并撒谎，其余路径一律穿透到真实实现。 */
-  const statSync = (target: unknown, ...rest: unknown[]): { size: number } => {
+  const statSync = (
+    target: unknown,
+    ...rest: unknown[]
+  ): { size: number; ino?: number; mtimeMs?: number; isFile?: () => boolean } => {
     if (statHook.armed && statHook.mode === "throw" && String(target) === statHook.file) {
       statHook.calls += 1;
       throw Object.assign(new Error("ENOENT: 锁在这一瞬被释放了"), { code: "ENOENT" });
+    }
+    // 墓碑路径抛错：接管侧搬走陈旧锁之后验明正身那一次 stat 失败（第三方动走了墓碑）。
+    if (
+      statHook.armed &&
+      statHook.mode === "grave-throw" &&
+      String(target).startsWith(`${statHook.file}.`)
+    ) {
+      statHook.calls += 1;
+      throw Object.assign(new Error("ENOENT: 墓碑被第三方移走"), { code: "ENOENT" });
+    }
+    // "swap"：对锁路径与其墓碑（`<lock>.…` 前缀）的第 2 次起 stat 换一枚假 ino——
+    // 模拟"我们判完龄、别人把锁换成新的"：判龄读到真身，搬走后的墓碑验明对不上。
+    // 这一支要在精确路径过滤**之前**判：墓碑路径不等于锁路径，但它就是验明正身要看的那个文件。
+    if (statHook.armed && statHook.mode === "swap") {
+      const aimed =
+        String(target) === statHook.file || String(target).startsWith(`${statHook.file}.`);
+      if (aimed) {
+        statHook.calls += 1;
+        const real = actual.statSync(target as fsStatsPath, ...(rest as []));
+        // 第 2 次起换一枚假 ino（不展开 Stats：类实例展开会丢原型）——接管验明正身
+        // 只比对 ino/mtime，给一个带所需字段的替身即可。
+        return statHook.calls >= 2
+          ? { size: 0, ino: 1, mtimeMs: real.mtimeMs, isFile: () => true }
+          : real;
+      }
     }
     const real = (actual.statSync as (...args: unknown[]) => { size: number })(target, ...rest);
     if (!statHook.armed || String(target) !== statHook.file) {
       return real;
     }
     statHook.calls += 1;
-    // 1 = 进入裁剪前的超限判定，2 = 读完后的快照基准，3+ = rename 前那道判据。
-    // 只有第 3 次起撒谎，快照才是真的。
-    return statHook.calls >= 3 ? { ...real, size: real.size + 1 } : real;
+    // 1 = 快照基准（读取前那一次 stat，超限判定与它合一），2+ = rename 前那道判据。
+    // 只有第 2 次起撒谎，快照才是真的。
+    return statHook.calls >= 2 ? { ...real, size: real.size + 1 } : real;
   };
   const renameSync = (source: unknown, destination: unknown): void => {
     if (renameHook.armed && (renameHook.anyFile || String(destination) === renameHook.file)) {
@@ -66,7 +105,11 @@ vi.mock("node:fs", async (importOriginal) => {
     (actual.renameSync as (from: unknown, to: unknown) => void)(source, destination);
   };
   const readFileSyncSpy = (target: unknown, ...rest: unknown[]): unknown => {
-    if (readHook.mode !== "" && String(target) === readHook.file) {
+    const aimed =
+      readHook.mode !== "" &&
+      (String(target) === readHook.file ||
+        (readHook.prefix && String(target).startsWith(`${readHook.file}.`)));
+    if (aimed) {
       if (readHook.mode === "throw") {
         throw Object.assign(new Error("ENOENT: 文件已被移走"), { code: "ENOENT" });
       }
@@ -102,12 +145,14 @@ describe("jsonl-fuse", () => {
     renameHook.anyFile = false;
     readHook.mode = "";
     readHook.file = "";
+    readHook.prefix = false;
   });
 
   afterEach(() => {
     statHook.armed = false;
     renameHook.armed = false;
     readHook.mode = "";
+    readHook.prefix = false;
     rmSync(scratch, { recursive: true, force: true });
   });
 
@@ -148,7 +193,7 @@ describe("jsonl-fuse", () => {
       `${oversized}${payloadOf({ a: 1 })}`,
       "判据发现有人在 read 之后写过：本轮不裁（宁可超配额），那一行必须还在",
     );
-    assert.equal(statHook.calls, 3, "三次 stat：超限判定 / 快照基准 / rename 前的判据");
+    assert.equal(statHook.calls, 2, "两次 stat：读取前的快照基准（含超限判定）/ rename 前的判据");
   });
 
   it("拿不到锁（别人的新锁）→ 追加照常、裁剪跳过，且不碰别人的锁", () => {
@@ -259,13 +304,83 @@ describe("jsonl-fuse", () => {
     const lock = `${file}.lock`;
     writeFileSync(file, "keep\n");
     // 本进程确实拿到了锁（createLock 成功），但临界区期间锁可能被按陈旧接管走了。
-    // 让 releaseLock 读到被截断一位的正文即等价于"这锁不是我的了"。
+    // 释放的裁决读的是 rename 之后的 `<lock>.<token>.released`（令牌里有随机 uuid，
+    // 测试拿不到全名），按前缀瞄准并截断一位即等价于"这锁不是我的了"。
     readHook.mode = "truncate";
     readHook.file = lock;
+    readHook.prefix = true;
     appendUnderFuse(file, payloadOf({ a: 1 }), 10_000);
     readHook.mode = "";
     assert.ok(existsSync(lock), "令牌不匹配时不许删锁");
     assert.match(readFileSync(lock, "utf8"), /^\d+\./u, "锁里仍是那枚持有者令牌");
+  });
+
+  it("接管验明正身：判龄之后锁被换成新的 → 物归原主、本轮让位", () => {
+    const file = path.join(scratch, "swapped.jsonl");
+    const lock = `${file}.lock`;
+    writeFileSync(file, OLD);
+    writeFileSync(lock, "");
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(lock, past, past);
+    statHook.armed = true;
+    statHook.file = lock;
+    statHook.mode = "swap";
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10);
+    statHook.armed = false;
+    // 墓碑里的 ino 与判龄时对不上 = 搬走的是别人的新锁：放回原位、本轮不抢。
+    assert.ok(existsSync(lock), "别人的新锁被放回原位");
+    assert.equal(readFileSync(file, "utf8"), `${OLD}${payloadOf({ a: 1 })}`, "只跳过裁剪");
+  });
+
+  it("释放时锁已被别人搬走（rename 失败）→ 静默返回，不误删", () => {
+    const file = path.join(scratch, "release-gone.jsonl");
+    writeFileSync(file, "keep\n");
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10_000);
+    // 本进程已持锁；下一次追加前把锁 rename 拦死——释放路径的 rename 抛错被吞，
+    // 不外抛也不误删别人的东西。
+    renameHook.armed = true;
+    renameHook.anyFile = true;
+    appendUnderFuse(file, payloadOf({ bb: 2 }), 10_000);
+    renameHook.armed = false;
+    assert.ok(readFileSync(file, "utf8").includes(JSON.stringify({ bb: 2 })), "追加照常落盘");
+  });
+
+  it("归还锁读完墓碑失败 → 静默返回，锁留在墓碑里、追加照常", () => {
+    const file = path.join(scratch, "release-read-gone.jsonl");
+    const lock = `${file}.lock`;
+    writeFileSync(file, "keep\n");
+    // 归还路径把锁 rename 成 `<lock>.<token>.released`，测试拿不到随机令牌，按前缀瞄准。
+    readHook.mode = "throw";
+    readHook.file = lock;
+    readHook.prefix = true;
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10_000);
+    readHook.mode = "";
+    readHook.prefix = false;
+    assert.ok(readFileSync(file, "utf8").includes(JSON.stringify({ a: 1 })), "追加照常落盘");
+    assert.equal(
+      readdirSync(scratch).some((name) => name.endsWith(".released")),
+      true,
+      "读不到令牌时不冒认领：墓碑留着，不删",
+    );
+  });
+
+  it("陈旧锁搬走后墓碑 stat 不到（被第三方动走）→ 本轮让位，追加照常、不硬抢", () => {
+    const file = path.join(scratch, "grave-gone.jsonl");
+    const lock = `${file}.lock`;
+    writeFileSync(file, `${OLD}${NEW}`);
+    writeFileSync(lock, "");
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(lock, past, past);
+    statHook.armed = true;
+    statHook.file = lock;
+    statHook.mode = "grave-throw";
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10);
+    // 判到超龄 → rename 搬走；墓碑 stat 抛错 → 放弃接管；本轮不裁，只追加。
+    assert.equal(
+      readFileSync(file, "utf8"),
+      `${OLD}${NEW}${payloadOf({ a: 1 })}`,
+      "接管失败只跳过裁剪",
+    );
   });
 
   it("陈旧锁但接管失败（锁路径是目录）→ 跳过裁剪，本次追加不丢", () => {
