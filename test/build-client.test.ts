@@ -58,7 +58,7 @@ describe("buildClient", () => {
   });
 
   // external 清单 = 官方 client bundle 的**隐式基座**（外壳预置的冻结模块表）。真源两份：
-  // @deepseek-ai/dsh-client-web 的 `src/platform.ts`（`PLATFORM_MODULES` 九枚 +
+  // @deepseek-ai/dsh-client-web 的 `src/platform.ts`（`PLATFORM_MODULES` 十一枚 +
   // `PRELOADED_CLIENT_EXTERNALS` 空表），与官方 client 构建器
   // `packages/client/tsdown.client.ts` 的 `clientExternals()`——算的是「基座 ∪ 本包
   // dsh.client.external」，注释明写 "The shell baseline is implicit for every dynamic bundle"。
@@ -70,11 +70,26 @@ describe("buildClient", () => {
       "react-dom",
       "react-dom/client",
       "@deepseek-ai/cordis",
+      "zod",
+      "@tanstack/react-virtual",
       "@deepseek-ai/dsh-client-store",
       "@deepseek-ai/dsh-client-ui-slots",
       "@deepseek-ai/dsh-client-ui-primitives",
       "@deepseek-ai/dsh-client-ui-dockkit",
     ]);
+  });
+
+  it("external 清单没有重复项（基座 ∪ 本包声明，按名字唯一）", () => {
+    // 上一条钉的是"清单内容"，这一条钉"清单唯一"：两者是不同的事。rolldown 对重复
+    // external 是幂等的（同一枚写两次不改变产物），所以内容针与产物针都抓不到重复——
+    // 而清单一旦声明了基座里已有的模块（最典型是 react），重复就会静默出现。这里
+    // 独立断言一遍，让"清单唯一"是本文件自己的口径而不是构建器的副作用。
+    const externals = clientExternals();
+    assert.deepEqual(
+      externals,
+      [...new Set(externals)],
+      "external 清单必须按名字唯一：重复项会让这份清单读起来比实际契约长",
+    );
   });
 
   it("本包 manifest 未声明 dsh.client.external（官方口径：缺省 = 只有基座）", () => {
@@ -97,14 +112,15 @@ describe("buildClient", () => {
 // 卡片字段覆盖门禁（复制式 helper，同 client-freshness.ts 的分发口径）：helper 只交回
 // **问题清单**、不登记用例（vitest/require-hook 不收 hook 外的 setup，隔层断言
 // vitest/expect-expect 也看不见），故断言写在本文件的用例体内。
-// 本包 11 项 volatile 设置字段全部有卡面控件（buildConfigRows 的 ToggleRow/NumberInputRow
-// 行，field props 写字面量），另两项声明豁免；helper 会反向校验豁免项确实未绑定，所以
-// 豁免表不能用来藏本该上卡的东西。
+// 本包 11 项 volatile 设置字段全部有卡面控件（buildLoopSection/buildPromotionSection/
+// buildCapacitySection 里共享 ToggleField/NumberField 的 field props 写字面量），非 volatile
+// 部署值与规则库对象声明豁免；helper 会反向校验豁免项确实未绑定，所以豁免表不能用来藏
+// 本该上卡的东西。
 //
 // `rules` 是**整片规则库对象**而非一个可填的行式值：它的读面走 Typert remote 的
 // `lessonLoopRules` 命名空间，写面是 lib/rules-namespace.ts 里以计算键
 // `{ [RULES_FIELD]: … }` 调 surface.update，界面上由规则卡（renderRuleSection）按
-// 状态分组呈现。它没有、也不该有一个 ToggleRow/NumberInputRow，故在此显式豁免。
+// 状态分组呈现。它没有、也不该有一个设置字段控件，故在此显式豁免。
 describe("卡片字段覆盖 host schema（test/schema-coverage.ts）", () => {
   it("除三项部署值外，host 设置字段全部绑定到卡面控件", () => {
     assert.deepEqual(
@@ -113,7 +129,7 @@ describe("卡片字段覆盖 host schema（test/schema-coverage.ts）", () => {
           {
             field: "rules",
             reason:
-              "整片规则库对象（不是行式设置值）：读面走 Typert remote 的 lessonLoopRules 命名空间，写面是 lib/rules-namespace.ts 的计算键写入，界面由规则卡按状态分组渲染，没有也不该有 ToggleRow/NumberInputRow",
+              "整片规则库对象（不是行式设置值）：读面走 Typert remote 的 lessonLoopRules 命名空间，写面是 lib/rules-namespace.ts 的计算键写入，界面由规则卡按状态分组渲染，没有也不该有设置字段控件",
           },
           {
             field: "digestTimeoutMs",

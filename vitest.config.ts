@@ -15,5 +15,9 @@ export default definePackageConfig({
   coverageInclude: ["host.ts", "lib/**/*.ts", "src/ui-messages.ts"],
   test: {
     setupFiles: ["test/setup-logs.ts"],
+    // registry 版 shared 的 dist/card-ui.js 在单仓安装态会被 vitest 当成外部依赖，
+    // 它内部的 require("react") 绕过 vi.mock("react")；测试架因此拿到真实 React 的
+    // hook 并报 "Cannot read properties of null (reading 'useId')"。内联后 mock 才生效。
+    server: { deps: { inline: [/@jayyuen66\/dsh-plugin-shared/u] } },
   },
 });

@@ -21,14 +21,14 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import {
   apply,
-  buildConfigRows,
-  cardDescriptionText,
+  buildCapacitySection,
+  buildLoopSection,
+  buildPromotionSection,
   inject,
   LlcCard,
   retiredToggleText,
   RuleItem,
   ruleMetaLines,
-  saveBarStatus,
   sectionHeadingText,
 } from "../src/client-entry.ts";
 import type { RuleCardView } from "../src/client-entry.ts";
@@ -51,6 +51,10 @@ vi.mock("react", async (importOriginal) => {
     ],
     useEffect: (): undefined => undefined,
     useRef: (initial: unknown): { current: unknown } => ({ current: initial }),
+    useId: (): string => ":r0:",
+    useCallback: <Fn>(fn: Fn): Fn => fn,
+    useMemo: <Value>(factory: () => Value): Value => factory(),
+    useLayoutEffect: (): undefined => undefined,
   };
   // default 位不可省：`src/client-entry.ts` 用 default import 取 React，
   // 只铺命名导出会让它在运行时拿到 undefined。
@@ -153,7 +157,7 @@ function rule(over: Partial<RuleCardView> = {}): RuleCardView {
   };
 }
 
-/** buildConfigRows 产物里渲染点真正吃进去的三个字段。 */
+/** 共享字段组件真正吃进去的三位（长说明会落到 detail 而不是常显 hint）。 */
 interface RowView {
   field: string;
   label: string;
@@ -166,26 +170,36 @@ function ignoreWrite(field: string, value: unknown): void {
   void value;
 }
 
-/** 配置行取值：不挂载，直接读 createElement 产物的 props（行组件是纯 props 消费者）。 */
+/** 配置行取值：不挂载，直接读三个小节 createElement 产物的 props。 */
 function configRows(translator: Translate): RowView[] {
-  const nodes = buildConfigRows({
+  const inputs = {
     t: translator,
-    writable: true,
     // 这一组读的是「可写、不在保存途中」的常态行；保存在途时的冻结行为由
     // test/client-data.test.ts 的「保存是一次原子提交」专门覆盖。
-    busy: false,
+    frozen: false,
     eff: (): unknown => undefined,
-    setField: (field: string, value: unknown): void => {
-      ignoreWrite(field, value);
-    },
+    setField: ignoreWrite,
     clearField: (field: string): void => {
       ignoreWrite(field, undefined);
     },
-  }) as unknown as { props: RowView }[];
-  return nodes.map((node) => {
-    const { field, label, hint } = node.props;
-    return { field, label, hint };
-  });
+  };
+  const sections = [
+    buildLoopSection(inputs),
+    buildPromotionSection(inputs),
+    buildCapacitySection(inputs),
+  ];
+  const out: RowView[] = [];
+  for (const section of sections) {
+    const { children } = (section as { props: { children: unknown } }).props;
+    const list = Array.isArray(children) ? children : [children];
+    for (const child of list) {
+      const { props } = child as {
+        props: { field: string; label: string; hint?: string; detail?: string };
+      };
+      out.push({ field: props.field, label: props.label, hint: props.hint ?? props.detail ?? "" });
+    }
+  }
+  return out;
 }
 
 const CONFIG_FIELDS = [
@@ -211,7 +225,7 @@ describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置
       CONFIG_FIELDS,
     );
     assert.equal(rows[0]?.label, "启用闭环");
-    assert.equal(rows[4]?.label, "候选升格门槛（次）");
+    assert.equal(rows[4]?.label, "候选升格门槛");
     assert.match(rows[0]?.hint ?? "", /\/lessons-digest/u);
     // 落盘串钉在**真实流水路径**上：host 写的是 cache/lesson-loop/events.jsonl
     // （host.ts 的 `lessonsFile: cacheFile("events.jsonl")`），旧串 metrics/lessons.jsonl 那个文件根本不存在。
@@ -235,7 +249,7 @@ describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置
     // （host.ts 的 `lessonsFile: cacheFile("events.jsonl")`），旧的
     // metrics/lessons.jsonl 已不存在，串还写着它就是卡面在承诺一段没人写的数据。
     // 精确等号（不是 includes）＝字典一改这里就红，逼着两处一起对齐。
-    assert.equal(rows[10]?.label, "events.jsonl disk fuse (bytes)");
+    assert.equal(rows[10]?.label, "events.jsonl disk fuse");
     for (const item of rows) {
       assert.doesNotMatch(item.label, HAN, `${item.field} 标题混进中文`);
       assert.doesNotMatch(item.hint, HAN, `${item.field} 说明混进中文`);
@@ -287,32 +301,6 @@ describe("规则评审区文案", () => {
     assert.equal(retiredToggleText(tZh, true, 3), "收起已拒绝/归档");
     assert.equal(retiredToggleText(tEn, false, 3), "Rejected / archived (3)");
     assert.equal(retiredToggleText(tEn, true, 3), "Hide rejected / archived");
-  });
-
-  it("卡片副标题：计数进模板；教训数未到达时是占位而不是 0", () => {
-    assert.equal(
-      cardDescriptionText(tZh, { candidates: 2, armed: 1, lessons: undefined }),
-      "教训总线 + 规则评审（候选 2 · 生效 1 · 教训 … 条）",
-    );
-    assert.equal(
-      cardDescriptionText(tEn, { candidates: 2, armed: 1, lessons: 9 }),
-      "Lesson bus + rule review (2 candidates · 1 armed · 9 lessons)",
-    );
-  });
-
-  it("保存条三态：只读 / 有改动 / 无改动（两语）", () => {
-    assert.equal(saveBarStatus(tZh, { dirty: false, writable: true }), "无未保存的修改");
-    assert.equal(
-      saveBarStatus(tZh, { dirty: true, writable: true }),
-      "有未保存的修改，点「保存」生效",
-    );
-    assert.equal(saveBarStatus(tZh, { dirty: true, writable: false }), "当前作用域只读");
-    assert.equal(saveBarStatus(tEn, { dirty: false, writable: true }), "No unsaved changes");
-    assert.equal(
-      saveBarStatus(tEn, { dirty: true, writable: true }),
-      "Unsaved changes — press Save to apply",
-    );
-    assert.equal(saveBarStatus(tEn, { dirty: true, writable: false }), "This scope is read-only");
   });
 });
 
@@ -368,14 +356,13 @@ const noOp = (): void => {
 const useReadyCard = ((selector: (snap: unknown) => unknown): unknown =>
   selector({ status: "ready", writable: true, value: {}, revision: 7 })) as never;
 
-/** 整张设置卡（展开态）的文本面：标题 + 11 条配置行 + 保存条 + 四个评审分节。 */
+/** 整张设置卡的文本面：三节配置行 + 保存条 + 四个评审分节 + 蒸馏提示。 */
 function cardText(translator: Translate): string {
   return textOf(
     createElement(LlcCard, {
       t: translator,
       useCard: useReadyCard,
       mutate: noWrite,
-      initialOpen: true,
     }),
   );
 }
@@ -404,7 +391,6 @@ function ruleText(translator: Translate, row: RuleCardView): string {
 
 /** 卡片外壳真正吃进去的字典键（这些串必须出现在渲染文本里）。 */
 const SHELL_KEYS = [
-  "cardTitle",
   "digestHint",
   "sectionCandidates",
   "sectionDemoted",
@@ -425,7 +411,6 @@ describe("整卡渲染（两语，直读 createElement 产物）", () => {
       assert.ok(text.includes(row.label), `${row.field} 的标题没进卡面`);
       assert.ok(text.includes(row.hint), `${row.field} 的说明没进卡面`);
     }
-    assert.equal(text.includes(UI_MESSAGES.en.cardTitle), false, "中文卡面不该混进英文标题");
   });
 
   it("en：同一张卡整面换英文，一个汉字都不剩", () => {
@@ -686,8 +671,8 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
       ],
       "两语字典都注册到官方 locale",
     );
-    assert.equal(registered[0]?.dict.cardTitle, UI_MESSAGES.zh.cardTitle);
-    assert.equal(registered[1]?.dict.cardTitle, UI_MESSAGES.en.cardTitle);
+    assert.equal(registered[0]?.dict.chipCandidates, UI_MESSAGES.zh.chipCandidates);
+    assert.equal(registered[1]?.dict.chipCandidates, UI_MESSAGES.en.chipCandidates);
     assert.deepEqual(boundNs, [NS], "bind 取本包命名空间的 translator");
     assert.deepEqual(slotNames, ["plugins.bundle.config"]);
     assert.equal(typeof view, "function", "卡片组件注册进槽位");
@@ -700,7 +685,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
       "原子写口（ConfigForm.mutate）随 payload 下发",
     );
     // 下发的 translator 直接吃官方字典：同一渲染点换成 tEn 就是整卡换语言
-    assert.equal(injected.t("cardTitle"), UI_MESSAGES.zh.cardTitle);
+    assert.equal(injected.t("chipCandidates", { count: 2 }), "候选 2");
     // 回收顺序即 apply 的注册顺序：样式 → locale 两语 → 槽位。槽位的 disposer 只注销，
     // **不再** dispose 表单——0.2.1-alpha.2 的 `configForms.get(entryId)` 交回的是 provider 持有的
     // 共享表单（installed config-form.d.ts:133-137，实例按 entryId 缓存在 provider 的

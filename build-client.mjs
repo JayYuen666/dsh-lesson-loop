@@ -54,6 +54,8 @@ const CLIENT_BASELINE = [
   "react-dom",
   "react-dom/client",
   "@deepseek-ai/cordis",
+  "zod",
+  "@tanstack/react-virtual",
   "@deepseek-ai/dsh-client-store",
   "@deepseek-ai/dsh-client-ui-slots",
   "@deepseek-ai/dsh-client-ui-primitives",
@@ -94,7 +96,11 @@ function declaredClientExternals() {
  * @returns {string[]} 需要保持外部的模块说明符。
  */
 export function clientExternals() {
-  return [...CLIENT_BASELINE, ...declaredClientExternals()];
+  // 合并处去重：声明段与基座重叠（最典型是顺手补一条 "react-dom"）时，清单里同一说明符
+  // 只该出现一次。实测 rolldown 对重复 external 幂等（同一份源码加不加重复项产物逐字节
+  // 相同），所以这条不是修构建错误，而是让"清单里每枚说明符唯一"成为本文件自己的口径，
+  // 不让下游行为去依赖打包器实现细节。声明段本身仍原样收（不裁剪、不排序）。
+  return [...new Set([...CLIENT_BASELINE, ...declaredClientExternals()])];
 }
 
 /** 生成头的前缀（写盘自检判据；tests 里钉的是同一句）。 */

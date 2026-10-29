@@ -22,7 +22,9 @@ const BUDGETS: readonly (readonly [string, number])[] = [
   // 对应新条目——host.js 由 153 KB 预算对应的实测值涨到约 159 KB，预算按 25% 浮动口径跟着抬。
   ["host.js", 199_000],
   // 规则读面迁到官方 Typert Remote 后，客户端多了一枚 descriptor/读取器（约 6 KB）。
-  ["client.js", 55_000],
+  // 设置卡迁到 @jayyuen66/dsh-plugin-shared/lib/card-ui 后，卡片样式与组件逻辑随包进
+  // client.js（实测增加约 9 KB），预算按迁移后的实量重定。
+  ["client.js", 80_000],
 ];
 
 /**

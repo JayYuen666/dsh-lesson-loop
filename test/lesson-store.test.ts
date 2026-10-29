@@ -754,6 +754,49 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(mergedRule.armedAt, 20, "锚点取更晚那张，不因整片继承而拉早");
     });
 
+    it("主卡自己带着更晚的 armedAt 时继承不许把锚点拉早（只有一张碎片也一样）", async () => {
+      // candidate 卡从 armed 降级/拒绝/归档再复活时 armedAt 是保留的，所以「主卡不是
+      // armed」不等于「主卡没有锚点」。整片取代会让 decayVerdict 的
+      // `now - anchor >= decayDays` 提前成立 —— 一张刚升格的卡会被立刻判降级。
+      // 这条只放一张 armed 碎片：多张时 foldMetrics 的 laterOf 会偶然把锚点抬回最大，
+      // 恰好掩盖掉整片取代的 bug（既有用例就是多张，故它钉不住这一条）。
+      const store = seedStore([
+        stableCandidateRow({ armedAt: 20, createdAt: 1 }),
+        armedFragmentRow({
+          id: "f-armed-1",
+          signature: SIGNATURE_PATH_A,
+          armedAt: 10,
+          violation: 4,
+          suppressed: 3,
+          samples: 9,
+        }),
+      ]);
+      await store.migrateFragmentRules();
+      const [mergedRule] = store.rules();
+      assert.ok(mergedRule);
+      assert.equal(mergedRule.status, "armed");
+      assert.equal(mergedRule.armedAt, 20, "主卡自带的更晚锚点必须留下");
+      assert.equal(mergedRule.violation, 4, "度量照常从碎片继承");
+    });
+
+    it("主卡带更晚的 lastViolationAt / lastSuppressedAt 时同样不许被更早的碎片覆盖", async () => {
+      const store = seedStore([
+        stableCandidateRow({ lastViolationAt: 30, lastSuppressedAt: 40, createdAt: 1 }),
+        armedFragmentRow({
+          id: "f-armed-1",
+          signature: SIGNATURE_PATH_A,
+          armedAt: 10,
+          lastViolationAt: 5,
+          lastSuppressedAt: 6,
+        }),
+      ]);
+      await store.migrateFragmentRules();
+      const [mergedRule] = store.rules();
+      assert.ok(mergedRule);
+      assert.equal(mergedRule.lastViolationAt, 30, "「最近一次」不能被更早的覆盖");
+      assert.equal(mergedRule.lastSuppressedAt, 40);
+    });
+
     // 人工否决 / 降级不可被归并翻掉：归并是机器动作，要复活只有 ruleAction(id,"arm")。
     // 这三档的度量仍然并入（碎片里真实测到的违规不能丢），变的只是状态。
     it.each(["rejected", "archived", "demoted"] as const)(
@@ -1666,7 +1709,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.deepEqual(read.cards, []);
     });
 
-    it("缺 id 的存量行被丢弃并上报；条数变化再报（数据丢失不许无痕）", () => {
+    it("缺 id 的存量行读不出来但被保留并上报；条数变化再报（数据丢失不许无痕）", () => {
       const rows: unknown[] = [
         { id: "kept", category: "c", signature: "s", status: "armed" },
         { category: "c", signature: "s" },
@@ -1679,14 +1722,55 @@ describe("lesson-store：台账、规则库与度量", () => {
       const read = repo.load();
       assert.equal(read.usable, true, "缺 id 的行只丢那一行，不构成读不可用");
       assert.equal(read.cards.length, 1, "好行照常读出");
-      assert.match(loggedText(), /2 rule row\(s\) without a usable id dropped/u);
+      assert.match(loggedText(), /2 rule row\(s\) without a usable id kept as-is/u);
       const before = logged().length;
       repo.load();
       assert.equal(logged().length, before, "条数没变不重复刷");
       // 坏行被修掉一条 → 条数变化再报一次
       rows.pop();
       repo.load();
-      assert.match(loggedText(), /1 rule row\(s\) without a usable id dropped/u);
+      assert.match(loggedText(), /1 rule row\(s\) without a usable id kept as-is/u);
+    });
+
+    it("读到过归一不了的行之后写回：坏行原样留在库里，不许被整片覆盖抹掉", async () => {
+      // save 是整段替换（mergeLayers 对数组整体覆盖），归一不了的行不在 cards 里，
+      // 直接写就是把用户存量删掉且无备份。坏数据可以被人工修好，被覆盖掉就找不回来。
+      // 也不选"拒写"：一件坏行会锁死整个规则库（记账、衰减、规则动作全停），
+      // 代价大于让这段坏数据继续留着等人修。
+      const bad = { category: "c", signature: "s" };
+      const rows: unknown[] = [{ id: "kept", category: "c", signature: "s", status: "armed" }, bad];
+      let stored: readonly unknown[] = [];
+      let updates = 0;
+      const cas: SettingsCasSurface = {
+        describe: () => [{ ns: SETTINGS_NAMESPACE, value: { rules: rows }, revision: 1 }],
+        update: async (_ns: string, patch: { rules?: readonly unknown[] }): Promise<void> => {
+          updates += 1;
+          stored = patch.rules ?? [];
+        },
+      };
+      const repo = createRulesRepository(cas);
+      const read = repo.load();
+      assert.equal(read.cards.length, 1);
+      assert.equal(await repo.save(read.cards, read.revision), "persisted");
+      assert.equal(updates, 1);
+      assert.equal(stored.length, 2, "好行 + 坏行，一条都不许少");
+      assert.deepEqual(stored[1], bad, "归一不了的那一行原样还在落盘内容里");
+    });
+
+    it("库里没有坏行时写回内容与入参等价（保留逻辑不掺东西进来）", async () => {
+      const rows: unknown[] = [{ id: "kept", category: "c", signature: "s", status: "armed" }];
+      let stored: readonly unknown[] = [];
+      const cas: SettingsCasSurface = {
+        describe: () => [{ ns: SETTINGS_NAMESPACE, value: { rules: rows }, revision: 1 }],
+        update: async (_ns: string, patch: { rules?: readonly unknown[] }): Promise<void> => {
+          stored = patch.rules ?? [];
+        },
+      };
+      const repo = createRulesRepository(cas);
+      const read = repo.load();
+      assert.equal(await repo.save(read.cards, read.revision), "persisted");
+      assert.equal(stored.length, 1);
+      assert.equal((stored[0] as { id?: string }).id, "kept");
     });
   });
 
@@ -2281,6 +2365,61 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(revived.ok, false);
       assert.equal(revived.reason, PERSIST_FAILED);
       assert.equal(ruleById(store, "s-rev")?.status, "rejected", "库里仍按旧状态读");
+    });
+
+    it("规则面写失败后重试同一条教训：流水只留一行，规则卡只加一次", async () => {
+      // report 的两笔写没有事务：流水（cache 追加）在前、规则面（settings CAS）在后。
+      // 上一次规则面失败、调用方按回执重试时，若不认得"这条流水已经写过"，就会在流水
+      // 里留下两条"这条教训发生过"，而规则卡只累加一次——两个计数从此对不上。
+      const scripted = scriptedRulesRepository({ outcomes: ["rejected", "persisted"] });
+      const store = makeStore({ rules: scripted.repo });
+      const first = await store.report(rec() as never);
+      assert.equal(first.ok, false, "第一次规则面被拒：回执如实说没生效");
+      const second = await store.report(rec() as never);
+      assert.equal(second.ok, true, "重试这次规则面写成了");
+      const rows = readJsonl(path.join(scratch, LEDGER_FILE_NAME));
+      assert.equal(rows.length, 1, "同一条教训重试不追加第二行流水");
+      // 端口记账：两次 save 各带一张卡、occurrences 都是 1——重试没有把同一条教训
+      // 在规则面上累加两次（若流水去重顺手把规则面也折了，这里会少一次写）。
+      assert.equal(scripted.saves(), 2, "规则面照常各写一次（去重只针对流水）");
+      for (const [index, batch] of scripted.batches().entries()) {
+        assert.equal(batch.cards.length, 1, `第 ${String(index + 1)} 次写回执带一张卡`);
+        assert.equal(batch.cards[0]!.occurrences, 1, `第 ${String(index + 1)} 次写不带二次累加`);
+      }
+    });
+
+    it("换一条教训（不同签名或不同会话轮次）照常各写一行流水", async () => {
+      // 去重只认"同一次发生"：签名/会话/轮次/细节任何一位变了就是另一件事，
+      // 上一笔失败的记号不许吃掉它。
+      const scripted = scriptedRulesRepository({
+        outcomes: ["rejected", "persisted", "persisted"],
+      });
+      const store = makeStore({ rules: scripted.repo });
+      const firstRetry = await store.report(rec() as never);
+      assert.equal(firstRetry.ok, false);
+      const otherLesson = await store.report(rec({ signature: "another" }) as never);
+      assert.equal(otherLesson.ok, true);
+      const secondRetry = await store.report(rec() as never);
+      assert.equal(secondRetry.ok, true);
+      const rows = readJsonl(path.join(scratch, LEDGER_FILE_NAME));
+      // 三行各是三次不同发生：①原条目（规则面失败）②另一签名 ③原条目在此后的
+      // 真实再次发生（②已成功，记号已清，故③照写）。
+      assert.equal(rows.length, 3, "记号只吃掉紧邻那一次重试，不吃掉后来的真实发生");
+      assert.deepEqual(
+        rows.map((row) => row["signature"]),
+        [SIGNATURE_PATH_A, "another", SIGNATURE_PATH_A],
+      );
+    });
+
+    it("规则面写成功之后不残留去重记号：同一教训再次真实发生要能再落一行", async () => {
+      const scripted = scriptedRulesRepository({ outcomes: ["persisted", "persisted"] });
+      const store = makeStore({ rules: scripted.repo });
+      const once = await store.report(rec() as never);
+      assert.equal(once.ok, true);
+      const twice = await store.report(rec() as never);
+      assert.equal(twice.ok, true);
+      const rows = readJsonl(path.join(scratch, LEDGER_FILE_NAME));
+      assert.equal(rows.length, 2, "两次真实发生各落一行（上次成功后记号必须清掉）");
     });
 
     it("lessons.jsonl 写不进（父路径是文件）→ 只记日志，report 仍返回候选回执", async () => {

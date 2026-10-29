@@ -2,6 +2,32 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.7
+
+这一版把插件页的展示面交给 locale 与详情文档，设置卡与请求校验统一到 shared 组件和 zod，读面失败改走本地化回执；同时修掉重试重复记账、整片覆盖删存量行与升格时间戳被拉早这三处会静默算错或丢数据的边。
+
+### Changed
+
+- **插件页展示面下沉到 locale**：新增 `locale/en.json` / `locale/zh.json` 的 `meta.title`、`meta.description` 与 `meta.detail`；详情页英文读 `docs/DETAIL.md`、中文读 `docs/DETAIL.zh.md`。`exports` 增加 `./locale/*.json`，`files` 在 locale 两条之后紧跟 `docs`。插件页不再从 README 取标题与说明。
+- **设置卡迁到 shared 组件与 zod 校验**：开关、数字、保存条与状态条改用 `@jayyuen66/dsh-plugin-shared/lib/card-ui`，卡片文案按分区、状态条与单位拆开；`src/rules-reader.ts` 的 strict codec 由手写判断换成 zod schema。`zod` 因此进入 `dependencies`，与 react 一样由宿主平台模块提供，避免第二份身份。
+- **读面失败改走本地化回执**：`stats` / `rules` / `lessons` 不再把宿主异常抛给网关折成英文内部错误，而是回 `{ ok: false, error, status: 500 }`；卡片按方法显示对应文案，日志保留原文。
+- **摘要候选解析改用 zod**：`lib/digest-prompt.ts` 的类别白名单、正文非空与签名兜底收敛为一张 schema；白名单仍与输出契约行同源。
+
+### Fixed
+
+- **单仓安装态下 client 测试拿到真实 React hook**：registry 版 shared 的 `dist/card-ui.js` 被
+  vitest 外部化，它内部的 `require("react")` 绕过 `vi.mock("react")`；vitest 配置把
+  `@jayyuen66/dsh-plugin-shared` 内联，测试架重新走 mock。
+- **CAS 失败后的上报重试不再重复写事件流水**：上一次已追加流水、只是规则面没写成时，同一教训的重试不再追加第二行，流水条数与规则卡计数不会分叉。
+- **规则库整片覆盖保留读不动的存量行**：`save` 把 `normalizeRuleCardRow` 判掉的行原样带回，不再因为一次保存把用户的旧卡永久删除。
+- **armed 碎片继承时间戳取更晚者**：主卡已有的 `armedAt` / `lastViolationAt` / `lastSuppressedAt` 不再被更早的碎片覆盖，避免刚升格的卡被 `decayVerdict` 提前判降级。
+- **两份 README 补上支持窗口与读面回执**：宿主版本号不再写成长期承诺；`stats unavailable` 的两种成因分开，读方法失败的 `{ ok: false, error, status }` 写进对外接口。
+
+### Added
+
+- 新增统计、规则列表与事件流水的本地化读面错误文案。
+- 新增 `docs/DETAIL.md` 与 `docs/DETAIL.zh.md` 作为插件页详情来源。
+
 ## 0.1.6
 
 这一版收口全仓审查：事件流水与规则库在坏数据与并发边上改为 fail-closed，蒸馏与读面补齐边界，测试门禁与发布工作流加固；设置卡新增规则正文上限。对外方法面保持兼容，新增 `statement-too-long` 回执与 `maxStatementChars` 设置；`lessons` 的默认条数与 `detail` 长度改为有界。

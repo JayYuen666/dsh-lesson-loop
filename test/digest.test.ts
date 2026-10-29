@@ -14,11 +14,14 @@ import type { DigestRunOptions, SessionEvent, LlmService, SessionLike } from "..
 // 这层边界直接取用——被测的就是这两个模块，runDigest 只是它们的另一个生产消费者。
 import { collectNegativeFeedback } from "../lib/negative-feedback.ts";
 import {
+  DIGEST_CATEGORIES,
   buildDigestPrompt,
   digestSystemPrompt,
   lessonsBackground,
   parseDigestOutput,
 } from "../lib/digest-prompt.ts";
+import { CATEGORY_SIGNATURES } from "../lib/rule-signature.ts";
+import { CATEGORY_STATEMENTS, draftStatement } from "../lib/statement-draft.ts";
 import { MESSAGES, fill } from "../lib/messages.ts";
 import type { LessonLoopMessages } from "../lib/messages.ts";
 import { fenceUntrusted } from "../lib/prompt.ts";
@@ -680,6 +683,30 @@ describe("digest 蒸馏管线", () => {
             `${name}.${key} 含 JSON/骨架元字符，会把输出契约行改坏`,
           );
         }
+      }
+    });
+
+    it("类别清单与 CATEGORY_STATEMENTS 同域：新增分类却漏登记模板会当场红", () => {
+      // lib/statement-draft.ts 的表把"分类 → 正文选型"写死，而分类的权威清单在
+      // lib/digest-prompt.ts。两者漂移的后果不是崩溃而是**静默降级**：新分类落到
+      // statementGeneric 兜底，稳定签名原文被当具体路径/命令嵌进注入给模型的正文。
+      // 反方向同样要钉：表里留着已下线的分类等于一条永远走不到的死条目。
+      assert.deepEqual(
+        [...DIGEST_CATEGORIES].toSorted(),
+        Object.keys(CATEGORY_STATEMENTS).toSorted(),
+        "类别清单与 CATEGORY_STATEMENTS 的键集必须同域",
+      );
+    });
+
+    it("每个登记分类都真的起草出分类专属正文（不是落到通用兜底）", () => {
+      // 光比键集不够：某条目指向不存在的模板 key 时键集照样同域，正文却退成通用兜底。
+      // 逐类拿一个稳定签名去起草，断言它不等于 statementGeneric 的渲染。
+      for (const category of DIGEST_CATEGORIES) {
+        const stableSignature = CATEGORY_SIGNATURES[category] ?? category;
+        const drafted = draftStatement(category, stableSignature, MESSAGES.zh);
+        const generic = fill(MESSAGES.zh.statementGeneric, { signature: stableSignature });
+        assert.notEqual(drafted, generic, `${category} 的正文退成了通用兜底（模板没接上）`);
+        assert.ok(drafted.length > 0, `${category} 起草出空正文`);
       }
     });
   });

@@ -154,6 +154,10 @@ export interface LessonLoopMessages {
   /** 落库失败（拒写 / CAS 冲突耗尽）——库里还是旧状态，必须与"已生效"分开讲。 */
   readonly errRulePersistFailed: string;
   readonly errRuleActionFailed: string;
+  /** 读面兜底：统计 / 规则列表 / 事件流水读失败时下发的话（成功码 `ok:true` 时用不到）。 */
+  readonly errStatsUnavailable: string;
+  readonly errRulesUnavailable: string;
+  readonly errLessonsUnavailable: string;
 }
 
 /**
@@ -264,6 +268,9 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     errRuleNotFound: "找不到该规则",
     errRulePersistFailed: "规则库拒绝了这次写入，改动未生效，请重试",
     errRuleActionFailed: "规则操作失败",
+    errStatsUnavailable: "读不到统计：宿主侧读面出错，请重试",
+    errRulesUnavailable: "读不到规则列表：宿主侧读面出错，请重试",
+    errLessonsUnavailable: "读不到事件流水：宿主侧读面出错，请重试",
   },
   en: {
     sectionText: [
@@ -363,5 +370,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     errRuleNotFound: "rule not found",
     errRulePersistFailed: "The rule library refused this write — nothing was applied, retry",
     errRuleActionFailed: "rule action failed",
+    errStatsUnavailable: "stats unavailable: the host read path failed — retry",
+    errRulesUnavailable: "rule list unavailable: the host read path failed — retry",
+    errLessonsUnavailable: "event stream unavailable: the host read path failed — retry",
   },
 };

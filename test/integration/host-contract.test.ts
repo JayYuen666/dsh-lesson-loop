@@ -222,7 +222,7 @@ describe("真实 cordis 装载面：lesson-loop 的服务契约", () => {
 
   afterEach(async () => {
     if (live !== undefined) {
-      await Promise.all([...live.loader.entries()].map((item) => disposeFiber(item)));
+      await Promise.all(Array.from(live.loader.entries(), (item) => disposeFiber(item)));
       live = undefined;
     }
     rmSync(scratch, { recursive: true, force: true });

@@ -92,8 +92,7 @@ const QUOTE_MARK = "│ ";
  *  VT (U+000B)、FF (U+000C) 虽不在 CommonMark 的换行集合里，但 ICU/Java 系渲染端把
  *  它们当换行——本函数的设计前提是"渲染器可能把别的字符也当换行"，归一成本极低，
  *  宁多勿少。 */
-// oxlint-disable-next-line eslint/no-control-regex -- VT/FF/NEL 是控制字符，但当行终止符正是本正则的目的（误用拦截不适用于刻意用法）。
-const LINE_TERMINATOR = /\r\n|[\n\r\u2028\u2029\u0085\u000B\u000C]/u;
+const LINE_TERMINATOR = /\r\n|[\n\r\u2028\u2029\u0085\v\f]/u;
 
 /** 行首结构符：编号（1. / 1）/ 1、）、分隔线、标题、标签、列表与引用符。 */
 const STRUCTURAL_LEAD =

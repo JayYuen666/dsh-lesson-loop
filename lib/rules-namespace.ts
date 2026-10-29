@@ -216,17 +216,20 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
       corruptReported = false;
     }
   };
-  // 缺 id 坏行的上报台账（每端口实例一份，不随 /stats 轮询刷屏）：条数变化才报一次。
-  // 丢弃必须留痕——save 用本次读出的卡整片覆盖 rules 数组，坏行会在下一次落盘时被
-  // 永久删除，人得能从日志看见。
-  let lastDroppedRows = 0;
-  const reportDroppedRows = (dropped: number): void => {
-    if (dropped > 0 && dropped !== lastDroppedRows) {
+  // 缺 id 坏行的台账（每端口实例一份，不随 /stats 轮询刷屏）：**原文**记着最近一次读出时
+  // 归一不了的那几行，save 把它们原样带回去。理由是整片覆盖：save 只写出本次读到的
+  // `cards`，被 normalizeRuleCardRow 判掉的行不在里面，落盘那一刻就从用户存量里永久
+  // 消失（无备份、无回退路径）。而丢弃判据来自那个会随版本演进的归一器——新版本收紧
+  // 任何必填字段，升级后所有旧卡都会"看起来缺 id"，不搬回去就是让一次升级把整库清空。
+  // 只记数不够用：复原地需要那几行本身。
+  let droppedRowsKept: readonly unknown[] = [];
+  const reportDroppedRows = (droppedRows: readonly unknown[]): void => {
+    if (droppedRows.length > 0 && droppedRows.length !== droppedRowsKept.length) {
       console.warn(
-        `[${SETTINGS_NAMESPACE}] ${String(dropped)} rule row(s) without a usable id dropped from "${SETTINGS_NAMESPACE}.${RULES_FIELD}" — the next save will drop them from the stored library`,
+        `[${SETTINGS_NAMESPACE}] ${String(droppedRows.length)} rule row(s) without a usable id kept as-is in "${SETTINGS_NAMESPACE}.${RULES_FIELD}" (unreadable to this version — fix or remove them by hand)`,
       );
     }
-    lastDroppedRows = dropped;
+    droppedRowsKept = droppedRows;
   };
   // describe() 抛错那一路同样按"状态翻转才报"的节流：load() 在 /stats 轮询与每次
   // report 上都会被调用，provider 持续抛错（文档解析失败、服务半装配）时每次都刷
@@ -254,7 +257,7 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
         reportCorruption(false);
         readErrorReported = false;
         const projection = cardsOfValue(found.value);
-        reportDroppedRows(projection.dropped);
+        reportDroppedRows(projection.droppedRows);
         return {
           revision: found.revision,
           cards: projection.cards,
@@ -273,7 +276,11 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
         // 整段替换 rules 键（mergeLayers 对数组是整体覆盖），故传入的数组必须
         // 来自"写这一刻"的读取——见 LessonStore.commit 的 CAS 纪律。
         // 证据在落盘前收敛（细节截断 + 只留最近 N 条）：否则 patch 文档随失败次数无界增长。
-        await surface.update(SETTINGS_NAMESPACE, { [RULES_FIELD]: capEvidence(cards) }, revision);
+        // 读不动的存量行原样追加在末尾：它们不是本次改动的一部分，但整片覆盖会把它们
+        // 删掉。补回去而不是拒写——拒写会让一件坏行把整个规则库锁死（记账、衰减、
+        // 规则动作全停），代价远大于"这段坏数据继续留着等人修"。
+        const payload = [...capEvidence(cards), ...droppedRowsKept];
+        await surface.update(SETTINGS_NAMESPACE, { [RULES_FIELD]: payload }, revision);
         return "persisted";
       } catch (error) {
         if (isSettingsConflict(error)) {

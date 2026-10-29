@@ -6,7 +6,7 @@
 // 为什么 descriptor 是**手写**的：宿主网关在源模式（SRC）下从方法签名推参数名，参数与
 // 结果都走 `{ mode: "src-json" }`，不需要生成器的 `typeSymbol` / `create()` 产物。但**客户端**
 // 的贡献校验（`$mount` → `requireStrictCodec`）要求每个入参都带 strict codec，非 strict 会
-// 拒绝整份贡献。于是这里的入参 codec 写成 strict 的手写 parser：它只在客户端做形状校验，
+// 拒绝整份贡献。于是这里的入参 codec 写成 strict 的 zod schema：它只在客户端做形状校验，
 // 从不跨网；宿主那边仍按源模式从签名取参数名。
 //
 // ⚠ **为什么走 `ctx.get("remote")` 而不是把 `remote` 写进 `inject`**：cordis 对**未 inject 的
@@ -21,6 +21,7 @@ import type {
   TypertCodec,
 } from "@deepseek-ai/dsh-typert-protocol";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { z } from "zod";
 
 import { RULES_BUNDLE_PACKAGE, RULES_REMOTE_NAMESPACE } from "../lib/rules-shape.ts";
 import type {
@@ -40,20 +41,57 @@ const RULES_SERVICE_KEY = `remote.${RULES_REMOTE_NAMESPACE}`;
  *  client-entry 的 BUNDLE_PKG 与这里都从它取——字面量只有一份。 */
 const PACKAGE_NAME = RULES_BUNDLE_PACKAGE;
 
+/** strict codec 的统一出口：失败交给 zod 的 `prettifyError`，读到的是一份带字段路径的说明。 */
+function parseOrThrow<Result>(schema: z.ZodType<Result>, value: unknown): Result {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new TypeError(z.prettifyError(parsed.error));
+  }
+  return parsed.data;
+}
+
+const RULES_PROJECT_MESSAGE = "rules request project must be a string";
+const RULES_SCHEMA = z.object(
+  { project: z.string({ error: RULES_PROJECT_MESSAGE }).optional() },
+  { error: "rules request must be an object" },
+);
+
+const LESSONS_PROJECT_MESSAGE = "lessons request project must be a string";
+// NaN/Infinity/负数不该被当成"合法请求"放给宿主——宿主对非有限与 ≤0 一律取
+// 默认条数，非法值静默降级成一次正常请求会让调用方看不出自己传错了。0 是
+// 有语义的显式形态（与缺省同走默认条数），放行。
+const LESSONS_LIMIT_MESSAGE = "lessons request limit must be a non-negative finite number";
+const LESSONS_SCHEMA = z.object(
+  {
+    project: z.string({ error: LESSONS_PROJECT_MESSAGE }).optional(),
+    limit: z
+      .number({ error: LESSONS_LIMIT_MESSAGE })
+      .refine((value) => Number.isFinite(value) && value >= 0, {
+        error: LESSONS_LIMIT_MESSAGE,
+      })
+      .optional(),
+  },
+  { error: "lessons request must be an object" },
+);
+
+const RULE_ACTION_MESSAGE = "rule-action request requires string id and action";
+const RULE_ACTION_SCHEMA = z.object(
+  {
+    id: z.string({ error: RULE_ACTION_MESSAGE }),
+    action: z.string({ error: RULE_ACTION_MESSAGE }),
+    statement: z.string({ error: "rule-action request statement must be a string" }).optional(),
+  },
+  { error: "rule-action request must be an object" },
+);
+
 /** 规则列表请求的客户端 parser：只核本方法真正读的那一位（`project` 是串或缺失）。 */
 const RULES_CODEC: TypertCodec<RulesRequest> = {
   mode: "strict",
   typeSymbol: `${PACKAGE_NAME}#rules-request`,
   create: () => ({
     parse(value: unknown): RulesRequest {
-      if (!isRecord(value)) {
-        throw new TypeError("rules request must be an object");
-      }
-      const { project } = value;
-      if (project !== undefined && typeof project !== "string") {
-        throw new TypeError("rules request project must be a string");
-      }
-      return project === undefined ? {} : { project };
+      const request = parseOrThrow(RULES_SCHEMA, value);
+      return request.project === undefined ? {} : { project: request.project };
     },
   }),
 };
@@ -64,26 +102,10 @@ const LESSONS_CODEC: TypertCodec<LessonsRequest> = {
   typeSymbol: `${PACKAGE_NAME}#lessons-request`,
   create: () => ({
     parse(value: unknown): LessonsRequest {
-      if (!isRecord(value)) {
-        throw new TypeError("lessons request must be an object");
-      }
-      const { project } = value;
-      const { limit } = value;
-      if (project !== undefined && typeof project !== "string") {
-        throw new TypeError("lessons request project must be a string");
-      }
-      if (
-        limit !== undefined &&
-        (typeof limit !== "number" || !Number.isFinite(limit) || limit < 0)
-      ) {
-        // NaN/Infinity/负数不该被当成"合法请求"放给宿主——宿主对非有限与 ≤0 一律取
-        // 默认条数，非法值静默降级成一次正常请求会让调用方看不出自己传错了。0 是
-        // 有语义的显式形态（与缺省同走默认条数），放行。
-        throw new TypeError("lessons request limit must be a non-negative finite number");
-      }
+      const request = parseOrThrow(LESSONS_SCHEMA, value);
       return {
-        ...(project === undefined ? {} : { project }),
-        ...(limit === undefined ? {} : { limit }),
+        ...(request.project === undefined ? {} : { project: request.project }),
+        ...(request.limit === undefined ? {} : { limit: request.limit }),
       };
     },
   }),
@@ -95,17 +117,10 @@ const RULE_ACTION_CODEC: TypertCodec<RuleActionRequest> = {
   typeSymbol: `${PACKAGE_NAME}#rule-action-request`,
   create: () => ({
     parse(value: unknown): RuleActionRequest {
-      if (!isRecord(value)) {
-        throw new TypeError("rule-action request must be an object");
-      }
-      const { id, action, statement } = value;
-      if (typeof id !== "string" || typeof action !== "string") {
-        throw new TypeError("rule-action request requires string id and action");
-      }
-      if (statement !== undefined && typeof statement !== "string") {
-        throw new TypeError("rule-action request statement must be a string");
-      }
-      return statement === undefined ? { id, action } : { id, action, statement };
+      const request = parseOrThrow(RULE_ACTION_SCHEMA, value);
+      return request.statement === undefined
+        ? { id: request.id, action: request.action }
+        : { id: request.id, action: request.action, statement: request.statement };
     },
   }),
 };

@@ -30,13 +30,14 @@ import type { LessonLoopMessages } from "./messages.ts";
 import { RULES_REMOTE_NAMESPACE } from "./rules-shape.ts";
 import type {
   LessonView,
+  LessonsReply,
   LessonsRequest,
-  LessonsResult,
+  ReadRefused,
   RuleActionName,
   RuleActionReply,
   RuleActionRequest,
+  RulesReply,
   RulesRequest,
-  RulesResult,
   RuleView,
 } from "./rules-shape.ts";
 
@@ -55,6 +56,39 @@ const ALLOWED_ACTIONS: ReadonlySet<string> = new Set(
     revive: true,
   } satisfies Record<RuleActionName, true>),
 );
+
+/** 三个读方法各自的名字：既是日志里的方法名，也是拒读文案的键选择器。 */
+type ReadMethodName = "stats" | "rules" | "lessons";
+
+/**
+ * 读方法 → 消息表键。写成一张受类型约束的表而不是三段 if：新增读方法时漏登记是
+ * **编译期**错误（键集由 `satisfies` 钉住），不会静默复用别的文案。
+ */
+const READ_REFUSAL_KEYS = {
+  stats: "errStatsUnavailable",
+  rules: "errRulesUnavailable",
+  lessons: "errLessonsUnavailable",
+} as const satisfies Record<ReadMethodName, keyof LessonLoopMessages>;
+
+/**
+ * 读失败的统一出口：日志记原文（只有它含可排查的细节），回执只给本地化文案。
+ *
+ * `which` 同时是日志里的方法名与消息表的键选择器——三者写成一张表而不是三段
+ * if，新增读方法时漏加分支会是**类型错误**（键集由 `Record<ReadMethodName, …>`
+ * 约束），而不是静默落到某一枚文案上。
+ *
+ * 写成模块级函数而不是私有方法：服务原型上每个自有方法都必须带 `@Remote` 标记
+ * （remoteMethods 的对质用例钉着），私有工具方法会在那条断言里表现为"漏标方法"，
+ * 而放宽那条断言等于把真正漏标的新方法一起放过。
+ */
+function refuseRead(
+  messages: LessonLoopMessages,
+  which: ReadMethodName,
+  error: unknown,
+): ReadRefused {
+  console.error(`[lesson-loop] ${which} request failed: ${errorText(error)}`);
+  return { ok: false, error: messages[READ_REFUSAL_KEYS[which]], status: 500 };
+}
 
 function isRuleAction(value: unknown): value is RuleActionName {
   return typeof value === "string" && ALLOWED_ACTIONS.has(value);
@@ -178,35 +212,53 @@ export class LessonRulesService extends TypertRemoteService {
     this.deps = deps;
   }
 
-  /** 卡片轮询的入口：计数 + 配置摘要 + 全量规则投影（证据已去掉）。 */
+  /** 卡片轮询的入口：计数 + 配置摘要 + 全量规则投影（证据已去掉）。
+   *
+   *  失败折成 `{ ok: false, error }` 而不是抛（理由同 {@link ReadRefused}）：这三个读
+   *  方法各摸一个 I/O 面，抛出去只会让网关把它折成一句英文内部错误贴到卡片上。 */
   public stats(): Record<string, unknown> {
-    const rules = this.deps.store.rules();
-    return {
-      // ok 写在展开之后：stats 快照对返回键没有约束，快照哪天带上 ok:false/error，
-      // 一次正常轮询就会被卡片判成失败——成功码不许被展开覆盖。
-      ...this.deps.stats(rules),
-      rules: rules.map((rule) => ruleViewOf(this.deps.store, rule)),
-      ok: true,
-    };
+    try {
+      const rules = this.deps.store.rules();
+      return {
+        // ok 写在展开之后：stats 快照对返回键没有约束，快照哪天带上 ok:false/error，
+        // 一次正常轮询就会被卡片判成失败——成功码不许被展开覆盖。
+        ...this.deps.stats(rules),
+        rules: rules.map((rule) => ruleViewOf(this.deps.store, rule)),
+        ok: true,
+      };
+    } catch (error) {
+      // 摊成对象字面量而不是直接返回 ReadRefused：本方法的返回类型是开放式记录
+      // `Record<string, unknown>`，而 interface 没有隐式索引签名，直接返回会 TS2322。
+      const refused = refuseRead(this.deps.messagesOf(), "stats", error) satisfies ReadRefused;
+      return { ...refused };
+    }
   }
 
   /** 规则列表：project 缺省给全量，给定即按卡片自存的 project 过滤。 */
-  public rules(request: RulesRequest): RulesResult {
-    const project = projectOf(request);
-    const all = this.deps.store.rules();
-    const rules = (
-      project === undefined ? all : all.filter((rule) => rule.project === project)
-    ).map((rule) => ruleViewOf(this.deps.store, rule));
-    return { ok: true, rules };
+  public rules(request: RulesRequest): RulesReply {
+    try {
+      const project = projectOf(request);
+      const all = this.deps.store.rules();
+      const rules = (
+        project === undefined ? all : all.filter((rule) => rule.project === project)
+      ).map((rule) => ruleViewOf(this.deps.store, rule));
+      return { ok: true, rules };
+    } catch (error) {
+      return refuseRead(this.deps.messagesOf(), "rules", error);
+    }
   }
 
   /** 事件流水只读投影（detail 截断、不外借原始 evidence），零写面；条数有默认值与
    *  上限（见 limitOf），detail 是门禁输出/命令串一类的敏感面，不设界等于把整份流水
    *  一次性序列化给浏览器。 */
-  public lessons(request: LessonsRequest): LessonsResult {
-    const lessons = this.deps.store.recentLessons(projectOf(request), limitOf(request));
-    const views = lessons.map((lesson) => lessonViewOf(lesson));
-    return { ok: true, count: views.length, lessons: views };
+  public lessons(request: LessonsRequest): LessonsReply {
+    try {
+      const lessons = this.deps.store.recentLessons(projectOf(request), limitOf(request));
+      const views = lessons.map((lesson) => lessonViewOf(lesson));
+      return { ok: true, count: views.length, lessons: views };
+    } catch (error) {
+      return refuseRead(this.deps.messagesOf(), "lessons", error);
+    }
   }
 
   /**

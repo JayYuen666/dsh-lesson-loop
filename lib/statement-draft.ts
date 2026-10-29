@@ -18,8 +18,9 @@
 //
 // 分类 → 模板的对应收成一张表（不再用 switch 逐类枚举）：lib/digest-prompt.ts 的类别白名单、
 // lib/rule-signature.ts 的登记表与本表是三份各自演化的数据，新增登记分类时漏改这里
-// 会落到通用兜底、把稳定签名原文当具体路径嵌进正文——test/digest.test.ts 用
-// digestSystemPrompt 渲染出的类别清单逐个探针本函数，漏登记当场红。
+// 会落到通用兜底、把稳定签名原文当具体路径嵌进正文。两条门禁在 test/digest.test.ts：
+// 「类别清单与 CATEGORY_STATEMENTS 同域」管键集，「每个登记分类都真的起草出分类专属正文」
+// 管选型（键集对上但模板 key 指错的形态只有后者抓得住）。
 
 import { isRejectedSummarySignature, isStableSignature } from "./rule-signature.ts";
 import { fill } from "./messages.ts";
@@ -51,9 +52,10 @@ type StatementEntry =
   | { readonly kind: typeof KIND_FIXED; readonly template: StatementTemplateKey }
   | { readonly kind: typeof KIND_PASSTHROUGH };
 
-/** 登记分类 → 正文选型。键集与 lib/digest-prompt.ts 的类别白名单同域，
- *  一致性由 test/digest.test.ts 的逐类探针钉住。 */
-const CATEGORY_STATEMENTS: Readonly<Record<string, StatementEntry>> = {
+/** 登记分类 → 正文选型。键集与 lib/digest-prompt.ts 的类别白名单（DIGEST_CATEGORIES）
+ *  同域，一致性由 test/digest.test.ts 的两条逐类探针钉住——两边漂移的后果是静默降级，
+ *  不是崩溃，故必须有门禁。 */
+export const CATEGORY_STATEMENTS: Readonly<Record<string, StatementEntry>> = {
   "factgate-deny": {
     kind: KIND_TWO_TIER,
     stable: "statementFactgateStable",

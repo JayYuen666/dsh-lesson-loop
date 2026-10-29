@@ -90,6 +90,9 @@ const FALLBACK_LESSON_SOURCE: KnownLessonSource = "manual";
 /** 来源名长度上限：防把整段错误文本塞进来源字段（枚举面失控、卡片无法归因）。 */
 const MAX_LESSON_SOURCE_LENGTH = 64;
 
+/** Unicode 控制字符类（Cc）：来源字段出现即视为不可信。 */
+const CONTROL_CHARACTER = /\p{Cc}/u;
+
 /**
  * 来源归一（开放集）：trim 后非空、不过长、不含控制字符 → 原样保留（第三方插件得以
  * 自报家门，其教训与内置来源一样可入库、可统计）；空/非字符串/超限/含控制字符 → manual。
@@ -108,7 +111,7 @@ function normalizeLessonSource(value: unknown): string {
   if (
     trimmed.length === 0 ||
     trimmed.length > MAX_LESSON_SOURCE_LENGTH ||
-    /\p{Cc}/u.test(trimmed)
+    CONTROL_CHARACTER.test(trimmed)
   ) {
     return FALLBACK_LESSON_SOURCE;
   }
@@ -127,7 +130,7 @@ function sourceFallbackReason(raw: unknown): { described: string; reason: string
   if (typeof raw === "string") {
     const described = raw.trim();
     if (described.length > 0) {
-      if (/\p{Cc}/u.test(described)) {
+      if (CONTROL_CHARACTER.test(described)) {
         detail = { described, reason: "含控制字符" };
       } else if (described.length > MAX_LESSON_SOURCE_LENGTH) {
         detail = { described, reason: `非空但超 ${String(MAX_LESSON_SOURCE_LENGTH)} 字符` };
@@ -475,6 +478,24 @@ interface Observation {
   rawSignature: string;
   signature: string;
   cwd?: string;
+}
+
+/**
+ * 一条教训在流水里的身份键：用于「规则面写失败 → 调用方重试」这一条窄路上的去重。
+ *
+ * 取 report 入参里能判别"这是同一次发生"的全部字段：同一会话同一轮的同一条签名
+ * 就是同一件事；detail 一起进键是为了不把"同一签名、不同细节"的两次真实发生
+ * 折叠掉。ts 刻意不进键——重试时调用方递的 ts 就是新的。
+ */
+function lessonLedgerKey(rec: LessonRecord): string {
+  return JSON.stringify([
+    rec.project,
+    rec.category,
+    rec.signature,
+    rec.sessionId ?? "",
+    rec.turn ?? "",
+    rec.detail,
+  ]);
 }
 
 function observeLesson(rec: LessonRecord, now: number): Observation {
@@ -900,6 +921,10 @@ export class LessonStore {
   private readonly opts: StoreOptions & Required<Pick<StoreOptions, "lessonsFile" | "rules">>;
   private readonly repo: RulesRepository;
   private readonly now: () => number;
+  /** 上一次 report 的「流水已写、规则面没写成」记号（见 report 的注释）。
+   *  只活到下一次 report 成功或换了一条教训为止：它是**一次失败重试**的去重面，
+   *  不是跨会话的幂等表——持久化幂等需要事件 id 与读侧重放，那是另一套东西。 */
+  private pendingLedgerKey: string | null = null;
 
   public constructor(opts: StoreOptions) {
     this.opts = opts;
@@ -1077,10 +1102,21 @@ export class LessonStore {
     };
     // 流水（cache，单写者追加）与规则面（settings，CAS）分两笔：流水失败不挡规则
     // 归并，规则面失败也不回滚流水——回执如实报 ok:false，调用方自己决定重试。
-    appendJsonl(this.opts.lessonsFile, rec, this.opts.maxLessonsBytes ?? 0);
+    //
+    // 两笔之间没有事务，所以"重试"必须在这里收口：上一次已经写过流水、只是规则面
+    // 没写成时，调用方重试同一条教训**不再追加第二行**——否则一次 CAS 冲突就在流水
+    // 里留下两条"这条教训发生过"，而规则卡只加了一次，两个计数从此对不上。
+    // 反过来（流水没写成）不做补偿：流水是 cache，少一行只影响展示，补写反而要在
+    // 规则面已经生效之后再造一次写失败面。
+    const ledgerKey = lessonLedgerKey(rec);
+    const alreadyAppended = ledgerKey === this.pendingLedgerKey;
+    if (!alreadyAppended) {
+      appendJsonl(this.opts.lessonsFile, rec, this.opts.maxLessonsBytes ?? 0);
+    }
     const obs = observeLesson(rec, now);
     const key = ruleKey(rec.project, rec.category, obs.signature);
     const outcome = await this.commit((cards) => this.planReport(cards, obs, key));
+    this.pendingLedgerKey = outcome.ok ? null : ledgerKey;
     return this.receiptFor(outcome);
   }
 
@@ -1669,26 +1705,44 @@ export class LessonStore {
 
   /** 把 armed 碎片的生命周期度量搬到主卡（arm 期计数属于那次升格，不能留空）。
    *  三个时间戳按静态键逐个处理：源卡缺值时必须真的删键（留 undefined 与删键在
-   *  JSON 往返后语义不同，decayVerdict 的锚点回退链会被 undefined 干扰）。 */
+   *  JSON 往返后语义不同，decayVerdict 的锚点回退链会被 undefined 干扰）。
+   *  **源卡有值时取更晚的一个，不是整片取代**：主卡自己可能已经带着一个更晚的
+   *  armedAt——candidate 卡从 armed 降级/拒绝/归档再复活时 armedAt 是保留的
+   *  （见 demote/reject/archive 分支），于是「主卡未武装」不等于「主卡没有锚点」。
+   *  整片取代会把锚点拉早，decayVerdict 的 `now - anchor >= decayDays` 提前成立，
+   *  一张刚升格的卡会被立刻判降级。lastViolationAt/lastSuppressedAt 同属"最近一次"
+   *  语义，同样不能被更早的碎片覆盖回去。
+   *  源卡缺这个键时仍按原语义**删键**（不是留着主卡旧值）：那一路的口径是"这次升格
+   *  没有时间戳可承"，留一个陈旧锚点会被 decayVerdict 当成真的升格时刻。 */
   private static inheritArmed(primary: RuleCard, armedSource: RuleCard): void {
     primary.status = "armed";
     primary.violation = armedSource.violation;
     primary.suppressed = armedSource.suppressed;
     primary.samples = armedSource.samples;
-    if (armedSource.armedAt === undefined) {
+    const inherited =
+      armedSource.armedAt === undefined ? undefined : laterOf(primary.armedAt, armedSource.armedAt);
+    if (inherited === undefined) {
       delete primary.armedAt;
     } else {
-      primary.armedAt = armedSource.armedAt;
+      primary.armedAt = inherited;
     }
-    if (armedSource.lastViolationAt === undefined) {
+    const lastViolation =
+      armedSource.lastViolationAt === undefined
+        ? undefined
+        : laterOf(primary.lastViolationAt, armedSource.lastViolationAt);
+    if (lastViolation === undefined) {
       delete primary.lastViolationAt;
     } else {
-      primary.lastViolationAt = armedSource.lastViolationAt;
+      primary.lastViolationAt = lastViolation;
     }
-    if (armedSource.lastSuppressedAt === undefined) {
+    const lastSuppressed =
+      armedSource.lastSuppressedAt === undefined
+        ? undefined
+        : laterOf(primary.lastSuppressedAt, armedSource.lastSuppressedAt);
+    if (lastSuppressed === undefined) {
       delete primary.lastSuppressedAt;
     } else {
-      primary.lastSuppressedAt = armedSource.lastSuppressedAt;
+      primary.lastSuppressedAt = lastSuppressed;
     }
   }
 

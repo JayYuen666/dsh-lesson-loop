@@ -25,9 +25,10 @@ const t0 = 1_700_000_000_000;
 
 /** 模板里的 {占位符} 名单（只认花括号里的名字；裸文本片段如 "armed" 不算占位符）。 */
 function placeholderNames(template: string): string[] {
-  return [...template.matchAll(/\{(?<name>\w+)\}/gu)]
-    .map((matched) => matched.groups?.["name"] ?? "")
-    .toSorted();
+  return Array.from(
+    template.matchAll(/\{(?<name>\w+)\}/gu),
+    (matched) => matched.groups?.["name"] ?? "",
+  ).toSorted();
 }
 
 /**

@@ -7,7 +7,7 @@
 // `LocaleNamespaceMap`（下面那条 `declare module`），故键集与 `t` 的函数面都由官方
 // 表达式交出。
 // 本表存的就是带 `{…}` 占位符的整行模板：官方字典是扁平字符串表，插值由调用点的
-// `t(key, params)` 完成（如 `t("cardDescription", { candidates, armed, lessons })`）。
+// `t(key, params)` 完成（如 `t("chipCandidates", { count })`）。
 //
 // **这里只有卡片自己的文案**：规则卡的 `statement` / `category` / `signature` / `project`
 // 与端点回传的 error 串都是数据（规则库——`lesson-loop` 命名空间里那枚 `.volatile()` 的
@@ -18,16 +18,18 @@ import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
 /** 本包设置卡产出的全部界面文案。 */
 export interface UiMessages {
-  /** 卡片标题（设置页插件列表里的那一行）。 */
-  readonly cardTitle: string;
-  /** 卡片副标题：一句话说明本包做什么 + 实时计数。 */
-  readonly cardDescription: string;
+  /** 状态 chips：候选 / 生效 / 教训 三个实时计数。 */
+  readonly chipCandidates: string;
+  readonly chipArmed: string;
+  readonly chipLessons: string;
   /** 作用域只读（非 loopback 页面）时的状态条文本。 */
   readonly statusReadOnly: string;
   /** 有未保存改动时的状态条文本。 */
   readonly statusDirty: string;
   /** 无未保存改动时的状态条文本。 */
   readonly statusClean: string;
+  /** 保存条上的改动条数（`{count}` 插值）。 */
+  readonly dirtyCount: string;
   /** 保存按钮（空闲态）。 */
   readonly save: string;
   /** 保存按钮（写入中）。 */
@@ -44,6 +46,16 @@ export interface UiMessages {
   readonly actionFailed: string;
 
   // ── 运行时配置行（settings 命名空间 `lesson-loop` 的开关与阈值）────────
+  readonly loopSection: string;
+  readonly promotionSection: string;
+  readonly capacitySection: string;
+  /** 数字输入里的单位后缀。 */
+  readonly unitTimes: string;
+  readonly unitDays: string;
+  readonly unitBytes: string;
+  readonly unitChars: string;
+  /** 数字输入越界时的就地提示。 */
+  readonly outOfRange: string;
   readonly enabledLabel: string;
   readonly enabledHint: string;
   readonly reportEnabledLabel: string;
@@ -174,11 +186,13 @@ export const nsKeysAreNarrow: NsKeysAreNarrow = true;
 
 export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
   zh: {
-    cardTitle: "lesson-loop 自进化环",
-    cardDescription: "教训总线 + 规则评审（候选 {candidates} · 生效 {armed} · 教训 {lessons} 条）",
+    chipCandidates: "候选 {count}",
+    chipArmed: "生效 {count}",
+    chipLessons: "教训 {count}",
     statusReadOnly: "当前作用域只读",
     statusDirty: "有未保存的修改，点「保存」生效",
     statusClean: "无未保存的修改",
+    dirtyCount: "已修改 {count} 项",
     save: "保存",
     saving: "保存中…",
     revert: "撤销",
@@ -187,6 +201,14 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     statsUnavailable: "stats 不可用",
     actionFailed: "操作失败",
 
+    loopSection: "闭环",
+    promotionSection: "晋升与衰减",
+    capacitySection: "容量",
+    unitTimes: "次",
+    unitDays: "天",
+    unitBytes: "字节",
+    unitChars: "字符",
+    outOfRange: "超出允许范围，未保存",
     enabledLabel: "启用闭环",
     enabledHint: "关闭后上报被丢弃、不注入、常驻段与 /lessons-digest 一并停用",
     reportEnabledLabel: "教训落盘",
@@ -197,26 +219,26 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
       "agent/created 时按项目注入 armed 规则全文（agent.inject，不唤醒；子会话跳过）",
     sectionEnabledLabel: "常驻系统提示段",
     sectionEnabledHint: "systemPrompt 固定段：告知模型闭环存在与守卫拒绝的正确应对",
-    promoteThresholdLabel: "候选升格门槛（次）",
+    promoteThresholdLabel: "候选升格门槛",
     promoteThresholdHint: "同 (项目,分类,签名) 教训达此次数 → 候选卡标记待确认（1-20，默认 3）",
-    demoteThresholdLabel: "复发降级门槛（次）",
+    demoteThresholdLabel: "复发降级门槛",
     demoteThresholdHint:
       "armed 后复发达此次数、至少被遵守过一次且复发率达标 → 自动降级待人审；从未被遵守的判「不可判定」（1-50，默认 3）",
-    demoteMinSamplesLabel: "降级最小证据样本（个）",
+    demoteMinSamplesLabel: "降级最小证据样本",
     demoteMinSamplesHint:
       "降级判定所需的最小真实证据数 violation+suppressed（暴露 samples 不计入；1-100，默认 5；不足不降级）",
     demoteRatioLabel: "降级复发率",
     demoteRatioHint:
       "violation/(violation+suppressed) ≥ 此值 且真实证据足 → 自动降级（0.05-1，默认 0.5）",
-    reviveThresholdLabel: "拒绝后复活门槛（次）",
+    reviveThresholdLabel: "拒绝后复活门槛",
     reviveThresholdHint:
       "rejected 规则同签名再次出现达此次数 → 自动转回候选待人工重审（1-20，默认 3）",
-    decayDaysLabel: "不可判定观察窗口（天）",
+    decayDaysLabel: "不可判定观察窗口",
     decayDaysHint:
       "armed 超此天数却从未被遵守过 → 卡片标记「不可判定」交人工停用/归档（不再自动归档；复发已达降级门槛同样触发）（1-365，默认 30）",
-    maxLessonsBytesLabel: "events.jsonl 磁盘保险丝（字节）",
+    maxLessonsBytesLabel: "events.jsonl 磁盘保险丝",
     maxLessonsBytesHint: "0 = 不设上限（默认，内容零截断）；硬上限 1 GiB；仅在磁盘需要保护时设置",
-    maxStatementCharsLabel: "规则正文上限（字符）",
+    maxStatementCharsLabel: "规则正文上限",
     maxStatementCharsHint:
       "arm/edit 时生效正文的字符上限（按 UTF-16 码元计；1-100000，默认 4000）；超限的写入被拒，已落库的正文不受影响",
 
@@ -247,12 +269,13 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     digestHint: "蒸馏新规则：会话内运行 /lessons-digest（把本会话人工差评归纳为候选规则）。",
   },
   en: {
-    cardTitle: "lesson-loop self-evolution loop",
-    cardDescription:
-      "Lesson bus + rule review ({candidates} candidates · {armed} armed · {lessons} lessons)",
+    chipCandidates: "Candidates {count}",
+    chipArmed: "Armed {count}",
+    chipLessons: "Lessons {count}",
     statusReadOnly: "This scope is read-only",
     statusDirty: "Unsaved changes — press Save to apply",
     statusClean: "No unsaved changes",
+    dirtyCount: "{count} changed",
     save: "Save",
     saving: "Saving…",
     revert: "Revert",
@@ -262,6 +285,14 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     statsUnavailable: "stats unavailable",
     actionFailed: "action failed",
 
+    loopSection: "Loop",
+    promotionSection: "Promotion and decay",
+    capacitySection: "Capacity",
+    unitTimes: "times",
+    unitDays: "days",
+    unitBytes: "bytes",
+    unitChars: "characters",
+    outOfRange: "Out of the allowed range — not saved",
     enabledLabel: "Enable the loop",
     enabledHint:
       "When off: reports are dropped, nothing is injected, the standing prompt section and /lessons-digest are both disabled",
@@ -274,10 +305,10 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     sectionEnabledLabel: "Standing system prompt section",
     sectionEnabledHint:
       "Fixed systemPrompt section: tells the model the loop exists and how to react to guard denials",
-    promoteThresholdLabel: "Promotion threshold (times)",
+    promoteThresholdLabel: "Promotion threshold",
     promoteThresholdHint:
       "Lessons with the same (project, category, signature) reaching this count mark the candidate card as pending review (1-20, default 3)",
-    demoteThresholdLabel: "Demotion threshold (times)",
+    demoteThresholdLabel: "Demotion threshold",
     demoteThresholdHint:
       "After arming, this many violations, at least one followed hit and a qualifying recurrence rate demote the rule for human review; one that was never followed is marked undeterminable (1-50, default 3)",
     demoteMinSamplesLabel: "Minimum evidence samples for demotion",
@@ -286,16 +317,16 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     demoteRatioLabel: "Demotion recurrence ratio",
     demoteRatioHint:
       "violation/(violation+suppressed) ≥ this value with enough real evidence demotes automatically (0.05-1, default 0.5)",
-    reviveThresholdLabel: "Revive threshold after rejection (times)",
+    reviveThresholdLabel: "Revive threshold after rejection",
     reviveThresholdHint:
       "A rejected rule whose signature reappears this many times goes back to candidates for human re-review (1-20, default 3)",
-    decayDaysLabel: "Undeterminable observation window (days)",
+    decayDaysLabel: "Undeterminable observation window",
     decayDaysHint:
       "Armed longer than this with never a follow-through marks the card as undeterminable for a human to disable/archive (no more silent archiving; reaching the violation threshold triggers it too) (1-365, default 30)",
-    maxLessonsBytesLabel: "events.jsonl disk fuse (bytes)",
+    maxLessonsBytesLabel: "events.jsonl disk fuse",
     maxLessonsBytesHint:
       "0 = no cap (default, content never truncated); hard cap 1 GiB; set only to protect the disk",
-    maxStatementCharsLabel: "Rule statement length limit (characters)",
+    maxStatementCharsLabel: "Rule statement length limit",
     maxStatementCharsHint:
       "Character limit for an armed rule statement on arm/edit (UTF-16 units; 1-100000, default 4000); longer writes are refused, stored statements are unaffected",
 

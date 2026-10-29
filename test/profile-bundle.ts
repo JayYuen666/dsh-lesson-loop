@@ -362,7 +362,7 @@ function entryIdOfArgument(text: string, arg: string): string {
   }
   assert.match(
     arg,
-    /^[A-Za-z_$][A-Za-z0-9_$]*$/u,
+    /^[A-Za-z_$][\w$]*$/u,
     `产物里 configForms.get(…) 的实参不是字面量或标识符（${arg}）`,
   );
   return constLiteral(text, arg);

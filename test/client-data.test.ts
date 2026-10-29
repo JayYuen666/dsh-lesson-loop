@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ReactNode } from "react";
-import { LlcCard, NumberInputRow } from "../src/client-entry.ts";
+import { LlcCard } from "../src/client-entry.ts";
 import type { CardSnapshot, RuleCardView } from "../src/client-entry.ts";
 import { UI_MESSAGES } from "../src/ui-messages.ts";
 import type { Translate } from "../src/ui-messages.ts";
@@ -41,6 +41,14 @@ const runtime = vi.hoisted(() => {
   };
   return { box };
 });
+
+/** 共享字段组件的 DOM id 生成位：本测试架不挂 DOM，常量 id 就够建立 label↔control 关联。 */
+const stubHooks = vi.hoisted(() => ({
+  useId: (): string => ":r0:",
+  useCallback: <Fn>(fn: Fn): Fn => fn,
+  useMemo: <Value>(factory: () => Value): Value => factory(),
+  useLayoutEffect: (): undefined => undefined,
+}));
 
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
@@ -91,7 +99,8 @@ vi.mock("react", async (importOriginal) => {
     }
     return box.refs[index] as { current: RefValue };
   };
-  const patched = { ...actual, useState, useEffect, useRef };
+  // 共享字段组件的 DOM id 生成位：本测试架不挂 DOM，一枚常量 id 就够建立 label↔control 关联。
+  const patched = { ...actual, useState, useEffect, useRef, ...stubHooks };
   return { ...patched, default: patched };
 });
 
@@ -262,11 +271,11 @@ const moreButtonsOf = (tree: unknown, count: number): NodeProps[] =>
       typeof props.onClick === "function" && textOf(props.children) === tZh("loadMore", { count }),
   );
 
-/** 卡片副标题那一行（llc-desc 节点的文本）。 */
+/** 卡片顶部状态 chips 那一行的文本（共享 StatusBar 的锚点）。 */
 const descOf = (tree: unknown): string => {
-  const desc = allProps(tree).find((props) => props.className === "llc-desc");
-  assert.ok(desc !== undefined, "卡面必须有副标题");
-  return textOf(desc.children);
+  const bar = allProps(tree).find((props) => props.className === "dsu-statusbar");
+  assert.ok(bar !== undefined, "卡面必须有状态 chips");
+  return textOf(bar.children);
 };
 
 /** 一条 stats 规则行（字段与 host 的 RuleView 投影同形）。 */
@@ -372,7 +381,6 @@ function cardProps(
     useCard: (selector: (snap: CardSnapshot) => unknown): unknown => selector(snapshot),
     mutate,
     rulesRemote: readerFromFetch(),
-    initialOpen: true,
   };
 }
 
@@ -710,32 +718,6 @@ describe("client 数据面：保存是一次原子提交", () => {
 
 describe("client 数据面：数字输入与未知状态", () => {
   beforeEach(resetHooks);
-
-  it("越界输入失焦回退到模型值（受控值不许与模型长期分叉）", () => {
-    const changes: unknown[] = [];
-    const row = mount(NumberInputRow as never, {
-      label: "复发率红线",
-      hint: "0.05–1",
-      field: "demoteRatio",
-      value: 0.5,
-      min: 0.05,
-      max: 1,
-      onChange: (_field: string, value: unknown) => {
-        changes.push(value);
-      },
-      onEmpty: () => {
-        // 本用例不测空值分支
-      },
-    });
-    const entry = controlOf(row.tree(), "demoteRatio");
-    (entry.onChange as (event: { target: { value: string } }) => void)({ target: { value: "10" } });
-    assert.deepEqual(changes, [], "越界值不提交");
-    // 失焦要取**重渲之后**的那份 props：closure 里的 text 才是当前草稿（"10"）。
-    const afterEntry = controlOf(row.tree(), "demoteRatio");
-    assert.equal(afterEntry.value, "10", "输入中途不回改（否则没法连续打字）");
-    (afterEntry.onBlur as () => void)();
-    assert.equal(controlOf(row.tree(), "demoteRatio").value, "0.5", "越界草稿被纠回模型值");
-  });
 
   it("未知状态：与候选同组可见、原文显形、不给动作按钮", async () => {
     // 走**线上形态**（status 串不在白名单里）：验的正是 normalizeRuleCardView 的兜底口径，

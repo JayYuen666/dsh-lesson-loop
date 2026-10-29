@@ -13,7 +13,7 @@ import { fenceUntrusted } from "./prompt.ts";
 import type { NegativeFeedback } from "./negative-feedback.ts";
 import { fill } from "./messages.ts";
 import type { LessonLoopMessages } from "./messages.ts";
-import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { z } from "zod";
 
 /** 背景去重的**事件扫描窗**（条数）：先取更宽的窗口再按 category+signature 去重——
  *  只扫 limit 条事件时，热点签名（每拒绝一次就写一条的 dangerous-bash 一类）能把
@@ -66,8 +66,11 @@ export function lessonsBackground(
   return lines.join("\n");
 }
 
-/** category 的取值域（输出契约行与解析侧白名单共用同一份，杜绝两侧各自硬编码后漂移）。 */
-const DIGEST_CATEGORIES: readonly string[] = [
+/** category 的取值域（输出契约行与解析侧白名单共用同一份，杜绝两侧各自硬编码后漂移）。
+ *  export 出来的唯一消费者是 test/digest.test.ts 的逐类探针：它拿这张清单去撞
+ *  lib/statement-draft.ts 的 CATEGORY_STATEMENTS，新增分类却漏登记模板会当场红
+ *  （漏登记会落到通用兜底，把稳定签名原文当具体路径嵌进正文）。 */
+export const DIGEST_CATEGORIES: readonly string[] = [
   "factgate-deny",
   "dangerous-bash",
   "secret-path",
@@ -158,6 +161,18 @@ export interface DigestParseResult {
 /** category 取值域的查询表（解析侧白名单；与上面那条渲染行同源）。 */
 const DIGEST_CATEGORY_SET: ReadonlySet<string> = new Set(DIGEST_CATEGORIES);
 
+/** 模型输出的一条候选：类别在表内、正文非空白；签名缺省或空白时由调用点兜底。 */
+const DIGEST_RULE_SCHEMA = z.object({
+  category: z
+    .string()
+    .refine((value) => DIGEST_CATEGORY_SET.has(value), { error: "category 不在白名单内" }),
+  statement: z.string().refine((value) => value.trim().length > 0, { error: "statement 不能为空" }),
+  signature: z.preprocess(
+    (value) => (typeof value === "string" && value.trim().length > 0 ? value : undefined),
+    z.string().optional(),
+  ),
+});
+
 /** 空签名时的兜底长度：从正文截一段当签名（按码点截，避免把代理对劈成孤立代理项）。 */
 const SIGNATURE_FALLBACK_MAX = 60;
 
@@ -180,26 +195,14 @@ function truncateCodePoints(text: string, max: number): string {
  *  表外类别丢弃的理由：category 是机器读的存储契约，落一张 `pass()` 永远匹配不到、
  *  也无法与事件类别对齐的卡没有意义。 */
 function ruleFromItem(item: unknown): DigestParsedRule | null {
-  if (!isRecord(item)) {
+  const parsed = DIGEST_RULE_SCHEMA.safeParse(item);
+  if (!parsed.success) {
     return null;
   }
-  const category = fieldOf(item, "category");
-  const statement = fieldOf(item, "statement");
-  const signature = fieldOf(item, "signature");
-  if (
-    typeof category !== "string" ||
-    !DIGEST_CATEGORY_SET.has(category) ||
-    typeof statement !== "string" ||
-    statement.trim().length === 0
-  ) {
-    return null;
-  }
+  const { category, statement, signature } = parsed.data;
   return {
     category,
-    signature:
-      typeof signature === "string" && signature.trim().length > 0
-        ? signature
-        : truncateCodePoints(statement.trim(), SIGNATURE_FALLBACK_MAX),
+    signature: signature ?? truncateCodePoints(statement.trim(), SIGNATURE_FALLBACK_MAX),
     statement,
   };
 }

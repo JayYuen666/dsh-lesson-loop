@@ -32,12 +32,19 @@ export const RULES_FIELD = "rules";
 /** 解析后的命名空间值 → 规则卡数组的投影：cards 是逐行归一的结果（非数组一律空库），
  *  dropped 是缺 id 被丢弃的行数——丢弃本身不留痕，谁消费这个投影谁负责上报（见
  *  rules-namespace 的 load），否则 save 用本次读出的卡整片覆盖 `rules` 数组时，一条
- *  手工改坏的存量记录会被永久删除而无人知晓。corrupted 把"rules 键在但不是数组"
+ *  手工改坏的存量记录会被永久删除而无人知晓。
+ *  行数不够用：`droppedRows` 交出**原样**那几行，让写侧能把它们原封不动写回去。
+ *  缺 id 的判据来自 normalizeRuleCardRow 这个会随版本演进的归一器——收紧任何必填字段
+ *  都会让升级前的旧卡"看起来缺 id"，只报数不复原等于让升级本身抹掉用户的规则库。
+ *  corrupted 把"rules 键在但不是数组"
  *  （value 根本不是记录时同样算）与"合法的空库"在类型面上分开：直接把投影交给
  *  save 的调用方，不能把读不懂当成空库整片写回。 */
 export interface CardsProjection {
   readonly cards: RuleCard[];
   readonly dropped: number;
+  /** 未能归一的那几行原文（与 `dropped` 等长，顺序同文件）。写侧原样带回去，
+   *  否则整片覆盖会把它们从用户存量里删掉。 */
+  readonly droppedRows: readonly unknown[];
   /** true = rules 键存在但形状读不懂；空库（键缺席/空数组）为 false。 */
   readonly corrupted: boolean;
 }
@@ -45,18 +52,18 @@ export interface CardsProjection {
 /** 解析后的命名空间值 → 规则卡投影。 */
 export function cardsOfValue(value: unknown): CardsProjection {
   const out: RuleCard[] = [];
-  let dropped = 0;
+  const droppedRows: unknown[] = [];
   const raw = isRecord(value) ? fieldOf(value, RULES_FIELD) : undefined;
   const corrupted = raw !== undefined && !Array.isArray(raw);
   for (const row of unknownArray(raw)) {
     const card = normalizeRuleCardRow(row);
     if (card === null) {
-      dropped += 1;
+      droppedRows.push(row);
     } else {
       out.push(card);
     }
   }
-  return { cards: out, dropped, corrupted };
+  return { cards: out, dropped: droppedRows.length, droppedRows, corrupted };
 }
 
 /** 单条证据 detail 的字符上限（按码点计，见 truncateByCodePoints）。 */

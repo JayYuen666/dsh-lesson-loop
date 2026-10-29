@@ -8,7 +8,9 @@ import { remoteMethods } from "@deepseek-ai/dsh-typert-protocol";
 import { installRulesRemote, LessonRulesService } from "../lib/rules-remote.ts";
 import type { LessonRulesDeps, RulesStore } from "../lib/rules-remote.ts";
 import { RULES_REMOTE_NAMESPACE } from "../lib/rules-shape.ts";
+import type { LessonsReply, LessonsResult, RulesReply, RulesResult } from "../lib/rules-shape.ts";
 import { MESSAGES } from "../lib/messages.ts";
+import { loggedText } from "./setup-logs.ts";
 import { RULES_DESCRIPTORS } from "../src/rules-reader.ts";
 
 type Outcome =
@@ -66,6 +68,28 @@ function serviceOf(deps: LessonRulesDeps): LessonRulesService {
   return service;
 }
 
+/**
+ * 读回执的成功面：断言 `ok: true` 后交出载荷。
+ *
+ * 读方法现在会返回 `{ ok: false, error }`（见 lib/rules-shape.ts 的 ReadRefused），
+ * 所以每条成功路径的用例都得先过这道闸——这同时把"该成功却回了失败"变成一条带
+ * 文案的断言失败，而不是 `undefined.rules` 那种 TypeError。
+ */
+function okRules(reply: RulesReply): RulesResult["rules"] {
+  assert.equal(reply.ok, true, reply.ok ? "" : reply.error);
+  return reply.rules;
+}
+
+function okLessons(reply: LessonsReply): LessonsResult {
+  assert.equal(reply.ok, true, reply.ok ? "" : reply.error);
+  return reply;
+}
+
+/** 模拟 I/O 层直接抛错：读方法的 catch 分支必须把它折成回执，不许越过网关。 */
+function boom(): never {
+  throw new Error("disk on fire");
+}
+
 describe("规则读面（官方 Typert Remote 源模式）", () => {
   it("装进真 Context：四个方法都带 @Remote 标记，客户端 descriptor 逐项对质", () => {
     const service = serviceOf(depsOf());
@@ -113,27 +137,63 @@ describe("规则读面（官方 Typert Remote 源模式）", () => {
   it("rules 按 project 过滤；缺省与非记录请求都按全量", () => {
     const service = serviceOf(depsOf());
     assert.deepEqual(
-      service.rules({ project: "p1" }).rules.map((rule) => rule.id),
+      okRules(service.rules({ project: "p1" })).map((rule) => rule.id),
       ["rule-1"],
     );
-    assert.equal(service.rules({}).rules.length, 2);
-    assert.equal(service.rules(null as never).rules.length, 2);
+    assert.equal(okRules(service.rules({})).length, 2);
+    assert.equal(okRules(service.rules(null as never)).length, 2);
   });
 
   it("lessons 的 project/limit 过滤：缺省/≤0 取默认条数；detail 截断、不外借 evidence", () => {
     const service = serviceOf(depsOf());
-    assert.equal(service.lessons({ project: "p1" }).count, 1);
-    assert.equal(service.lessons({ limit: 1 }).count, 1);
+    assert.equal(okLessons(service.lessons({ project: "p1" })).count, 1);
+    assert.equal(okLessons(service.lessons({ limit: 1 })).count, 1);
     // 缺省 / ≤0 / 非数字：取默认条数（事件流水只增不减，"缺省 = 全量"会让一次调用
     // 把整份流水序列化过网关）。
-    assert.equal(service.lessons({ limit: -1 }).count, 2, "≤0 与缺省同义：默认条数");
-    assert.equal(service.lessons(null as never).count, 2);
-    assert.equal(service.lessons({ limit: Number.NaN }).count, 2);
+    assert.equal(okLessons(service.lessons({ limit: -1 })).count, 2, "≤0 与缺省同义：默认条数");
+    assert.equal(okLessons(service.lessons(null as never)).count, 2);
+    assert.equal(okLessons(service.lessons({ limit: Number.NaN })).count, 2);
     // 读面投影：detail 是门禁输出原文一类的敏感面，下发前截断（400 字 + 省略号）；
     // 原始 evidence 不外借。
-    const view = service.lessons({}).lessons[0]!;
+    const view = okLessons(service.lessons({})).lessons[0]!;
     assert.ok(view.detail.endsWith("…") && view.detail.length === 401, "detail 已截断");
     assert.ok(!("evidence" in view), "原始 evidence 不上网线");
+  });
+
+  it("三个读方法遇到 I/O 抛错时折成 ok:false + 本地化文案，不让异常越过网关", () => {
+    // 网关的异常分支只交出 `gateway/internal` 那句英文并原样贴到卡片上；读方法各摸
+    // 一个 I/O 面（规则库、settings CAS、事件流水），抛出去等于把内部错误当用户文案。
+    const failing: LessonRulesDeps = {
+      store: {
+        rules: boom,
+        recentLessons: boom,
+        isUndeterminable: () => true,
+        ruleAction: async () => "persisted",
+      },
+      stats: () => ({ undeterminableCount: 0 }),
+      messagesOf: () => MESSAGES.zh,
+    };
+    const service = serviceOf(failing);
+    // stats 的返回类型是开放记录，拒读面同样折在这份记录里
+    const stats = service.stats();
+    assert.deepEqual(
+      [stats["ok"], stats["status"], stats["error"]],
+      [false, 500, MESSAGES.zh.errStatsUnavailable],
+    );
+    const rules = service.rules({});
+    assert.deepEqual(
+      [rules.ok, rules.ok ? 0 : rules.status, rules.ok ? "" : rules.error],
+      [false, 500, MESSAGES.zh.errRulesUnavailable],
+    );
+    const lessons = service.lessons({});
+    assert.deepEqual(
+      [lessons.ok, lessons.ok ? 0 : lessons.status, lessons.ok ? "" : lessons.error],
+      [false, 500, MESSAGES.zh.errLessonsUnavailable],
+    );
+    // 三种拒读各打自己那条日志片段（模板表按方法名区分，日志里能看出是哪一面炸的）
+    assert.match(loggedText(), /\[lesson-loop\] stats request failed:/u);
+    assert.match(loggedText(), /\[lesson-loop\] rules request failed:/u);
+    assert.match(loggedText(), /\[lesson-loop\] lessons request failed:/u);
   });
 
   it("ruleAction：invalid-statement / statement-too-long → 400（本地化文案）；unchanged → 按成功回执", async () => {

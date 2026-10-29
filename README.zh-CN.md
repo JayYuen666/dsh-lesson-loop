@@ -69,7 +69,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 卸载用 `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`。本包在公共 npm registry 上，所以安装不需要凭据。
 
-- **Node.js `>= 22.12`、宿主 `dsh` 在 `0.2.1-rc.3` 这条线上。** 宿主读取的版本要求是 `engines.dsh`（`^0.2.1-rc.3`），而且它**单独决定**——这个字段在时，`evaluatePluginCompatibility` 从不看 `@deepseek-ai/dsh*` 这批 peer。实测：`0.2.0-rc.2` 与 `0.2.1-rc.1` 被拒，`0.2.1-rc.3` 与 `0.2.2` 通过，`0.3.0` 被拒。
+- **Node.js `>= 22.12`、宿主 `dsh` 在滚动的 `^0.2.1-rc.3` 窗口上。** 插件自己的下限是 `engines.node`（`>=22.12.0`）；`0.2.2-alpha.2` 宿主自身声明的 Node 下限是 `>=24.9.0`，所以本包虽然能在 Node 22 上装，那一版宿主本身起不来。宿主读取的版本要求是 `engines.dsh`（`^0.2.1-rc.3`），而且它**单独决定**——这个字段在时，`evaluatePluginCompatibility` 从不看 `@deepseek-ai/dsh*` 这批 peer。实测：`0.2.0-rc.2` 与 `0.2.1-rc.1` 被拒，`0.2.1-rc.3` 与 `0.2.2-alpha.2` 通过，`0.3.0` 被拒。支持窗口是滚动的：本包在发布时最近的三个已发布宿主版本上逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
 - **按契约，`dependencies` 下不放任何 `@deepseek-ai/*`。** profile 以 `nodeLinker: hoisted` 与 `autoInstallPeers: false` 安装，那里放一个宿主包就会变成真实的第二份副本；`@deepseek-ai/dsh-tools` 用普通 `Symbol` 给调度器做键，于是那个 profile 里**每一次原生工具调用都抛错**，而构建、类型检查与覆盖率一直全绿。`host.js` 按值导入的四枚宿主包都是必需 peer，并在 `devDependencies` 里按同一个精确钉版再写一份，好让打包器把它们外部化，而不是内联官方函数体；`test/publish-manifest.test.ts` 把这两半都钉住。产物由 `prepack` 重建，从不提交。
 
 ### <img src="https://api.iconify.design/lucide/arrow-down-to-line.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> shared 的版本下限
@@ -80,7 +80,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 1. **层已经进栈。** `dsh --profile web --dump-config` 末尾出现 `# == @jayyuen66/dsh-lesson-loop` 加 `- id: lesson-loop`。
    - 那条命令是唯一被接受的判据，而且它**不是只读命令**——它会重写该 profile 的根装配文件。层行要从 stdout 读，**并且**单独检查 stderr：没匹配上的 patch 目标只出现在 stderr，只看退出码证明不了任何事。两种形态都要认：`# == <layer>` 与 `# == <layer>, patched by <path>`。
-2. **卡片渲染实时数据。** 它的标头带着当前的候选 / armed / 教训计数，打开后规则分组能填出内容。出现一行写着「stats unavailable」的错误提示，说明层进了栈，但 Remote 命名空间没到浏览器。
+2. **卡片渲染实时数据。** 它的标头带着当前的候选 / armed / 教训计数，打开后规则分组能填出内容。只出现一行「stats 不可用」说明层进了栈，但 Remote 命名空间没到浏览器；若出现的是带宿主读面说明的「stats unavailable: the host read path failed — retry」（中文界面为「读不到统计：宿主侧读面出错，请重试」），则命名空间已到，失败的是这一次读取，读面恢复后重试即可。
 3. **一条教训进得了规则库。** 用装好的上报方（danger-guard、quality-gate、session-rescue）触发一次拒绝或门禁失败，或在收集到人工负反馈的会话里跑 `/lessons-digest`；候选分组就会多出证据。
 4. **armed 规则回得来。** 把一张卡 arm，然后在那个项目里开一个新会话：注入的那段以 `[lesson-loop] Experience rules for this project` 开头。子代理会话按设计什么也收不到。
 5. **profile 里没有宿主副本。** 临时 profile 的 `node_modules/` 里只有 `@jayyuen66/`，没有 `@deepseek-ai/` 目录。
@@ -99,6 +99,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 - **一个条目，一份 `Config`。** 设置命名空间就是条目 id，于是开关、阈值与 `rules` 数组共用同一段、同一枚 revision。`rules` 带了 `.loose()`，读侧经 `describe().user` 检查原文形状（读不懂就拒写，而不是覆写），每次写都是一次 CAS 提交加重读重放。
 - `settings` 是唯一插件级硬依赖。`timer` / `commands` / `systemPrompt` / `llm` 可选：缺一个只让对应能力消失，插件照常装载。
 - 卡片的数据面在 apply fiber 上无条件安装，所以即使宿主的 web 层到得晚，它也在。
+- `locale/en.json` / `locale/zh.json` 提供插件页的 `meta.title`、`meta.description` 与 `meta.detail`；详情页英文读 `docs/DETAIL.md`、中文读 `docs/DETAIL.zh.md`。README 不是那一页的来源。
 - 部署默认值写在注册行的 `config:` 上（卡片值 > 行 `config` > schema 默认值）；配置不合法只让这个条目的 fiber 失败。
 - 不兼容的宿主按精确版本逐条授权，绝不靠放宽范围：
 
@@ -139,7 +140,7 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 | `maxStatementChars` | `4000` | 1–100000 | arm/edit 时生效正文的字符上限（UTF-16 码元）；超限的写入被拒，已落库正文不受影响 |
 | `digestTimeoutMs` | `120000` | ≥ 1000 | 一次蒸馏的墙钟（ms）；卡片上没有这一行 |
 | `decayIntervalMs` | `86400000` | ≥ 1000 | 周期衰减轮次的间隔（ms）；卡片上没有这一行 |
-| `maxInjectedRules` | `50` | 0–1000 | 每个会话注入的 armed 规则条数，最新的在前；`0` = 不设上限；卡片上没有这一行 |
+| `maxInjectedRules` | `50` | 0–1000 | 每个会话注入的 armed 规则条数；设了上限时保留最新的若干条；`0` = 不设上限；卡片上没有这一行 |
 
 最后三行是部署值：不标 `.volatile()`，所以卡片上没有对应的行，只能在注册行的 `config:` 上给，重启后生效。
 
@@ -151,11 +152,12 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 | --- | --- | --- |
 | `stats()` | — | `{ ok: true, …counters, …config summary, rules }`；规则投影带着派生的 `undeterminable` 标记，且**不带** `evidence` 正文 |
 | `rules(request)` | `{ project? }` | `{ ok: true, rules }`；`project` 不是字符串就按缺省读，也就是全量规则库 |
-| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`；`limit` 不是有限数、≤ 0 或缺省都表示全量 |
+| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`；`limit` 缺省、不是有限数或 ≤ 0 时取默认 50 条，显式值封顶 500 |
 | `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`，或 `{ ok: false, error, status }` |
 
 - `action` 必须是那六个白名单值之一；`statement` 只由 `arm` 与 `edit` 读取，会被 trim，空白串按「没给」处理。生效正文超过 `maxStatementChars` 时回 `{ ok: false, status: 400 }`，库不动。
 - 拒绝回执里的 `status` 是**保留下来的语义码，不是 HTTP 状态**：缺字段或动作不在白名单是 400，未知的卡片是 404，规则库拒绝落盘是 500（带 `rules-not-persisted`）。
+- 读方法在宿主读面失败时回 `{ ok: false, error, status: 500 }`；`error` 是本地化文案，原始异常留在宿主日志里。这里的 500 是「这次没读到」，不是请求写错了。
 - 读数是拉的，不是推的：打开面板时、保存之后、每次人工动作之后各一次。这里没有轮询循环，也没有客户端墙钟。
 
 ## <img src="https://api.iconify.design/lucide/lock.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 数据与隐私

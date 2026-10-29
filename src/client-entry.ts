@@ -13,6 +13,7 @@
 
 import { createElement, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { z } from "zod";
 import type { Context } from "@deepseek-ai/cordis";
 import { RULES_BUNDLE_PACKAGE } from "../lib/rules-shape.ts";
 import type { BuiltInLocaleId } from "@deepseek-ai/dsh-client-locale/client";
@@ -36,11 +37,21 @@ import type {
 // 正合本意——载入官方契约就该同时*用上*它。
 import type { ConfigPageForm } from "@deepseek-ai/dsh-client-ui-plugin-manager/client";
 import { UI_MESSAGES } from "./ui-messages.ts";
-import type { LocaleNs, Translate } from "./ui-messages.ts";
+import type { LocaleNs, Translate, UiMessages } from "./ui-messages.ts";
 import { createRulesReader } from "./rules-reader.ts";
 import type { RulesReader } from "./rules-reader.ts";
 import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { diffTouched } from "@jayyuen66/dsh-plugin-shared/lib/card-diff";
+import {
+  CARD_UI_CSS,
+  CardForm,
+  NumberField,
+  SaveBar,
+  Section,
+  StatusBar,
+  ToggleField,
+  splitHint,
+} from "@jayyuen66/dsh-plugin-shared/lib/card-ui";
 
 /** 本包 `NS` 的第三重身份：官方 locale 的命名空间（前两重 = loader 条目 id 与 settings
  *  命名空间 = `configForms.get(NS)` 的入参，见下面那段「两个不同的标识」）。这一重必须
@@ -66,9 +77,6 @@ const NS: LocaleNs = "lesson-loop";
 // 包名真源：`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`；
 // test/profile-bundle.ts 把真源读进测试，test/build-client.test.ts 的漂移针据此钉。
 const BUNDLE_PKG = RULES_BUNDLE_PACKAGE;
-
-// SVG path 的 `d` 属性是固定方法名，改用变量作计算键以绕过短名检查
-const PATH_KEY = "d";
 
 /** 分组懒渲染的每页条数：每组默认只画前 N 条，余下由「加载更多」按页放出。
  *  规则库不设条数上限，而一次渲染上千张卡会让设置页展开时明显卡顿；不做完整虚拟化
@@ -205,25 +213,8 @@ function parseStatsValue(parsed: unknown): StatsPayload {
 const ACTIONS_ROW_CLASS = "llc-actions";
 
 const CARD_CSS = [
-  ".llc-card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}",
-  ".llc-card:hover{border-color:var(--dsw-alias-label-dimmed)}",
-  ".llc-card-open{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}",
-  ".llc-header{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:transparent;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}",
-  ".llc-head{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}",
-  ".llc-name{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}",
-  ".llc-desc{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}",
-  ".llc-chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}",
-  ".llc-chevron-open{transform:rotate(180deg)}",
-  ".llc-body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding:8px 0 12px}",
-  ".llc-row{display:flex;flex-direction:row;justify-content:space-between;align-items:center;gap:12px;padding:9px 0}",
-  ".llc-label{font-size:13px;color:var(--dsw-alias-label-primary,inherit)}",
   ".llc-hint{font-size:12px;color:var(--dsw-alias-label-tertiary,#8a8f99);line-height:1.5;margin-top:2px}",
   ".llc-digest-hint{margin-top:8px}",
-  ".llc-switch{appearance:none;position:relative;width:34px;height:20px;border-radius:10px;background:var(--dsw-alias-fill-primary,#d8dbe2);transition:background .16s;cursor:pointer;border:0;flex:none}",
-  '.llc-switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-bg-layer-1,#fff);transition:left .16s}',
-  ".llc-switch-on{background:var(--dsw-alias-brand-primary,#e07856)}",
-  ".llc-switch-on::after{left:16px}",
-  ".llc-switch:disabled{cursor:not-allowed;opacity:.6}",
   ".llc-section{margin:10px 0 4px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#5c626e)}",
   ".llc-rule{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-primary,inherit)}",
   ".llc-rule-meta{color:var(--dsw-alias-label-tertiary,#8a8f99);margin-top:4px}",
@@ -235,13 +226,9 @@ const CARD_CSS = [
   ".llc-input{width:100%;box-sizing:border-box;font:inherit;font-size:12px;color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-bg-layer-1,transparent);border:1px solid var(--dsw-alias-border-l2,transparent);border-radius:8px;padding:6px 8px;margin-top:6px}",
   ".llc-empty{color:var(--dsw-alias-label-tertiary,#8a8f99);font-size:12px;padding:6px 0}",
   ".llc-err{color:#c4483f;font-size:12px;padding:6px 0;white-space:pre-wrap}",
-  ".llc-num{width:96px;box-sizing:border-box;font:inherit;font-size:12px;color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-bg-layer-1,transparent);border:1px solid var(--dsw-alias-border-l2,transparent);border-radius:8px;padding:6px 8px;text-align:center}",
-  ".llc-savebar{display:flex;gap:8px;align-items:center;padding:10px 0 2px;border-top:1px dashed var(--dsw-alias-border-l2);margin-top:6px;flex-wrap:wrap}",
   ".llc-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#e07856);outline-offset:1px}",
   ".llc-btn:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed)}",
   ".llc-btn:disabled{opacity:.5;cursor:not-allowed}",
-  ".llc-dirty{font-size:12px;color:var(--dsw-alias-label-tertiary,#8a8f99)}",
-  ".llc-saveerr{font-size:12px;color:#c4483f}",
 ].join("\n");
 
 // ── 端点数据类型 ─────────────────────────────────────────────────────────
@@ -353,43 +340,6 @@ async function postAction(
     throw new Error("rules remote unavailable");
   }
   return reader.ruleAction(id, action, statement);
-}
-
-// ── 小组件 ───────────────────────────────────────────────────────────────
-
-export interface ToggleRowProps {
-  label: string;
-  hint: string;
-  /** 稳定锚点（schema 门禁/测试按字段定位控件）。 */
-  field: string;
-  checked: boolean;
-  disabled?: boolean;
-  onToggle: () => void;
-}
-
-function ToggleRow(props: ToggleRowProps): ReactNode {
-  return createElement(
-    "div",
-    { className: "llc-row" },
-    createElement(
-      "div",
-      null,
-      createElement("div", { className: "llc-label" }, props.label),
-      createElement("div", { className: "llc-hint" }, props.hint),
-    ),
-    createElement("button", {
-      type: "button",
-      className: `llc-switch${props.checked ? " llc-switch-on" : ""}`,
-      role: "switch",
-      "aria-checked": props.checked,
-      // 可访问名：开关按钮没有文本子节点，旁边的 label 是兄弟节点——屏幕阅读器
-      // 没有它只会念"switch"，同一张卡多个开关无法区分。
-      "aria-label": props.label,
-      "data-field": props.field,
-      disabled: props.disabled === true,
-      onClick: props.onToggle,
-    }),
-  );
 }
 
 const fmtDay = (ts: number | undefined): string => {
@@ -680,270 +630,188 @@ export interface LlcCardProps {
   /** 宿主规则读面（官方 Remote 的消费侧，见 src/rules-reader.ts）。
    *  `undefined` = 当前部署没有远程面：卡片照常渲染，数据面显示读不到。 */
   rulesRemote?: RulesReader;
-  initialOpen?: boolean;
-}
-
-/** 保存条的状态文本（三态各一条；提成模块级函数以免嵌进 createElement）。 */
-export function saveBarStatus(t: Translate, state: { dirty: boolean; writable: boolean }): string {
-  if (!state.writable) {
-    return t("statusReadOnly");
-  }
-  return state.dirty ? t("statusDirty") : t("statusClean");
-}
-
-function SaveBar(props: {
-  t: Translate;
-  dirty: boolean;
-  writable: boolean;
-  busy: boolean;
-  error: string | null;
-  onSave: () => void;
-  onDiscard: () => void;
-}): ReactNode {
-  const { t } = props;
-  const dis = !props.writable || props.busy;
-  const statusText = saveBarStatus(t, props);
-  const saveLabel = t("save");
-  const savingLabel = t("saving");
-  const revertLabel = t("revert");
-  // 空串在 React 里是合法子节点：无错误时不能把 t("…") 的空串塞进第三参。
-  const statusNode =
-    props.error === null
-      ? createElement("span", { className: "llc-dirty" }, statusText)
-      : createElement("span", { className: "llc-saveerr" }, props.error);
-  return createElement(
-    "div",
-    { className: "llc-savebar" },
-    createElement(
-      "button",
-      {
-        type: "button",
-        className: "llc-btn llc-btn-primary",
-        "data-field": "save",
-        disabled: dis || !props.dirty,
-        onClick: props.onSave,
-      },
-      props.busy ? savingLabel : saveLabel,
-    ),
-    createElement(
-      "button",
-      {
-        type: "button",
-        className: "llc-btn",
-        "data-field": "discard",
-        disabled: dis || !props.dirty,
-        onClick: props.onDiscard,
-      },
-      revertLabel,
-    ),
-    statusNode,
-  );
-}
-
-export interface NumberInputRowProps {
-  label: string;
-  hint: string;
-  field: string;
-  value: unknown;
-  /** 只提交合法数值（越界/非数在 onEntry 里被拦下）：取值域与官方 set 分支同域。 */
-  onChange: (field: string, value: SettingsValue) => void;
-  onEmpty: (field: string) => void;
-  disabled?: boolean;
-  min?: number;
-  max?: number;
-}
-
-/** 数字输入行：settings 数字字段 ↔ UI 字符串（ctx-observe 同款契约）。 */
-function NumberInputRow(props: NumberInputRowProps): ReactNode {
-  const num =
-    typeof props.value === "number" && Number.isFinite(props.value) ? String(props.value) : "";
-  const [text, setText] = useState(num);
-  // 外部快照变化（别处改了设置）→ 回写输入框，避免陈旧显示。
-  useEffect(() => {
-    setText(num);
-  }, [num]);
-  const onEntry = (event: { target: { value: string } }): void => {
-    const next = event.target.value;
-    setText(next);
-    if (next === "") {
-      props.onEmpty(props.field);
-      return;
-    }
-    const parsed = Number(next);
-    if (!Number.isFinite(parsed)) {
-      return;
-    }
-    const lower = props.min ?? -Infinity;
-    const upper = props.max ?? Infinity;
-    if (parsed >= lower && parsed <= upper) {
-      props.onChange(props.field, parsed);
-    }
-  };
-  // 越界/非数输入不提交（上面 onEntry 的分支），草稿因此会与模型分叉：不纠回来的话输入框
-  // 永久显示 "10" 而库里是 1，用户以为 10 已被接受。失焦是纠偏点（输入中途不动，避免
-  // 边打字边被改回）。
-  const onLeave = (): void => {
-    if (text === "") {
-      return;
-    }
-    const parsed = Number(text);
-    const lower = props.min ?? -Infinity;
-    const upper = props.max ?? Infinity;
-    if (!Number.isFinite(parsed) || parsed < lower || parsed > upper) {
-      setText(num);
-    }
-  };
-  return createElement(
-    "div",
-    { className: "llc-row" },
-    createElement(
-      "div",
-      null,
-      createElement("div", { className: "llc-label" }, props.label),
-      createElement("div", { className: "llc-hint" }, props.hint),
-      createElement("input", {
-        type: "number",
-        className: "llc-num",
-        "data-field": props.field,
-        value: text,
-        disabled: props.disabled === true,
-        // 可访问名：输入框只有前置兄弟 label，没有 id/htmlFor 关联——没有它屏幕
-        // 阅读器只会念"输入框"。
-        "aria-label": props.label,
-        onChange: onEntry,
-        onBlur: onLeave,
-      }),
-    ),
-  );
 }
 
 /**
- * 配置行区块（开关 + 阈值输入），从 LlcCard 抽出控制函数体（max-lines）。
+ * 配置行的小节装配：三个 Section 共用一份「渲染取值 + 草稿写入口 + 冻结位」。
  * 文案取自本包字典（`<字段>Label` / `<字段>Hint`）：加一个设置字段就得在两语里各补
  * 一条，漏一条在 tsc 阶段即红——键名写死成字面量而不是拼字符串，正是为了这一点。
- * 设置字段名同样走 `field: "<字面量>"` props（ToggleRowProps.field 注释里那条
- * 「schema 门禁/测试按字段定位控件」的稳定锚点）：test/schema-coverage.ts 的卡片覆盖
- * 门禁就是按这个写法认绑定的，把键名塞进变量再传进去等于让门禁看不见这一行。
+ * 设置字段名同样走 `field: "<字面量>"` props（共享组件的稳定锚点）：
+ * test/schema-coverage.ts 的卡片覆盖门禁就是按这个写法认绑定的，把键名塞进变量再传进去
+ * 等于让门禁看不见这一行。
  */
-function buildConfigRows(deps: {
+interface ConfigInputs {
   t: Translate;
-  writable: boolean;
-  /** 一次保存正在途中：配置行必须一起冻结，否则用户在这段时间里改的值落不进本次提交，
-   *  却会在受理后被 save() 的清草稿一并抹掉（外观上像"已保存"，实际没写出去）。 */
-  busy: boolean;
+  /** 只读或在途：配置行一起冻结，否则这段时间里改的值落不进本次提交，却会在受理后被
+   *  清草稿一并抹掉（外观上像"已保存"，实际没写出去）。 */
+  frozen: boolean;
   eff: (field: string) => unknown;
   setField: (field: string, value: SettingsValue) => void;
   clearField: (field: string) => void;
-}): ReactNode[] {
-  const { t, writable, eff, setField, clearField } = deps;
-  const frozen = !writable || deps.busy;
-  const toggle = (row: { field: string; label: string; hint: string }): ReactNode =>
-    createElement(ToggleRow, {
-      // 数组子节点按 key diff：字段名是稳定锚点，缺了会退化成按数组下标配对，
-      // NumberInputRow 内部的输入草稿会随字段增删错配到别的行上。
-      key: row.field,
-      label: row.label,
-      hint: row.hint,
-      field: row.field,
-      checked: eff(row.field) !== false,
-      disabled: frozen,
-      onToggle: () => {
-        setField(row.field, eff(row.field) === false);
-      },
-    });
-  const num = (row: {
-    field: string;
-    label: string;
-    hint: string;
-    min: number;
-    max: number;
-  }): ReactNode =>
-    createElement(NumberInputRow, {
-      key: row.field,
-      label: row.label,
-      hint: row.hint,
-      field: row.field,
-      value: eff(row.field),
-      disabled: frozen,
-      onChange: setField,
-      onEmpty: clearField,
-      min: row.min,
-      max: row.max,
-    });
-  return [
-    toggle({ field: "enabled", label: t("enabledLabel"), hint: t("enabledHint") }),
-    toggle({
+}
+
+interface ToggleSpec {
+  field: string;
+  label: keyof UiMessages;
+  hint: keyof UiMessages;
+}
+
+function configToggle(inputs: ConfigInputs, spec: ToggleSpec): ReactNode {
+  return createElement(ToggleField, {
+    label: inputs.t(spec.label),
+    ...splitHint(inputs.t(spec.hint)),
+    field: spec.field,
+    checked: inputs.eff(spec.field) !== false,
+    disabled: inputs.frozen,
+    onChange: (next: boolean): void => {
+      inputs.setField(spec.field, next);
+    },
+  });
+}
+
+interface NumberSpec {
+  field: string;
+  label: keyof UiMessages;
+  hint: keyof UiMessages;
+  min: number;
+  max: number;
+  step?: number;
+  unit?: keyof UiMessages;
+}
+
+/** 数字行：清空输入框即 unset（落回 schema 默认）。 */
+function configNumber(inputs: ConfigInputs, spec: NumberSpec): ReactNode {
+  const raw = inputs.eff(spec.field);
+  const parsed = z.number().min(spec.min).max(spec.max).safeParse(raw);
+  return createElement(NumberField, {
+    label: inputs.t(spec.label),
+    ...splitHint(inputs.t(spec.hint)),
+    field: spec.field,
+    value: parsed.success ? parsed.data : undefined,
+    min: spec.min,
+    max: spec.max,
+    ...(spec.step === undefined ? {} : { step: spec.step }),
+    ...(spec.unit === undefined ? {} : { unit: inputs.t(spec.unit) }),
+    invalidHint: inputs.t("outOfRange"),
+    disabled: inputs.frozen,
+    onChange: (next: number | undefined): void => {
+      if (next === undefined) {
+        inputs.clearField(spec.field);
+        return;
+      }
+      inputs.setField(spec.field, next);
+    },
+  });
+}
+
+/** 闭环小节：四个总开关。 */
+function buildLoopSection(inputs: ConfigInputs): ReactNode {
+  return createElement(
+    Section,
+    { title: inputs.t("loopSection") },
+    configToggle(inputs, { field: "enabled", label: "enabledLabel", hint: "enabledHint" }),
+    configToggle(inputs, {
       field: "reportEnabled",
-      label: t("reportEnabledLabel"),
-      hint: t("reportEnabledHint"),
+      label: "reportEnabledLabel",
+      hint: "reportEnabledHint",
     }),
-    toggle({
+    configToggle(inputs, {
       field: "injectEnabled",
-      label: t("injectEnabledLabel"),
-      hint: t("injectEnabledHint"),
+      label: "injectEnabledLabel",
+      hint: "injectEnabledHint",
     }),
-    toggle({
+    configToggle(inputs, {
       field: "sectionEnabled",
-      label: t("sectionEnabledLabel"),
-      hint: t("sectionEnabledHint"),
+      label: "sectionEnabledLabel",
+      hint: "sectionEnabledHint",
     }),
-    num({
+  );
+}
+
+/** 晋升与衰减小节：升/降级门槛、证据样本、复发率、复活门槛、观察窗口。 */
+function buildPromotionSection(inputs: ConfigInputs): ReactNode {
+  return createElement(
+    Section,
+    { title: inputs.t("promotionSection") },
+    configNumber(inputs, {
       field: "promoteThreshold",
-      label: t("promoteThresholdLabel"),
-      hint: t("promoteThresholdHint"),
+      label: "promoteThresholdLabel",
+      hint: "promoteThresholdHint",
       min: 1,
       max: 20,
+      step: 1,
+      unit: "unitTimes",
     }),
-    num({
+    configNumber(inputs, {
       field: "demoteThreshold",
-      label: t("demoteThresholdLabel"),
-      hint: t("demoteThresholdHint"),
+      label: "demoteThresholdLabel",
+      hint: "demoteThresholdHint",
       min: 1,
       max: 50,
+      step: 1,
+      unit: "unitTimes",
     }),
-    num({
+    configNumber(inputs, {
       field: "demoteMinSamples",
-      label: t("demoteMinSamplesLabel"),
-      hint: t("demoteMinSamplesHint"),
+      label: "demoteMinSamplesLabel",
+      hint: "demoteMinSamplesHint",
       min: 1,
       max: 100,
+      step: 1,
     }),
-    num({
+    configNumber(inputs, {
       field: "demoteRatio",
-      label: t("demoteRatioLabel"),
-      hint: t("demoteRatioHint"),
+      label: "demoteRatioLabel",
+      hint: "demoteRatioHint",
       min: 0.05,
       max: 1,
+      step: 0.05,
     }),
-    num({
+    configNumber(inputs, {
       field: "reviveThreshold",
-      label: t("reviveThresholdLabel"),
-      hint: t("reviveThresholdHint"),
+      label: "reviveThresholdLabel",
+      hint: "reviveThresholdHint",
       min: 1,
       max: 20,
+      step: 1,
+      unit: "unitTimes",
     }),
-    num({
+    configNumber(inputs, {
       field: "decayDays",
-      label: t("decayDaysLabel"),
-      hint: t("decayDaysHint"),
+      label: "decayDaysLabel",
+      hint: "decayDaysHint",
       min: 1,
       max: 365,
+      step: 1,
+      unit: "unitDays",
     }),
-    num({
+  );
+}
+
+/** 容量小节：events.jsonl 磁盘保险丝与规则正文上限。 */
+function buildCapacitySection(inputs: ConfigInputs): ReactNode {
+  return createElement(
+    Section,
+    { title: inputs.t("capacitySection") },
+    configNumber(inputs, {
       field: "maxLessonsBytes",
-      label: t("maxLessonsBytesLabel"),
-      hint: t("maxLessonsBytesHint"),
+      label: "maxLessonsBytesLabel",
+      hint: "maxLessonsBytesHint",
       min: 0,
       max: 1_073_741_824,
+      step: 1,
+      unit: "unitBytes",
     }),
-    num({
+    configNumber(inputs, {
       field: "maxStatementChars",
-      label: t("maxStatementCharsLabel"),
-      hint: t("maxStatementCharsHint"),
+      label: "maxStatementCharsLabel",
+      hint: "maxStatementCharsHint",
       min: 1,
       max: 100_000,
+      step: 1,
+      unit: "unitChars",
     }),
-  ];
+  );
 }
 
 /** 分节标题：标题本身由调用点从字典取好，这里只拼计数（中/英括号形态在字典里）。 */
@@ -954,18 +822,6 @@ export function sectionHeadingText(t: Translate, title: string, count: number): 
 /** 「已拒绝/归档」按钮：折叠态显示分组标题 + 条数，展开态显示"收起"。 */
 export function retiredToggleText(t: Translate, showAll: boolean, count: number): string {
   return showAll ? t("hideRetired") : sectionHeadingText(t, t("sectionRetired"), count);
-}
-
-/** 卡片副标题（含实时计数；lessonsCount 未到达时显式占位，不虚报 0）。 */
-function cardDescriptionText(
-  t: Translate,
-  counts: { candidates: number; armed: number; lessons: number | undefined },
-): string {
-  return t("cardDescription", {
-    candidates: counts.candidates,
-    armed: counts.armed,
-    lessons: counts.lessons ?? "…",
-  });
 }
 
 /** 四种状态的分组：卡片按组渲染，一次过滤读完整个规则列表。 */
@@ -993,12 +849,13 @@ function initialShownCounts(): Record<GroupKey, number> {
  *  区块函数都是普通函数而不是组件（不引入新的 React 节点），树形与拆出前逐字节一致。 */
 interface CardView {
   t: Translate;
-  open: boolean;
   writable: boolean;
   statsError: string | null;
   saveError: string | null;
   busy: boolean;
   dirty: boolean;
+  /** 本次待保存的字段条数（保存条上的「已修改 N 项」）。 */
+  dirtyCount: number;
   /** 宿主规则读面；未到达时是 undefined（与拆出前 csrf 空串同一兜底位）。 */
   rulesRemote: RulesReader | undefined;
   ruleBusy: boolean;
@@ -1008,7 +865,7 @@ interface CardView {
   shownOf: (key: GroupKey) => number;
   /** 「加载更多」：把该组的已展开条数再加一页。 */
   onShowMore: (key: GroupKey) => void;
-  /** 未到达时保持 undefined，由副标题显式占位。 */
+  /** 未到达时保持 undefined，由状态 chips 显式占位。 */
   lessonsCount: number | undefined;
   eff: (field: string) => unknown;
   setField: (field: string, value: SettingsValue) => void;
@@ -1018,7 +875,6 @@ interface CardView {
   setShowAll: (next: boolean) => void;
   onSave: () => void;
   onDiscard: () => void;
-  onToggle: () => void;
 }
 
 /** 按 status 分四组（顺序与拆出前一致：候选 → armed → 降级 → 已拒绝/归档）。
@@ -1038,28 +894,6 @@ function groupRules(rules: RuleCardView[]): RuleGroups {
     }
   }
   return groups;
-}
-
-/** 折叠箭头：`d` 属性走计算键（PATH_KEY）以避开短名检查。 */
-function renderChevron(open: boolean): ReactNode {
-  return createElement(
-    "svg",
-    {
-      width: 14,
-      height: 14,
-      viewBox: "0 0 14 14",
-      "aria-hidden": true,
-      className: `llc-chevron${open ? " llc-chevron-open" : ""}`,
-    },
-    createElement("path", {
-      [PATH_KEY]: "M3 5l4 4 4-4",
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: 1.5,
-      strokeLinecap: "round",
-      strokeLinejoin: "round",
-    }),
-  );
 }
 
 /** 一个评审分节：标题带计数，空组显式占位，非空只画该组已展开的前若干条 + 「加载更多」。
@@ -1119,28 +953,6 @@ function renderRuleSection(
   return createElement("div", null, heading, body);
 }
 
-/** 卡片头：标题 + 实时计数副标题 + 折叠箭头。 */
-function renderCardHeader(view: CardView): ReactNode {
-  const { t, open } = view;
-  const headTitle = t("cardTitle");
-  const headDesc = cardDescriptionText(t, {
-    candidates: view.groups.candidates.length,
-    armed: view.groups.armed.length,
-    lessons: view.lessonsCount,
-  });
-  return createElement(
-    "button",
-    { type: "button", className: "llc-header", "aria-expanded": open, onClick: view.onToggle },
-    createElement(
-      "div",
-      { className: "llc-head" },
-      createElement("div", { className: "llc-name" }, headTitle),
-      createElement("div", { className: "llc-desc" }, headDesc),
-    ),
-    renderChevron(open),
-  );
-}
-
 /** 「已拒绝/归档」区块：折叠态只有一条按钮，展开态才出分节。 */
 function renderRetiredBlock(view: CardView): ReactNode {
   const { t, showAll } = view;
@@ -1167,7 +979,7 @@ function renderRetiredBlock(view: CardView): ReactNode {
     : null;
 }
 
-/** 展开态的卡片体：错误条 + 配置行 + 保存条 + 三个评审分节 + 「已拒绝/归档」+ 蒸馏提示。 */
+/** 卡片体：状态 chips + 错误条 + 三节配置 + 保存条 + 三个评审分节 + 「已拒绝/归档」+ 蒸馏提示。 */
 function renderCardBody(view: CardView): ReactNode {
   const { t } = view;
   const retiredToggle = renderRetiredBlock(view);
@@ -1175,29 +987,43 @@ function renderCardBody(view: CardView): ReactNode {
   const candidatesTitle = t("sectionCandidates");
   const demotedTitle = t("sectionDemoted");
   const armedTitle = t("sectionArmed");
+  const inputs: ConfigInputs = {
+    t,
+    frozen: !view.writable || view.busy,
+    eff: view.eff,
+    setField: view.setField,
+    clearField: view.clearField,
+  };
+  const chips = [
+    t("chipCandidates", { count: view.groups.candidates.length }),
+    t("chipArmed", { count: view.groups.armed.length }),
+    t("chipLessons", { count: view.lessonsCount ?? "…" }),
+  ];
+  const saveBar = createElement(SaveBar, {
+    dirty: view.dirty,
+    busy: view.busy,
+    writable: view.writable,
+    error: view.saveError,
+    saveLabel: t("save"),
+    savingLabel: t("saving"),
+    revertLabel: t("revert"),
+    dirtyLabel: t("dirtyCount", { count: view.dirtyCount }),
+    cleanLabel: t("statusClean"),
+    readOnlyLabel: t("statusReadOnly"),
+    onSave: view.onSave,
+    onDiscard: view.onDiscard,
+  });
   return createElement(
-    "div",
-    { className: "llc-body" },
+    CardForm,
+    null,
+    createElement(StatusBar, { items: chips }),
     view.statsError === null
       ? null
       : createElement("div", { className: "llc-err" }, view.statsError),
-    ...buildConfigRows({
-      t,
-      writable: view.writable,
-      busy: view.busy,
-      eff: view.eff,
-      setField: view.setField,
-      clearField: view.clearField,
-    }),
-    createElement(SaveBar, {
-      t,
-      dirty: view.dirty,
-      writable: view.writable,
-      busy: view.busy,
-      error: view.saveError,
-      onSave: view.onSave,
-      onDiscard: view.onDiscard,
-    }),
+    buildLoopSection(inputs),
+    buildPromotionSection(inputs),
+    buildCapacitySection(inputs),
+    saveBar,
     renderRuleSection(view, "candidates", candidatesTitle, view.groups.candidates),
     renderRuleSection(view, "demoted", demotedTitle, view.groups.demoted),
     renderRuleSection(view, "armed", armedTitle, view.groups.armed),
@@ -1252,7 +1078,6 @@ function saveOpsOf(touched: FieldDraft, keys: readonly string[]): SettingsOps {
 
 function LlcCard(props: LlcCardProps): ReactNode {
   const { t } = props;
-  const [open, setOpen] = useState(props.initialOpen === true);
   const snap = props.useCard((snapshot) => snapshot);
   // 快照的非空与 `value` 的空对象兜底都由 cardStore.getSnapshot() 负责（那才是真正的宿主
   // 边界：官方 ConfigForm.value 在首个快照受理前是 undefined）。到卡片这一层类型已是
@@ -1264,7 +1089,8 @@ function LlcCard(props: LlcCardProps): ReactNode {
   const [busy, setBusy] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const eff = (field: string): unknown => (field in touched ? touched[field] : value[field]);
-  const dirty = diffTouched(touched, value).length > 0;
+  const dirtyCount = diffTouched(touched, value).length;
+  const dirty = dirtyCount > 0;
   const setField = (field: string, nextValue: SettingsValue): void => {
     setTouched((entry) => ({ ...entry, [field]: nextValue }));
   };
@@ -1281,18 +1107,15 @@ function LlcCard(props: LlcCardProps): ReactNode {
     setShownCounts((prev) => ({ ...prev, [key]: prev[key] + RULES_PAGE_SIZE }));
   };
 
-  // 展开即拉取。卡片组件保持「零直接 React hook」的形态（测试架直调组件函数读
+  // 挂载即拉取。卡片组件保持「零直接 React hook」的形态（测试架直调组件函数读
   // createElement 产物，不存在 dispatcher），拉取逻辑提为模块层 reloadStats(reader, sink)，
   // effect 与 save/onDone 直接调它——组件里既无 hook 也无不稳定闭包，exhaustive-deps
-  // 的依赖全落在挂载期稳定位上，行为与旧实现一致：只在 open 翻转时拉一次。
+  // 的依赖全落在挂载期稳定位上。
   // `reader` 来自 apply 期一次构造的读取器，跨渲染身份稳定。
   const reader = props.rulesRemote;
   useEffect(() => {
-    if (!open) {
-      return;
-    }
     void reloadStats(reader, { t, setStats, setStatsError });
-  }, [open, reader, setStats, setStatsError, t]);
+  }, [reader, setStats, setStatsError, t]);
 
   const save = async (): Promise<void> => {
     const keys = diffTouched(touched, value);
@@ -1342,17 +1165,14 @@ function LlcCard(props: LlcCardProps): ReactNode {
     }
   };
 
-  const toggleOpen = (): void => {
-    setOpen(!open);
-  };
   const view: CardView = {
     t,
-    open,
     writable,
     statsError,
     saveError,
     busy,
     dirty,
+    dirtyCount,
     rulesRemote: reader,
     ruleBusy,
     showAll,
@@ -1370,14 +1190,8 @@ function LlcCard(props: LlcCardProps): ReactNode {
       void save();
     },
     onDiscard: discard,
-    onToggle: toggleOpen,
   };
-  return createElement(
-    "div",
-    { className: `llc-card${open ? " llc-card-open" : ""}` },
-    renderCardHeader(view),
-    open ? renderCardBody(view) : null,
-  );
+  return renderCardBody(view);
 }
 
 /**
@@ -1512,7 +1326,7 @@ function apply(ctx: ClientCtx): void {
   ctx.effect(() => {
     const tag = document.createElement("style");
     tag.id = "lesson-loop-card-css";
-    tag.textContent = CARD_CSS;
+    tag.textContent = `${CARD_CSS}\n${CARD_UI_CSS}`;
     document.head.append(tag);
     return () => {
       tag.remove();
@@ -1582,11 +1396,9 @@ export {
   inject,
   apply,
   LlcCard,
-  ToggleRow,
-  NumberInputRow,
   RuleItem,
-  SaveBar,
   cardStore,
-  cardDescriptionText,
-  buildConfigRows,
+  buildLoopSection,
+  buildPromotionSection,
+  buildCapacitySection,
 };

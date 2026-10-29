@@ -69,7 +69,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 Remove with `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`. The package is on the public npm registry, so installation needs no credentials.
 
-- **Node.js `>= 22.12`, host `dsh` on the `0.2.1-rc.3` line.** The requirement the host reads is `engines.dsh` (`^0.2.1-rc.3`), and it **decides alone** — with that field present, `evaluatePluginCompatibility` never looks at the `@deepseek-ai/dsh*` peers. Measured: `0.2.0-rc.2` and `0.2.1-rc.1` are refused, `0.2.1-rc.3` and `0.2.2` pass, `0.3.0` is refused.
+- **Node.js `>= 22.12`, host `dsh` on the rolling `^0.2.1-rc.3` window.** The plugin's own floor is `engines.node` (`>=22.12.0`); the `0.2.2-alpha.2` host itself declares Node `>=24.9.0`, so that host cannot run on Node 22 even though this package can. The requirement the host reads is `engines.dsh` (`^0.2.1-rc.3`), and it **decides alone** — with that field present, `evaluatePluginCompatibility` never looks at the `@deepseek-ai/dsh*` peers. Measured: `0.2.0-rc.2` and `0.2.1-rc.1` are refused, `0.2.1-rc.3` and `0.2.2-alpha.2` pass, `0.3.0` is refused. The support window rolls: this package is verified against the three most recently released host versions at publish time and re-verified once the window moves, so the version number in this bullet is not a standing promise.
 - **No `@deepseek-ai/*` under `dependencies`, by contract.** Profiles install with `nodeLinker: hoisted` and `autoInstallPeers: false`, so a host package there becomes a real second copy; `@deepseek-ai/dsh-tools` keys its scheduler with a plain `Symbol`, so **every native tool call throws** in that profile while build, typecheck and coverage stay green. The four host packages `host.js` imports for value are required peers and repeated under `devDependencies` at the same exact pin, so the bundler externalizes them instead of inlining the official function bodies; `test/publish-manifest.test.ts` enforces both halves. Artifacts are rebuilt by `prepack`, never committed.
 
 ### <img src="https://api.iconify.design/lucide/arrow-down-to-line.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Shared version floor
@@ -80,7 +80,7 @@ If your profile pins `@jayyuen66/dsh-plugin-shared` with a pnpm `overrides` entr
 
 1. **The layer is mounted.** `dsh --profile web --dump-config` ends with `# == @jayyuen66/dsh-lesson-loop` plus `- id: lesson-loop`.
    - That command is the only accepted signal, and it is **not read-only** — it rewrites the profile's root assembly file. Read layer lines from stdout **and** check stderr separately: an unmatched patch target appears only on stderr, so the exit code alone proves nothing. Accept both `# == <layer>` and `# == <layer>, patched by <path>`.
-2. **The card renders live data.** Its header carries the current candidate / armed / lesson counts and opening it fills the rule groups. An error row reading "stats unavailable" means the layer is mounted but the Remote namespace did not reach the browser.
+2. **The card renders live data.** Its header carries the current candidate / armed / lesson counts and opening it fills the rule groups. A plain "stats unavailable" row means the layer is mounted but the Remote namespace did not reach the browser; the longer localized host error ("stats unavailable: the host read path failed — retry") means the namespace is live and that one read failed, so retry after the read path recovers.
 3. **A lesson reaches the library.** Trigger one denial or gate failure from an installed reporter (danger-guard, quality-gate, session-rescue), or run `/lessons-digest` in a session with negative feedback; the candidate group gains evidence.
 4. **An armed rule comes back.** Arm a card, then start a new session in that project: the injected frame begins with `[lesson-loop] Experience rules for this project`. Subagent sessions receive nothing, by design.
 5. **The profile carries no host copy.** `node_modules/` in a scratch profile holds `@jayyuen66/` and no `@deepseek-ai/` directory.
@@ -99,6 +99,7 @@ If your profile pins `@jayyuen66/dsh-plugin-shared` with a pnpm `overrides` entr
 - **One entry, one `Config`.** The settings namespace is the entry id, so switches, thresholds and the `rules` array share one section and one revision. `rules` carries `.loose()`, the read side checks the raw shape through `describe().user` (unreadable means it refuses to write rather than overwriting), and every write is one CAS commit with re-read and replay.
 - `settings` is the only plugin-level hard dependency. `timer` / `commands` / `systemPrompt` / `llm` are optional: a missing one removes that capability, the plugin still loads.
 - The card's data plane is installed unconditionally on the apply fiber, so it exists even on a host whose web layer arrives late.
+- `locale/en.json` / `locale/zh.json` supply the plugin page's `meta.title`, `meta.description` and `meta.detail`; the detail page reads `docs/DETAIL.md` in English and `docs/DETAIL.zh.md` in Chinese. The README is not the source for that page.
 - Deployment defaults go on the registration line's `config:` (card value > row `config` > schema default); an invalid config fails this entry's fiber alone.
 - An incompatible host is granted per exact version, never by widening a range:
 
@@ -139,7 +140,7 @@ Namespace = the entry id `lesson-loop`. Four switches default to `true`: `enable
 | `maxStatementChars` | `4000` | 1–100000 | Character limit for an armed rule statement on arm/edit (UTF-16 units); longer writes are refused, stored statements are unaffected |
 | `digestTimeoutMs` | `120000` | ≥ 1000 | Wall clock for one digest run (ms); no card row |
 | `decayIntervalMs` | `86400000` | ≥ 1000 | Interval arming the periodic decay pass (ms); no card row |
-| `maxInjectedRules` | `50` | 0–1000 | Armed rules injected per session, newest first; `0` = no cap; no card row |
+| `maxInjectedRules` | `50` | 0–1000 | Armed rules injected per session; when capped, the newest rules are kept; `0` = no cap; no card row |
 
 The last three rows are deployment values: not `.volatile()`, so the card has no row for them and they are given only on the registration line's `config:`, taking effect on restart.
 
@@ -151,11 +152,12 @@ Four methods on one official Typert Remote namespace, `lessonLoopRules`.
 | --- | --- | --- |
 | `stats()` | — | `{ ok: true, …counters, …config summary, rules }`; the rule projection carries the derived `undeterminable` flag and **no** `evidence` bodies |
 | `rules(request)` | `{ project? }` | `{ ok: true, rules }`; a non-string `project` reads as absent, i.e. the whole library |
-| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`; a non-finite, ≤ 0 or absent `limit` means everything |
+| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`; an absent, non-finite or ≤ 0 `limit` means the default 50, and an explicit value is capped at 500 |
 | `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`, or `{ ok: false, error, status }` |
 
 - `action` must be one of the six whitelisted values; `statement` is read by `arm` and `edit` only, trimmed, and a blank string counts as "not given". A statement longer than `maxStatementChars` returns `{ ok: false, status: 400 }` and the library stays untouched.
 - A refusal's `status` is a **retained semantic code, not an HTTP status**: 400 for a missing field or an off-whitelist action, 404 for an unknown card, 500 for a change the library refused to persist (carrying `rules-not-persisted`).
+- The read methods return `{ ok: false, error, status: 500 }` when the host read path fails; `error` is localized and the original exception stays in the host log. A 500 here means the read failed, not that the request was malformed.
 - Reads are pulled, not pushed: on panel open, after a save, and after each manual action. There is no polling loop and no client-side wall clock.
 
 ## <img src="https://api.iconify.design/lucide/lock.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Data and privacy

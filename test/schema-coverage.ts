@@ -188,8 +188,13 @@ export function hostSchemaFields(hostTs: string): string[] {
 /** 扫描一个 client 源文件，收集作为「设置写入第一参」出现的字段名字面量。 */
 function boundFieldsIn(src: string): Set<string> {
   const out = new Set<string>();
-  // 输入行组件的 field prop：field: 'x'
-  for (const match of src.matchAll(/\bfield\s*:\s*["'](?<name>[A-Za-z_$][\w$]*)["']/gu)) {
+  // 输入行组件的 field prop，两种写法都要认：
+  //   对象属性（createElement/JS 对象字面量）：field: 'x'
+  //   JSX 属性（.tsx 里的 <ToggleRow field="x" />）：field="x"
+  // 只认前者会让用 JSX 写的包**整包假失败**（每个字段都报"卡片未暴露"），而 .tsx 恰是
+  // 卡片组件最常见的写法——SOURCE_EXTENSION 收 .tsx 却只认一种写法，等于把扩展名收了、
+  // 把内容拒了。
+  for (const match of src.matchAll(/\bfield\s*[:=]\s*["'](?<name>[A-Za-z_$][\w$]*)["']/gu)) {
     out.add(group(match, 1));
   }
   // 各种写入惯用法：props.set('x' / set('x' / unset('x' / fireAndForget('x' / writeSet('x'

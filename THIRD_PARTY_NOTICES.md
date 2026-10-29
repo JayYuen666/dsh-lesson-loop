@@ -27,6 +27,7 @@
 | 包 | 在本包里的角色 | 为什么只能是运行期依赖 |
 | --- | --- | --- |
 | `@jayyuen66/dsh-plugin-shared` | 自有同门库包（`dependencies`） | 它的 apply 幂等守卫落在 `globalThis` 上，必须全进程只有那一处读写；内联进每个插件会各得一份标记 |
+| `zod` | 设置卡请求 codec（`dependencies`） | `src/rules-reader.ts` 的 strict codec 用它校验形状；与 react 一样由宿主 `PLATFORM_MODULES` 提供，内联会得到第二份 zod 身份 |
 | `@deepseek-ai/schemastery` | 配置 schema（`peerDependencies`） | 只有宿主 fork 的 `resolve` 会把 `.volatile()` 字段包成 Volatile 引用；公共 `schemastery` 连该方法都没有 |
 | `@deepseek-ai/dsh-brand` | 幻影品牌构造（`peerDependencies`） | 宿主类型面用品牌串做名义类型，构造品牌需要**真实函数值**，没有 type-only 的构造途径；降为 `devDependencies` 会被打包器内联，于是每个包各得一份官方构造函数，单例语义失效 |
 | `@deepseek-ai/dsh-home-paths` | 数据落盘位置（`peerDependencies`） | `cacheFile()` 的路径解析规则必须由宿主单源提供，插件不该再实现一份 |

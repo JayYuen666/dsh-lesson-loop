@@ -17,6 +17,10 @@
  *  归并与本包的正文起草两侧共用，避免两侧各自硬编码后漂移。 */
 export const REJECTED_SUMMARY_SUFFIX = ":rejected";
 
+/** 签名里出现这些源码文件扩展名时按"文件路径"而非类别处理。 */
+const SOURCE_FILE_EXTENSION =
+  /\.(?:tsx?|jsx?|mjs|cjs|rs|py|go|java|kt|swift|vue|svelte|json|ya?ml|css|scss|html|md|sh|sql|toml|c|cpp|h|hpp|lock)$/iu;
+
 /** 归一签名里出现的非字符串（缺字段/类型漂移）：留一条日志，否则多个缺失签名
  *  会被拼成完全相同的键、悄悄归并成同一张卡。 */
 function warnNonStringSignature(value: unknown): void {
@@ -83,11 +87,7 @@ export function stableSignatureFor(category: string, signature: unknown): string
 /** 路径/文件名形态签名判定（迁移归并的识别器，factgate / secret-path 的碎片是文件路径）。 */
 export function looksLikePathSignature(signature: string): boolean {
   return (
-    signature.includes("/") ||
-    signature.includes("\\") ||
-    /\.(?:tsx?|jsx?|mjs|cjs|rs|py|go|java|kt|swift|vue|svelte|json|ya?ml|css|scss|html|md|sh|sql|toml|c|cpp|h|hpp|lock)$/iu.test(
-      signature,
-    )
+    signature.includes("/") || signature.includes("\\") || SOURCE_FILE_EXTENSION.test(signature)
   );
 }
 

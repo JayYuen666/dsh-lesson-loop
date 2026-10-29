@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Lesson loop",
+    "description": "Collects gate and approval evidence into rules, promotes the ones that repeat, injects the armed rules into new turns, and decays the ones nobody follows.",
+    "detail": "docs/DETAIL.md"
+  }
+}

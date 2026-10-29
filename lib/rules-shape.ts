@@ -100,6 +100,22 @@ export interface RuleActionRequest {
   readonly statement?: string;
 }
 
+/**
+ * 读方法（stats / rules / lessons）的**失败**回执。
+ *
+ * 为什么读面也要一条 error 通道：这三个方法各自摸磁盘（`recentLessons` 走 readJsonl）
+ * 或摸设置面，抛出去会被网关折成 `gateway/internal: <原文>`——卡片把英文内部错误原样
+ * 贴给用户，而这句本该是本包的话（`ruleAction` 的注释早就点名要避免这一形态，读面
+ * 此前漏了）。折成回执而不是抛，判据与写面一致。
+ *
+ * `status` 恒 500：读失败是「这次没读到」，不是请求错，重试有意义。
+ */
+export interface ReadRefused {
+  readonly ok: false;
+  readonly error: string;
+  readonly status: 500;
+}
+
 export interface RulesResult {
   readonly ok: true;
   readonly rules: readonly RuleView[];
@@ -111,6 +127,10 @@ export interface LessonsResult {
   readonly lessons: readonly LessonView[];
 }
 
+/** 读方法的完整回执：成功给数据，失败给本地化文案（见 {@link ReadRefused}）。 */
+export type RulesReply = RulesResult | ReadRefused;
+export type LessonsReply = LessonsResult | ReadRefused;
+
 export interface RuleActionDone {
   readonly ok: true;
   readonly id: string;
@@ -118,9 +138,10 @@ export interface RuleActionDone {
   readonly action: RuleActionName;
 }
 
-/** 拒绝回执：`status` 保留旧 HTTP 面的语义码（400/404/500；lib/rules-remote.ts 的
- *  ruleAction 共五处返回，只产出这三个值），卡片只读 `error`。字面量联合把新增/
- *  改写状态码钉在编译期。 */
+/** 拒绝回执：`status` 保留旧 HTTP 面的语义码（400/404/500），卡片只读 `error`。
+ *  字面量联合把新增/改写状态码钉在编译期。
+ *  这里刻意不写"ruleAction 有几处拒绝返回"：那是个会随分支增删漂移的计数，写死在注释里
+ *  就必然说谎（这张表建时写的是"五处"，加过 statement-too-long 与 catch 之后实际已不是）。 */
 export interface RuleActionRefused {
   readonly ok: false;
   readonly error: string;

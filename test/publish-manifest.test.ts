@@ -339,16 +339,8 @@ describe("类型声明随包发布（build:types 的产物面）", () => {
   });
 });
 
-/**
- * 宿主包在 peer 与 dev 两张表里的并集。`dependencies` 是禁区（见下面那条门禁）：peer 记录
- * 「运行期由宿主提供」，dev 记录「本包编译与测试要用它」，两者都不会被消费方的 profile 安装。
- * 同名键以 peer 表为准，那才是消费方环境里真正提供的那一枚。
- * @param manifest - 解析后的 package.json
- * @returns 宿主包名到版本区间
- */
-function hostRanges(manifest: Manifest): Record<string, string> {
-  return { ...manifest.devDependencies, ...manifest.peerDependencies };
-}
+/** 宿主 dsh 家族的包名前缀（本组三条判据都要按它筛，收常量）。 */
+const DSH_PREFIX = "@deepseek-ai/dsh-";
 
 describe("宿主依赖的版本形状（升级防线）", () => {
   it("@deepseek-ai/* 一律不进 dependencies：装出去会在宿主进程里物化第二份", async () => {
@@ -373,32 +365,47 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     expect(leaked, "这些宿主包会随消费方装进 profile，物化出第二份实例").toStrictEqual([]);
   });
 
-  it("dsh-* 家族一律精确钉，不留任何范围算子", async () => {
+  it("devDependencies 里的 dsh-* 家族一律精确钉，不留任何范围算子", async () => {
     // registry 上的 dist-tag 是实测出来的陷阱：`latest` 可能指向远早于宿主 ABI 的版本。
-    // 精确钉是让「不带版本地装成远古版本」这件事不可能发生的最小条件；一旦放宽成 `^`/`~`，
-    // 宿主某天发新 minor 就会自动跟上去，而插件与宿主 ABI 耦合，那等于让消费方在没有测试的
-    // 情况下换掉宿主类型面。
+    // 精确钉是让「不带版本地装成远古版本」这件事不发生的最小条件；一旦放宽成 `^`/`~`，
+    // 宿主某天发新 minor 就会自动跟上去，而插件与宿主 ABI 耦合，那等于让本包在没有测试的
+    // 情况下换掉编译用的宿主类型面。
+    // 只判 dev 这一侧：它才是本包真正装下来的那一份。peer 记的是「运行期由宿主提供」，
+    // 装什么版本由宿主决定，判据在下面那条。
     const { manifest } = await readSurface();
     // 过滤出违规项再一次性断言，而不是在循环里按条件 expect：失败时 diff 直接列出
     // 「哪个包钉成了什么」，比逐条抛错更好读。
-    const ranged = Object.entries(hostRanges(manifest)).filter(
-      ([name, range]) => name.startsWith("@deepseek-ai/dsh-") && !/^\d+\.\d+\.\d+-/u.test(range),
+    const ranged = Object.entries(manifest.devDependencies ?? {}).filter(
+      ([name, range]) => name.startsWith(DSH_PREFIX) && !/^\d+\.\d+\.\d+-/u.test(range),
     );
-    expect(ranged, "这些 dsh-* 依赖没有精确钉住版本").toStrictEqual([]);
+    expect(ranged, "这些 dsh-* 开发依赖没有精确钉住版本").toStrictEqual([]);
   });
 
-  it("dsh-* 全部与 peer 的 dsh 同版本（不许装出第二份宿主类型）", async () => {
-    // 宿主类型面被这些包以 type-only 方式消费；同一个会话里出现两个 dsh-session 的拷贝，
+  it("devDependencies 里的 dsh-* 全部同版本（不许装出第二份宿主类型）", async () => {
+    // 宿主类型面被这些包以 type-only 方式消费；同一次安装里出现两枚 dsh-session 的拷贝，
     // nominal 类型（品牌串、投影状态）会开始互相不认，而那不报编译错、只报运行期
     // 「认不出这个 callId」。同版本是让这件事不发生的最小条件。
     const { manifest } = await readSurface();
-    const peer = manifest.peerDependencies?.["@deepseek-ai/dsh"];
-    expect(peer, "peer 依赖缺失：宿主版本就失去基准了").toBeDefined();
-    const hostVersion = (peer ?? "").replace(/^[\^~]/u, "");
-    const drifted = Object.entries(hostRanges(manifest)).filter(
-      ([name, range]) => name.startsWith("@deepseek-ai/dsh-") && range !== hostVersion,
+    const dshDev = Object.entries(manifest.devDependencies ?? {}).filter(([name]) =>
+      name.startsWith(DSH_PREFIX),
     );
-    expect(drifted, "这些 dsh-* 与宿主 dsh 不同版本").toStrictEqual([]);
+    expect(dshDev.length, "至少要钉住一枚 dsh-* 开发依赖，否则这条是空转").toBeGreaterThan(0);
+    const baseline = dshDev[0]?.[1];
+    const drifted = dshDev.filter(([, range]) => range !== baseline);
+    expect(drifted, `这些 dsh-* 与 ${baseline} 不同版本`).toStrictEqual([]);
+  });
+
+  it("peerDependencies 里的 dsh 家族写支持窗口范围，与裸 dsh 逐条同一条", async () => {
+    // peer 由宿主拿自己安装的那版去满足：钉成精确版本等于要求两者版本号完全相等，而滚动支持
+    // 窗口本来就含三个版本。宿主侧只在 manifest 没有 engines.dsh 时才读 peer（app-boot 的
+    // plugin-compatibility 里 engines.dsh 存在即独判），所以这一位是发布元数据的含义问题。
+    const { manifest } = await readSurface();
+    const bare = manifest.peerDependencies?.["@deepseek-ai/dsh"] ?? "";
+    expect(bare, "裸 dsh 的 peer 缺失：支持窗口就失去基准了").toMatch(/^\^/u);
+    const offPolicy = Object.entries(manifest.peerDependencies ?? {}).filter(
+      ([name, range]) => name.startsWith(DSH_PREFIX) && range !== bare,
+    );
+    expect(offPolicy, "这些 dsh-* peer 与裸 dsh 不是同一条范围").toStrictEqual([]);
   });
 });
 
@@ -511,8 +518,11 @@ describe("dsh 声明面（宿主按这些字段决定装什么、加载什么）
   it("client.js 只 require 平台模块（其余依赖一律内联，避免第二份实例）", async () => {
     const out = await readFile(path.join(pkgDir, "client.js"), "utf8");
     const required = requiresIn(out);
-    // 平台模块由宿主 shell 提供（react 是 harness PLATFORM_MODULES 的一员）；再出现别的裸
-    // 说明符就等于把一份依赖整包内联/外置进浏览器，符号身份与版本都不再由宿主决定。
-    expect(required, "client.js 的 require 清单只允许平台模块").toStrictEqual(['require("react")']);
+    // 平台模块由宿主 shell 提供（react 与 zod 都是 harness PLATFORM_MODULES 的成员）；再出现
+    // 别的裸说明符就等于把一份依赖整包内联/外置进浏览器，符号身份与版本都不再由宿主决定。
+    expect(required, "client.js 的 require 清单只允许平台模块").toStrictEqual([
+      'require("react")',
+      'require("zod")',
+    ]);
   });
 });
