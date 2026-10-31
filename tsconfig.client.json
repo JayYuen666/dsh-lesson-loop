@@ -3,7 +3,13 @@
 // `/// <reference types="node" />` 不受基线的 `types: []` 约束，混在同一个程序里会把
 // node 类型注入整个程序——src 误用 process/Buffer/node:* 就不再报错，
 // lib/rules-shape.ts「客户端叶子零 node 依赖」的判据随之失效。
+// types 就地钉成空：基线当前就是 []，但这条判据承重（注入 node 类型会让 src 误用
+// process/Buffer/node:* 静默通过），不能指望别处的默认值一直不变——基线改一次，这里
+// 会跟着松掉而没有任何红。显式写死，改动必须经过本文件的 diff。
 {
   "extends": "@jayyuen66/dsh-plugin-shared/config/tsconfig.client.base.json",
+  "compilerOptions": {
+    "types": []
+  },
   "include": ["src/**/*.ts"]
 }

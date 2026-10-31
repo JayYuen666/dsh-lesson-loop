@@ -254,9 +254,13 @@ const MAX_SLICE_CHARS = 65_536;
 function* candidateSlices(text: string): Generator<string> {
   for (let start = text.indexOf("["); start !== -1; start = text.indexOf("[", start + 1)) {
     for (let end = text.indexOf("]", start + 1); end !== -1; end = text.indexOf("]", end + 1)) {
-      if (end + 1 - start <= MAX_SLICE_CHARS) {
-        yield text.slice(start, end + 1);
+      // `end` 随内层循环单调递增：第一个超长候选出现时，这个 `[` 之后的所有候选都超长，
+      // 直接换下一个 `[`——否则内层仍要把尾部每个 `]` 走完，上面那条尝试上限承诺的
+      // "常数封顶"不成立（输出长度不受限，O(方括号数²) 的比较照旧发生）。
+      if (end + 1 - start > MAX_SLICE_CHARS) {
+        break;
       }
+      yield text.slice(start, end + 1);
     }
   }
 }
@@ -271,7 +275,10 @@ function rulesFromBestSlice(text: string): { rules: DigestParsedRule[]; rejected
   for (const slice of candidateSlices(text)) {
     attempts += 1;
     if (attempts > MAX_PARSE_SLICES) {
-      return null;
+      // 超限也要交回已经拿到的确定结论：`parsedButEmpty` 里可能是"解析成数组但条目全被
+      // 白名单拒收"的那一档，它的 rejected 计数是 digest 侧"模型提了条目却全被拒"告警的
+      // 唯一来源，丢掉它就等于把输出损坏与"什么都没提"混成一档。
+      return parsedButEmpty ?? null;
     }
     // 这一档切不上（JSON 语法坏）就换下一个 `]` 再试（多候选切片）。
     const parsed = asArrayOrUndefined(parseSlice(slice));
@@ -280,26 +287,14 @@ function rulesFromBestSlice(text: string): { rules: DigestParsedRule[]; rejected
       if (counted.rules.length > 0) {
         return counted;
       }
-      parsedButEmpty ??= { rules: [], rejected: counted.rejected };
+      // 只留第一个空数组会丢信息：前言的 `[]`（rejected=0）会顶掉后面"全被拒收"的那一档，
+      // rejected 归零、全拒收告警静默消失。按 rejected 取大者。
+      if (parsedButEmpty === undefined || counted.rejected > parsedButEmpty.rejected) {
+        parsedButEmpty = { rules: [], rejected: counted.rejected };
+      }
     }
   }
   return parsedButEmpty ?? null;
-}
-
-/** 首个能解析成数组的切片；找不到回 null（全部切片都切不上）。 */
-function firstArraySlice(text: string): readonly unknown[] | null {
-  let attempts = 0;
-  for (const slice of candidateSlices(text)) {
-    attempts += 1;
-    if (attempts > MAX_PARSE_SLICES) {
-      return null;
-    }
-    const parsed = asArrayOrUndefined(parseSlice(slice));
-    if (parsed !== undefined) {
-      return parsed;
-    }
-  }
-  return null;
 }
 
 /**
@@ -313,6 +308,8 @@ function firstArraySlice(text: string): readonly unknown[] | null {
 export function parseDigestOutput(text: string): DigestParseResult {
   const best = rulesFromBestSlice(text);
   const rules = best?.rules ?? [];
-  const readable = rules.length > 0 || firstArraySlice(text) !== null;
+  // `best !== null` 即"至少有一个切片解析成了数组"（含 `[]` 与全被拒收的那一档）：
+  // rulesFromBestSlice 的回退结论与复扫 firstArraySlice 的结论逐档一致，不必再扫一遍。
+  const readable = best !== null;
   return { rules, parsed: readable, rejected: best?.rejected ?? 0 };
 }

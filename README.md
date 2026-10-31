@@ -107,17 +107,17 @@ If your profile pins `@jayyuen66/dsh-plugin-shared` with a pnpm `overrides` entr
 dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --dsh-version <exact running host version> --accept-risk
 ```
 
-  `version-exemptions` lists the grants and `revoke-version` removes one; `--dsh-version` must equal the version the running host reports.
+`version-exemptions` lists the grants and `revoke-version` removes one; `--dsh-version` must equal the version the running host reports.
 
 ## <img src="https://api.iconify.design/lucide/cable.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> The lesson bus
 
-| Method | Purpose |
-| --- | --- |
-| `report(input)` | Append a lesson, merge it into that key's card; returns `{ ok, reason?, violationOf?, candidate?, ready?, justReady? }` |
-| `pass(input)` | The rule's scenario fired and was followed; counted as `suppressed` when the session ends |
-| `rules()` / `recentLessons(project?, limit?)` | Read the rule library / the event stream |
-| `ruleAction(id, action, statement?)` | The six human actions |
-| `stats()` | Counters and the config summary behind the card |
+| Method                                        | Purpose                                                                                                                 |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `report(input)`                               | Append a lesson, merge it into that key's card; returns `{ ok, reason?, violationOf?, candidate?, ready?, justReady? }` |
+| `pass(input)`                                 | The rule's scenario fired and was followed; counted as `suppressed` when the session ends                               |
+| `rules()` / `recentLessons(project?, limit?)` | Read the rule library / the event stream                                                                                |
+| `ruleAction(id, action, statement?)`          | The six human actions                                                                                                   |
+| `stats()`                                     | Counters and the config summary behind the card                                                                         |
 
 - `reason` is one of `disabled`, `rules-not-persisted` (this change did not reach the library — retry) or `error`. It is a receipt code, not translated text.
 - `source` is an open set: `danger-guard`, `quality-gate`, `session-rescue`, `lessons-digest` and `manual` are built in, and a third party may name itself freely (trimmed, non-empty, ≤ 64 characters, else `manual` with a log line). Two report kinds carry meaning worth naming: `gate-not-run` marks a check that never ran, because an environment problem must not be learned as a code lesson, and `needsUserConfirmation: true` in the evidence marks a judgement the reporter could not make — evidence, but no violation.
@@ -128,19 +128,19 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 
 Namespace = the entry id `lesson-loop`. Four switches default to `true`: `enabled` (master — off means no reporting, injection, exit settlement or standing section, periodic decay pauses, and `/lessons-digest` refuses), `reportEnabled` (lesson **entry** gate: it stops `report()` and `/lessons-digest` only — `pass()` accounting and the dispose-time settlement follow `enabled` alone), `injectEnabled`, `sectionEnabled`.
 
-| Field | Default | Range | Purpose |
-| --- | --- | --- | --- |
-| `promoteThreshold` | `3` | 1–20 | Same-key lessons reaching this count mark the card for review |
-| `demoteThreshold` | `3` | 1–50 | Violations after arming required to demote |
-| `demoteMinSamples` | `5` | 1–100 | Minimum real evidence `violation + suppressed` |
-| `demoteRatio` | `0.5` | 0.05–1 (step 0.05) | Recurrence-ratio red line |
-| `decayDays` | `30` | 1–365 | Armed this long without a clean hit turns the card undeterminable; later violations do not reset the window |
-| `reviveThreshold` | `3` | 1–20 | A rejected rule seen this often returns to candidates |
-| `maxLessonsBytes` | `0` | 0–1 GiB | Disk fuse; `0` = no cap, content never truncated to save context |
-| `maxStatementChars` | `4000` | 1–100000 | Character limit for an armed rule statement on arm/edit (UTF-16 units); longer writes are refused, stored statements are unaffected |
-| `digestTimeoutMs` | `120000` | ≥ 1000 | Wall clock for one digest run (ms); no card row |
-| `decayIntervalMs` | `86400000` | ≥ 1000 | Interval arming the periodic decay pass (ms); no card row |
-| `maxInjectedRules` | `50` | 0–1000 | Armed rules injected per session; when capped, the newest rules are kept; `0` = no cap; no card row |
+| Field               | Default    | Range              | Purpose                                                                                                                             |
+| ------------------- | ---------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `promoteThreshold`  | `3`        | 1–20               | Same-key lessons reaching this count mark the card for review                                                                       |
+| `demoteThreshold`   | `3`        | 1–50               | Violations after arming required to demote                                                                                          |
+| `demoteMinSamples`  | `5`        | 1–100              | Minimum real evidence `violation + suppressed`                                                                                      |
+| `demoteRatio`       | `0.5`      | 0.05–1 (step 0.05) | Recurrence-ratio red line                                                                                                           |
+| `decayDays`         | `30`       | 1–365              | Armed this long without a clean hit turns the card undeterminable; later violations do not reset the window                         |
+| `reviveThreshold`   | `3`        | 1–20               | A rejected rule seen this often returns to candidates                                                                               |
+| `maxLessonsBytes`   | `0`        | 0–1 GiB            | Disk fuse; `0` = no cap, content never truncated to save context                                                                    |
+| `maxStatementChars` | `4000`     | 1–100000           | Character limit for an armed rule statement on arm/edit (UTF-16 units); longer writes are refused, stored statements are unaffected |
+| `digestTimeoutMs`   | `120000`   | ≥ 1000             | Wall clock for one digest run (ms); no card row                                                                                     |
+| `decayIntervalMs`   | `86400000` | ≥ 1000             | Interval arming the periodic decay pass (ms); no card row                                                                           |
+| `maxInjectedRules`  | `50`       | 0–1000             | Armed rules injected per session; when capped, the newest rules are kept; `0` = no cap; no card row                                 |
 
 The last three rows are deployment values: not `.volatile()`, so the card has no row for them and they are given only on the registration line's `config:`, taking effect on restart.
 
@@ -148,12 +148,12 @@ The last three rows are deployment values: not `.volatile()`, so the card has no
 
 Four methods on one official Typert Remote namespace, `lessonLoopRules`.
 
-| Method | Input | Reply |
-| --- | --- | --- |
-| `stats()` | — | `{ ok: true, …counters, …config summary, rules }`; the rule projection carries the derived `undeterminable` flag and **no** `evidence` bodies |
-| `rules(request)` | `{ project? }` | `{ ok: true, rules }`; a non-string `project` reads as absent, i.e. the whole library |
-| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`; an absent, non-finite or ≤ 0 `limit` means the default 50, and an explicit value is capped at 500 |
-| `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`, or `{ ok: false, error, status }` |
+| Method                | Input                        | Reply                                                                                                                                         |
+| --------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stats()`             | —                            | `{ ok: true, …counters, …config summary, rules }`; the rule projection carries the derived `undeterminable` flag and **no** `evidence` bodies |
+| `rules(request)`      | `{ project? }`               | `{ ok: true, rules }`; a non-string `project` reads as absent, i.e. the whole library                                                         |
+| `lessons(request)`    | `{ project?, limit? }`       | `{ ok: true, count, lessons }`; an absent, non-finite or ≤ 0 `limit` means the default 50, and an explicit value is capped at 500             |
+| `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`, or `{ ok: false, error, status }`                                                                                 |
 
 - `action` must be one of the six whitelisted values; `statement` is read by `arm` and `edit` only, trimmed, and a blank string counts as "not given". A statement longer than `maxStatementChars` returns `{ ok: false, status: 400 }` and the library stays untouched.
 - A refusal's `status` is a **retained semantic code, not an HTTP status**: 400 for a missing field or an off-whitelist action, 404 for an unknown card, 500 for a change the library refused to persist (carrying `rules-not-persisted`).
@@ -162,14 +162,14 @@ Four methods on one official Typert Remote namespace, `lessonLoopRules`.
 
 ## <img src="https://api.iconify.design/lucide/lock.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Data and privacy
 
-| Aspect | Content |
-| --- | --- |
-| Written to disk | The event stream at `$DSH_HOME/cache/lesson-loop/events.jsonl` (a discardable derived-data location) plus its transient `.lock` / `.tmp` siblings, and the `rules` array in the `lesson-loop` section of the settings document |
-| Network | No call of its own. `/lessons-digest` sends this session's negative feedback and the project's recent lessons to the current default model through the host `llm` service, so that content leaves the machine when that model is remote |
-| Retention | The event stream keeps details and rule statements in full, with zero truncation; `maxLessonsBytes` is a disk fuse, not a context cap |
-| Evidence convergence | Rule-card `evidence` is the one exception: an over-long detail is truncated with an ellipsis and only the most recent rows per card are kept, at write time only. `signature` and the counters are never trimmed |
-| Concurrency | Rule-library writes carry cross-process CAS; event-stream appends share one lock with trimming |
-| Language | Host-side wording follows the official locale preference; stored rule statements are user data and are never rewritten |
+| Aspect               | Content                                                                                                                                                                                                                                 |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Written to disk      | The event stream at `$DSH_HOME/cache/lesson-loop/events.jsonl` (a discardable derived-data location) plus its transient `.lock` / `.tmp` siblings, and the `rules` array in the `lesson-loop` section of the settings document          |
+| Network              | No call of its own. `/lessons-digest` sends this session's negative feedback and the project's recent lessons to the current default model through the host `llm` service, so that content leaves the machine when that model is remote |
+| Retention            | The event stream keeps details and rule statements in full, with zero truncation; `maxLessonsBytes` is a disk fuse, not a context cap                                                                                                   |
+| Evidence convergence | Rule-card `evidence` is the one exception: an over-long detail is truncated with an ellipsis and only the most recent rows per card are kept, at write time only. `signature` and the counters are never trimmed                        |
+| Concurrency          | Rule-library writes carry cross-process CAS; event-stream appends share one lock with trimming                                                                                                                                          |
+| Language             | Host-side wording follows the official locale preference; stored rule statements are user data and are never rewritten                                                                                                                  |
 
 ## <img src="https://api.iconify.design/lucide/triangle-alert.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Known boundaries
 
@@ -184,14 +184,14 @@ Four methods on one official Typert Remote namespace, `lessonLoopRules`.
 
 ## <img src="https://api.iconify.design/lucide/circle-help.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> FAQ
 
-| Question | Answer |
-| --- | --- |
-| Do rules ever enable themselves? | No. Only `arm` writes `armed`; reaching the revive threshold only returns a rejected card to `candidate`. |
-| What happens with `reportEnabled` off? | `report()` returns `{ ok: false, reason: "disabled" }` immediately and `/lessons-digest` refuses; the Remote reads and the card keep working. |
-| The arm button reports `rules-not-persisted`. | That change never reached the library; the old state still holds, so retry. |
-| A rule keeps showing "undeterminable". | `suppressed` is still zero, so there is no clean hit to divide by: the rule either sat past `decayDays` or hit `demoteThreshold` violations without one followed session. With zero violations too the ratio is undefined, not 1.0 — either way the machine will not decide for you. Disable or archive it yourself; one `pass` clears the flag. |
-| I hand-edited `rules` into a non-array. | The rule side degrades to "reads empty, refuses writes" and this process never writes that section; the switches keep working until you repair the field. |
-| Another plugin cannot see the bus. | Without this package, or when `ctx.provide` is unavailable (one explicit error), reporters drop their reports and their own functionality is unaffected. |
+| Question                                      | Answer                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Do rules ever enable themselves?              | No. Only `arm` writes `armed`; reaching the revive threshold only returns a rejected card to `candidate`.                                                                                                                                                                                                                                        |
+| What happens with `reportEnabled` off?        | `report()` returns `{ ok: false, reason: "disabled" }` immediately and `/lessons-digest` refuses; the Remote reads and the card keep working.                                                                                                                                                                                                    |
+| The arm button reports `rules-not-persisted`. | That change never reached the library; the old state still holds, so retry.                                                                                                                                                                                                                                                                      |
+| A rule keeps showing "undeterminable".        | `suppressed` is still zero, so there is no clean hit to divide by: the rule either sat past `decayDays` or hit `demoteThreshold` violations without one followed session. With zero violations too the ratio is undefined, not 1.0 — either way the machine will not decide for you. Disable or archive it yourself; one `pass` clears the flag. |
+| I hand-edited `rules` into a non-array.       | The rule side degrades to "reads empty, refuses writes" and this process never writes that section; the switches keep working until you repair the field.                                                                                                                                                                                        |
+| Another plugin cannot see the bus.            | Without this package, or when `ctx.provide` is unavailable (one explicit error), reporters drop their reports and their own functionality is unaffected.                                                                                                                                                                                         |
 
 ## <img src="https://api.iconify.design/lucide/wrench.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Development
 

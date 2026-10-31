@@ -62,12 +62,38 @@ const CLIENT_BASELINE = [
   "@deepseek-ai/dsh-client-ui-dockkit",
 ];
 
+/** 值的形态名：typeof 对数组与 null 都报 object，错误消息要说准实际形态。
+ *  @param {unknown} value - 待判的值
+ *  @returns {string} 形态名 */
+function shapeOf(value) {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return "数组";
+  }
+  return typeof value;
+}
+
 /** 本包 `dsh.client.external` 声明的基座之外请求（缺省 = 只有基座，本包当前如此）。
  *  官方口径是"精确串匹配、不归一"（tsdown.client.ts 的 requestedExternals 注释），
- *  故这里原样收：不裁剪、不排序、不合并重复。 */
-function declaredClientExternals() {
-  const { dsh } = asRecord(pkgJson);
+ *  故这里原样收：不裁剪、不排序、不合并重复。
+ * @param {unknown} [manifest] - 包清单；缺省读本仓 package.json
+ * @returns {string[]} 声明的说明符 */
+export function declaredClientExternals(manifest = pkgJson) {
+  const { dsh } = asRecord(manifest);
+  if (dsh !== undefined && (typeof dsh !== "object" || dsh === null || Array.isArray(dsh))) {
+    // asRecord 对非对象退化成空记录：dsh 写成字符串时 external 会直接消失，
+    // 构建静默退回「只有基座」的清单，问题要到运行期才表现为模块表里缺一条。
+    throw new TypeError(`package.json 的 dsh 必须是对象，实际是 ${shapeOf(dsh)}`);
+  }
   const { client } = asRecord(dsh);
+  if (
+    client !== undefined &&
+    (typeof client !== "object" || client === null || Array.isArray(client))
+  ) {
+    throw new TypeError(`package.json 的 dsh.client 必须是对象，实际是 ${shapeOf(client)}`);
+  }
   const { external } = asRecord(client);
   if (external === undefined) {
     return [];

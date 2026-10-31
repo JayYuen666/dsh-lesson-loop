@@ -161,7 +161,9 @@ function limitOf(request: unknown): number {
   if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
     return LESSONS_DEFAULT_LIMIT;
   }
-  return Math.min(Math.floor(raw), LESSONS_MAX_LIMIT);
+  // floor 之后可能是 0（例如合法请求 limit: 0.5）：store 把 limit <= 0 当全量，
+  // 那会让小数请求绕过有界载荷防线，所以归一后的下限是 1。
+  return Math.max(1, Math.min(Math.floor(raw), LESSONS_MAX_LIMIT));
 }
 
 /**

@@ -62,8 +62,8 @@ jobs:
           # 后续步骤会跑仓库自己的 install/构建/测试脚本，也就跑得到依赖里的脚本。
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 12
+        # 版本取自 package.json 的 packageManager：让 CI 与开发者本机共用同一枚钉版，
+        # lockfile 的判定口径因此只有一份来源。
       # registry-url 留空：本仓 CI 不发布，装依赖走包自己的 .npmrc（@jayyuen66 指向公共 npm）。
       # 配上 registry-url 会让 setup-node 生成一份用户级 .npmrc，把 CI 的解析口径改成和开发者不一样。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -141,8 +141,7 @@ jobs:
           # 后续步骤会跑仓库自己的 install/构建/测试脚本，也就跑得到依赖里的脚本。
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 12
+        # 与 gate job 同一枚来源：package.json 的 packageManager。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -157,9 +156,10 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/pkg
           pnpm pack --pack-destination /tmp/pkg
-      # 交给 attest job。PR 的产物不签来源证明，传上去只是多一份没人认领的字节。
+      # 交给 attest job。PR 的产物不签来源证明，传上去只是多一份没人认领的字节；
+      # 非默认分支的 dispatch 同理：attest 只签默认分支，这里的产物不会有消费方。
       - name: 留存 tarball 供 attest 使用
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-tarball
@@ -208,17 +208,37 @@ jobs:
           // 守卫要判的是「有没有一条条目按裸包名引用本包」，不是「有没有 id 行」也不是
           // 「全文出现过这个串」：注释里的 `# - id:` 会让前者过，而 `.../settings` 子路径
           // 条目天然包含完整包名会让后者过——两种情况下主入口都丢了，条目却照样注册不上。
+          // 只在 insert: 段内按列表项归组，不依赖 id/name 的相邻与键序：YAML 同一映射的
+          // 键顺序不受约束，name 在前或中间夹注释都与语义无关，按相邻两行匹配会把等价写法
+          // 判成空结果。remove: 段单独记，避免「裸包名出现在 remove 条目里」被当成主入口还在。
           const patchLines = text.split(/\r?\n/u);
           const entries = [];
-          for (let i = 0; i < patchLines.length - 1; i += 1) {
-            const idHit = /^[ \t]*-[ \t]*id:[ \t]*(\S+)[ \t]*$/u.exec(patchLines[i]);
-            if (idHit === null) continue;
-            const nameHit = /^[ \t]*name:[ \t]*(?:"([^"]*)"|(\S+))[ \t]*$/u.exec(patchLines[i + 1]);
-            if (nameHit === null) continue;
-            entries.push([idHit[1], nameHit[1] ?? nameHit[2]]);
+          let section = null;
+          let current = null;
+          for (const line of patchLines) {
+            if (/^[ \t]*(?:#|$)/u.test(line)) continue;
+            const sectionHit = /^-([ \t]+)([A-Za-z]+):[ \t]*$/u.exec(line);
+            if (sectionHit !== null) {
+              section = sectionHit[2];
+              current = null;
+              continue;
+            }
+            if (/^\S/u.test(line)) {
+              section = null;
+              current = null;
+              continue;
+            }
+            if (section !== "insert") continue;
+            if (/^[ \t]*-[ \t]+/u.test(line)) {
+              current = {};
+              entries.push(current);
+            }
+            if (current === null) continue;
+            const fieldHit = /^[ \t]*(?:-[ \t]+)?(id|name):[ \t]*(?:"([^"]*)"|(\S+))[ \t]*$/u.exec(line);
+            if (fieldHit !== null) current[fieldHit[1]] = fieldHit[2] ?? fieldHit[3];
           }
-          if (entries.length === 0) throw new Error(`bundle patch 里没有 id/name 条目：${patchRel}`);
-          if (!entries.some(([, name]) => name === NAME)) throw new Error(`bundle patch 没有按裸包名引用 ${NAME} 的条目`);
+          if (entries.length === 0) throw new Error(`bundle patch 里没有 insert 条目：${patchRel}`);
+          if (!entries.some((entry) => entry.name === NAME)) throw new Error(`bundle patch 没有按裸包名引用 ${NAME} 的条目`);
           console.log("装载通过：apply / Config / bundle patch 均就位");
           '
 

@@ -17,10 +17,13 @@ const pkgDir = path.resolve(import.meta.dirname, "..");
 
 /** 产物文件名与预算的对照。 */
 const BUDGETS: readonly (readonly [string, number])[] = [
-  // 审查批次给 host 半补了四段行为面：蒸馏墙钟的本地化超时、模型产出解析的多候选
-  // 切片与取值域白名单、串行落库的单条容错、reasoningEffort 透传，外加双语字典里的
-  // 对应新条目——host.js 由 153 KB 预算对应的实测值涨到约 159 KB，预算按 25% 浮动口径跟着抬。
-  ["host.js", 199_000],
+  // 审查批次给 host 半补了五段行为面：蒸馏墙钟的本地化超时（DigestTimeoutError，按错误类型
+  // 而非本地化文案识别）、模型产出解析的多候选切片与取值域白名单、串行落库的单条容错与
+  // 无覆盖恢复锁、reasoningEffort 透传、衰减策略的计数合法化，外加双语字典里的对应新条目
+  // ——按本机实测，host.js 由 HEAD 的 194,239 B 涨到 200,383 B（净增 6,144 B，约 +6.1 KB），
+  // 已顶穿原来的 199,000 B；预算按「当前实测 + 余量」重定为 204,000 B（长期口径仍是上面那条
+  // 约 25% 浮动：正常演进不该立刻改预算，只有真正超了才按实测重定）。
+  ["host.js", 204_000],
   // 规则读面迁到官方 Typert Remote 后，客户端多了一枚 descriptor/读取器（约 6 KB）。
   // 设置卡迁到 @jayyuen66/dsh-plugin-shared/lib/card-ui 后，卡片样式与组件逻辑随包进
   // client.js（实测增加约 9 KB），预算按迁移后的实量重定。

@@ -36,14 +36,16 @@ export const RULES_FIELD = "rules";
  *  行数不够用：`droppedRows` 交出**原样**那几行，让写侧能把它们原封不动写回去。
  *  缺 id 的判据来自 normalizeRuleCardRow 这个会随版本演进的归一器——收紧任何必填字段
  *  都会让升级前的旧卡"看起来缺 id"，只报数不复原等于让升级本身抹掉用户的规则库。
- *  corrupted 把"rules 键在但不是数组"
- *  （value 根本不是记录时同样算）与"合法的空库"在类型面上分开：直接把投影交给
- *  save 的调用方，不能把读不懂当成空库整片写回。 */
+ *  corrupted 把"rules 键在但不是数组"与"合法的空库"在类型面上分开：直接把投影交给
+ *  save 的调用方，不能把读不懂当成空库整片写回。注意它**只**表达"键在、形状不对"：
+ *  value 根本不是记录（或整个命名空间读不到）时 raw 为 undefined，这里给 false，
+ *  那种"整份文档读不懂"由调用方另判（lib/lesson-store.ts 的 rulesValueCorrupted），
+ *  别把这一位当成完整的损坏判据。 */
 export interface CardsProjection {
   readonly cards: RuleCard[];
-  readonly dropped: number;
-  /** 未能归一的那几行原文（与 `dropped` 等长，顺序同文件）。写侧原样带回去，
-   *  否则整片覆盖会把它们从用户存量里删掉。 */
+  /** 未能归一的那几行原文（顺序同文件；`length` 就是丢弃条数——此前另有一个
+   *  `dropped: number` 字段与它恒等，没有任何消费方，删掉以免两个口径将来漂移）。
+   *  写侧原样带回去，否则整片覆盖会把它们从用户存量里删掉。 */
   readonly droppedRows: readonly unknown[];
   /** true = rules 键存在但形状读不懂；空库（键缺席/空数组）为 false。 */
   readonly corrupted: boolean;
@@ -63,7 +65,7 @@ export function cardsOfValue(value: unknown): CardsProjection {
       out.push(card);
     }
   }
-  return { cards: out, dropped: droppedRows.length, droppedRows, corrupted };
+  return { cards: out, droppedRows, corrupted };
 }
 
 /** 单条证据 detail 的字符上限（按码点计，见 truncateByCodePoints）。 */
@@ -85,6 +87,51 @@ function truncateByCodePoints(text: string, max: number): string {
     counted += 1;
   }
   return text.slice(0, end);
+}
+
+/** 单条证据的收敛：detail 超限时截断并补省略号，其余字段原样。 */
+function capEvidenceEntry(entry: unknown): unknown {
+  if (!isRecord(entry)) {
+    return entry;
+  }
+  const detail = fieldOf(entry, "detail");
+  if (typeof detail !== "string") {
+    return entry;
+  }
+  const cappedText = truncateByCodePoints(detail, MAX_EVIDENCE_DETAIL_CHARS);
+  return cappedText === detail ? entry : { ...entry, detail: `${cappedText}…` };
+}
+
+/** 单条坏行的收敛：只替换 evidence，行本身的其余字段与身份原样。 */
+function capDroppedRow(row: unknown): unknown {
+  if (!isRecord(row)) {
+    return row;
+  }
+  const evidence = fieldOf(row, "evidence");
+  if (!Array.isArray(evidence)) {
+    return row;
+  }
+  return {
+    ...row,
+    evidence: (evidence as readonly unknown[])
+      .slice(-MAX_EVIDENCE_ENTRIES)
+      .map((entry) => capEvidenceEntry(entry)),
+  };
+}
+
+/**
+ * 归一不了的行在写回前仍按同一条证据上限收敛。
+ *
+ * 好卡走 capEvidence，坏行此前原样整段回写，于是「evidence 是唯一无界字段」这条约束在
+ * 坏行上失效：一条携带大段转储的坏行会跟着每一次 CAS 写被重新序列化，写放大与写侧
+ * 截断的目的（防止 patch 文档超限被 provider 拒绝）都会重新出现。收敛只动 evidence
+ * 数组里的条数与 detail，行的其余字段与身份保持原样——坏行仍按原样保留，等待人工修复。
+ * 不按 ts 排序：坏行的字段语义未知，重排等于替用户改写数据。
+ * @param rows load() 交出的 droppedRows 原文
+ * @returns evidence 已收敛的新数组（不改入参；evidence 不是数组的行原样返回）
+ */
+export function capDroppedRowEvidence(rows: readonly unknown[]): unknown[] {
+  return rows.map((row) => capDroppedRow(row));
 }
 
 /**

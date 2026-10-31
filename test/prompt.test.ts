@@ -376,3 +376,22 @@ describe("注入帧与摘要行的双语", () => {
     assert.ok(keysWithPlaceholders > 0, "字典里一个占位符都没有，全键对账就是空转");
   });
 });
+
+describe("armedRulesOf 的比较器边界（两侧 armedAt 都无效）", () => {
+  it("都无效时比较器恒 0：入参顺序原样保留", () => {
+    // NaN 与缺字段在 armedTimeOf 里同归一为 undefined；比较器必须显式给 0。
+    const missingId = "no-armed-at";
+    const invalidId = "nan-armed-at";
+    const missing = card({ id: missingId });
+    delete (missing as { armedAt?: number }).armedAt;
+    const invalid = card({ id: invalidId, armedAt: Number.NaN });
+    assert.deepEqual(
+      armedRulesOf([missing, invalid], "p1").map((rule) => rule.id),
+      [missingId, invalidId],
+    );
+    assert.deepEqual(
+      armedRulesOf([invalid, missing], "p1").map((rule) => rule.id),
+      [invalidId, missingId],
+    );
+  });
+});

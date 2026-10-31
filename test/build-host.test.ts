@@ -68,6 +68,14 @@ describe("buildHost()", () => {
       out.includes('from "@jayyuen66/dsh-plugin-shared/lib/jsonl"'),
       "shared/jsonl 必须外部化（对半收缩判据与 ctx-observe 同源；写盘与内部 catch 留本包）",
     );
+    assert.ok(
+      out.includes('from "@deepseek-ai/dsh-home-paths"'),
+      "dsh-home-paths 必须外部化（缓存目录口径由宿主决定，内联=按构建机的家目录算路径）",
+    );
+    assert.ok(
+      out.includes('from "zod"'),
+      "zod 必须保持裸说明符（依赖段声明的运行期依赖，内联=把实现复制进本包产物）",
+    );
   });
 
   it("产物 host.js：不残留 ./x.ts 形态的相对说明符", async () => {
@@ -90,10 +98,10 @@ const ARTIFACT_FILE = "artifact.js";
  * @returns 可交给 singleEntryChunk 的输出项
  */
 function outputItem(
-  type: string,
+  type: "chunk" | "asset",
   fileName: string,
-  extra: Partial<{ isEntry: boolean; code: string }> = {},
-): { type: string; fileName: string } & Partial<{ isEntry: boolean; code: string }> {
+  extra: { isEntry?: boolean; code?: string } = {},
+): { type: "chunk" | "asset"; fileName: string; isEntry?: boolean; code?: string } {
   return { type, fileName, ...extra };
 }
 

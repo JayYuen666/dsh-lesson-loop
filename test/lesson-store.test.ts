@@ -47,6 +47,7 @@ import {
   MAX_EVIDENCE_ENTRIES,
   RULES_FIELD,
   SETTINGS_NAMESPACE,
+  capDroppedRowEvidence,
   capEvidence,
   cardsOfValue,
 } from "../lib/rules-layout.ts";
@@ -1772,6 +1773,58 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(stored.length, 1);
       assert.equal((stored[0] as { id?: string }).id, "kept");
     });
+
+    it("坏行的 evidence 按同一上限收敛；行本身与其他字段原样保留", () => {
+      const long = "e".repeat(MAX_EVIDENCE_DETAIL_CHARS + 50);
+      // 最后 5 条里刻意混入：超限 detail、无 detail 的记录、非记录成员——三种形状在收敛时
+      // 分别走截断、原样、原样三条分支，且都不改写行本身。
+      const evidence = [
+        { ts: 1, source: SOURCE_DANGER_GUARD, detail: "dropped-oldest" },
+        { ts: 2, source: SOURCE_DANGER_GUARD, detail: long },
+        { ts: 3, source: SOURCE_DANGER_GUARD, detail: "row-3" },
+        { ts: 4, source: SOURCE_DANGER_GUARD },
+        "raw-entry",
+        { ts: 6, source: SOURCE_DANGER_GUARD, detail: "row-6" },
+      ];
+      const bad = { category: "c", signature: "s", evidence, marker: "keep" };
+      const capped = capDroppedRowEvidence([bad])[0] as typeof bad;
+      assert.equal(capped.marker, "keep", "evidence 之外的字段不动");
+      assert.equal(capped.evidence.length, MAX_EVIDENCE_ENTRIES, "只留最近 N 条");
+      const [first] = capped.evidence as { detail?: string }[];
+      assert.equal(first?.detail?.length, MAX_EVIDENCE_DETAIL_CHARS + 1, "超限截断并补省略号");
+      assert.equal(capped.evidence[3], "raw-entry", "非记录成员原样带回");
+      assert.equal(
+        (capped.evidence[2] as { detail?: string }).detail,
+        undefined,
+        "无 detail 的记录原样带回",
+      );
+      assert.equal(bad.evidence.length, 6, "不改入参");
+      // 不是记录、或 evidence 不是数组的行原样返回：坏行的形状未知，不做二次改写。
+      const untouched = [{ plain: "string" }, { evidence: { not: "array" } }];
+      assert.deepEqual(capDroppedRowEvidence(untouched), untouched);
+    });
+
+    it("坏行的 evidence 收敛发生在落盘那一刻，且不影响好卡各自的收敛", async () => {
+      const long = "x".repeat(MAX_EVIDENCE_DETAIL_CHARS + 20);
+      const bad = {
+        category: "c",
+        signature: "s",
+        evidence: [{ ts: 1, source: SOURCE_DANGER_GUARD, detail: long }],
+      };
+      const rows: unknown[] = [{ id: "kept", category: "c", signature: "s", status: "armed" }, bad];
+      let stored: readonly unknown[] = [];
+      const cas: SettingsCasSurface = {
+        describe: () => [{ ns: SETTINGS_NAMESPACE, value: { rules: rows }, revision: 1 }],
+        update: async (_ns: string, patch: { rules?: readonly unknown[] }): Promise<void> => {
+          stored = patch.rules ?? [];
+        },
+      };
+      const repo = createRulesRepository(cas);
+      const read = repo.load();
+      assert.equal(await repo.save(read.cards, read.revision), "persisted");
+      const kept = stored[1] as { evidence: { detail: string }[] };
+      assert.equal(kept.evidence[0]?.detail.length, MAX_EVIDENCE_DETAIL_CHARS + 1);
+    });
   });
 
   describe("capEvidence（落盘前的证据收敛）", () => {
@@ -3225,6 +3278,17 @@ describe("lesson-store：台账、规则库与度量", () => {
         stableSignatureFor(CATEGORY_GATE_FAILURE, MESSY_GATE_SIGNATURE),
         SIGNATURE_GATE_COMMAND,
       );
+      // rejected 归档汇总签名（<stable>:rejected）是终态：喂回"写入侧唯一入口"必须原样
+      // 返回，不能折叠回 stable——否则归档记录与 armed 活卡撞成同一个键（人工拒绝记录被
+      // 活卡吞掉）。带首尾空白时同理：归一口径与查表口径两段各自再归一。
+      assert.equal(
+        stableSignatureFor(CATEGORY_FACTGATE_DENY, STABLE_SIG_FACTGATE_REJECTED),
+        STABLE_SIG_FACTGATE_REJECTED,
+      );
+      assert.equal(
+        stableSignatureFor(CATEGORY_FACTGATE_DENY, `  ${STABLE_SIG_FACTGATE_REJECTED}  `),
+        STABLE_SIG_FACTGATE_REJECTED,
+      );
       // Object 索引会带出 toString/constructor 等原型成员——查表必须走 Map
       assert.equal(stableSignatureFor("toString", "sig"), "sig");
       assert.equal(stableSignatureFor("constructor", "sig"), "sig");
@@ -3859,5 +3923,25 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(spy.count(), 2, "坏→好→坏：闩在读得懂那次重新武装，第二次坏还要报");
       spy.restore();
     });
+  });
+});
+
+describe("rules 端口的 revision 守卫（端口内闭环）", () => {
+  it("不可用读的 -1 哨兵与非整数 revision 一律 rejected，且不触达 CAS 面", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {
+      // 断言在下方
+    });
+    const boxed = surface(() => [{ ns: SETTINGS_NAMESPACE, value: { rules: [] }, revision: 3 }]);
+    const repo = createRulesRepository(boxed.cas);
+    // 三次保存都打在守卫上（同步 reject），故可并行收集；逐次 await 只会被
+    // no-await-in-loop 判红，判据本身不需要顺序。
+    const revisions = [-1, 1.5, Number.NaN];
+    const outcomes = await Promise.all(
+      revisions.map((revision) => repo.save([cardOf({ id: "guard", signature: "s" })], revision)),
+    );
+    assert.deepEqual(outcomes, ["rejected", "rejected", "rejected"], "负数/小数/NaN 都不成立");
+    assert.equal(boxed.updates(), 0, "不成立的 CAS 条件不许触达 provider");
+    assert.match(String(error.mock.calls[0]?.[0]), /no usable revision/u);
+    error.mockRestore();
   });
 });

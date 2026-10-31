@@ -1,8 +1,10 @@
 name: publish
 on:
   workflow_dispatch: {}
-# 两次手动 dispatch 撞上同一版本时，后一个只是拿版本冲突收尾；真正的浪费是两个 runner 并行
-# 跑同一份 check + publish，而且日志顺序会分不清哪一次落到了 registry。
+# 同一 group 内 GitHub 只保留一个 running 与一个 pending：cancel-in-progress: false 保住
+# 正在运行的那次，后来居上的 pending 会顶掉此前排队的那个——连续 dispatch 三个版本时，
+# 中间那次不会执行，且不会在工作流列表里留下失败记录。要每次都发，只能等上一次结束后再
+# dispatch；发布侧没有可靠的排队手段，这里如实记录这条限制，不假装是串行队列。
 concurrency:
   group: publish
   cancel-in-progress: false
@@ -45,13 +47,14 @@ jobs:
           # 后续步骤会跑仓库自己的 install/构建/测试脚本，也就跑得到依赖里的脚本。
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 12
+        # 版本取自 package.json 的 packageManager，与 ci.yml 同一枚钉版。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
-          # 与 ci.yml 同款：build job 要装整棵依赖树，缓存 pnpm store 省每次发布从零下载。
+          # registry-url 留空，与 ci.yml 同一条口径（见 ci.yml 里的那段注释）：这一步只装依赖与跑
+          # check，不发布，配上它只会让 setup-node 生成一份带 `${NODE_AUTH_TOKEN}` 占位的用户级
+          # .npmrc。pnpm 12 不展开仓库可控配置里的环境变量（实测打一条 Ignored project-level auth
+          # setting 的 WARN 后照常安装），所以后果不是红而是把 CI 的解析口径改得和开发者不一样。
           cache: pnpm
       # 静态 token 是 OIDC 失败时的兜底，不是发布的前提：仓库里没有这枚 secret 是正常状态，
       # 走 trusted publishing 的仓库本来就不该长期存它。所以这一步在值为空时放行，只把
@@ -143,18 +146,18 @@ jobs:
           # 那个版本没发出去时，包存在也没用——消费方安装会在解析依赖时失败。版本从
           # pnpm-workspace.yaml 的 catalog 读，包名从 package.json 的 catalog: 依赖读，
           # 都不在 workflow 里硬编码。
-          node --input-type=module - <<'NODE' > /tmp/shared-ref
+          node --input-type=module - <<'NODE' > /tmp/catalog-refs
           import { readFileSync } from "node:fs";
 
           const manifest = JSON.parse(readFileSync("package.json", "utf8"));
           const dependencies = manifest.dependencies ?? {};
-          const name = Object.keys(dependencies).find((key) => dependencies[key] === "catalog:");
-          if (name === undefined) {
+          const refs = Object.entries(dependencies).filter(([, range]) => typeof range === "string" && range.startsWith("catalog:"));
+          if (refs.length === 0) {
             throw new Error("package.json 里没有 catalog: 依赖，读不出要预检的依赖库");
           }
           const lines = readFileSync("pnpm-workspace.yaml", "utf8").split(/\r?\n/u);
+          const catalog = new Map();
           let inCatalog = false;
-          let version;
           for (const line of lines) {
             if (/^catalog:\s*$/u.test(line)) {
               inCatalog = true;
@@ -168,28 +171,40 @@ jobs:
             }
             const matched = /^\s+(?:"([^"]+)"|'([^']+)'|([\w@/.-]+)):\s*(\S+)\s*(?:#.*)?$/u.exec(line);
             const key = matched?.[1] ?? matched?.[2] ?? matched?.[3];
-            if (key === name) {
-              version = matched?.[4];
-              break;
+            if (key !== undefined) catalog.set(key, matched[4]);
+          }
+          for (const [name, range] of refs) {
+            // 命名 catalog（catalog:foo / catalogs: 段）的取值不在本脚本的解析面上；
+            // 与其静默跳过，不如点名拒发，免得依赖库可见性门禁被绕过。
+            if (range !== "catalog:") {
+              throw new Error(`${name} 用的是命名 catalog（${range}），本预检只解析根 catalog 段`);
             }
+            const version = catalog.get(name);
+            if (version === undefined) {
+              throw new Error(`pnpm-workspace.yaml 的 catalog 里没有 ${name}`);
+            }
+            if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version)) {
+              throw new Error(`catalog 里的 ${name} 不是精确版本：${version}`);
+            }
+            process.stdout.write(`${name} ${version}\n`);
           }
-          if (version === undefined) {
-            throw new Error(`pnpm-workspace.yaml 的 catalog 里没有 ${name}`);
-          }
-          if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version)) {
-            throw new Error(`catalog 里的 ${name} 不是精确版本：${version}`);
-          }
-          process.stdout.write(`${name} ${version}\n`);
           NODE
-          read -r shared_name shared_version < /tmp/shared-ref
-          encoded="${shared_name/@/%40}"
-          encoded="${encoded//\//%2f}"
-          code=$(curl -sS --max-time 15 --retry 2 --retry-connrefused -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/${encoded}/${shared_version}")
-          echo "读 ${shared_name}@${shared_version}：HTTP $code"
-          echo "判读：200=依赖库这个版本已公开，可以发；404=这个版本还没发到 npmjs，先发 shared 再发本包"
-          [ "$code" = "200" ] || exit 1
+          # 逐个依赖库查同一件事：catalog 解析出的那个精确版本是否已公开。只查第一条会放行
+          # 「另一条 catalog 依赖没发」的发布，消费方安装时才在解析依赖处失败。
+          while read -r shared_name shared_version; do
+            [ -n "$shared_name" ] || continue
+            encoded="${shared_name/@/%40}"
+            encoded="${encoded//\//%2f}"
+            code=$(curl -sS --max-time 15 --retry 2 --retry-connrefused -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/${encoded}/${shared_version}")
+            echo "读 ${shared_name}@${shared_version}：HTTP $code"
+            echo "判读：200=依赖库这个版本已公开，可以发；404=这个版本还没发到 npmjs，先发依赖库再发本包"
+            [ "$code" = "200" ] || exit 1
+          done < /tmp/catalog-refs
           # 只交结论、不交凭据：发布 job 据此决定导不导出 NODE_AUTH_TOKEN。
+          # pkg_name/pkg_version 是预检这一刻的期望值：install 与 check 会跑生命周期脚本，
+          # 发布侧拿 tarball 里的实际值与之逐字比对，防止脚本在预检后改写发布物身份。
           printf 'use_static=%s\n' "$USE_STATIC" >> "$GITHUB_OUTPUT"
+          printf 'pkg_name=%s\npkg_version=%s\n' "$pkg_name" "$pkg_version" >> "$GITHUB_OUTPUT"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check
       # prepack 会重建 host.js / client.js / types/，产物不入库也发得出去。
@@ -209,6 +224,8 @@ jobs:
     # 只交结论、不交凭据：静态 token 是否可用由预检判定，发布 job 据此决定导不导出 NODE_AUTH_TOKEN。
     outputs:
       use_static: ${{ steps.precheck.outputs.use_static }}
+      pkg_name: ${{ steps.precheck.outputs.pkg_name }}
+      pkg_version: ${{ steps.precheck.outputs.pkg_version }}
   publish:
     needs: build
     runs-on: ubuntu-latest
@@ -226,7 +243,8 @@ jobs:
     steps:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
-          version: 12
+          # 本 job 不检出仓库，读不到 package.json 的 packageManager，只能显式给同一枚钉版。
+          version: 12.11.2
       # registry-url 必须配：它把 `${NODE_AUTH_TOKEN}` 占位写进 RUNNER_TEMP/.npmrc 并用
       # NPM_CONFIG_USERCONFIG 指过去，发布步的静态 token 兜底走的就是这条机制。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -239,6 +257,9 @@ jobs:
           name: dist-tarball
           path: /tmp/pkg
       - name: 校验并解开 tarball
+        env:
+          EXPECTED_NAME: ${{ needs.build.outputs.pkg_name }}
+          EXPECTED_VERSION: ${{ needs.build.outputs.pkg_version }}
         run: |
           set -euo pipefail
           # 只信任 build job 传来的那份字节：数目必须恰好一枚，多了少了都是意外。
@@ -269,7 +290,30 @@ jobs:
           }
           console.log("tarball 依赖段没有未解析的 catalog:/workspace: 协议");
           NODE
-          echo "PKG_DIR=/tmp/stage/package" >> "$GITHUB_ENV"
+          name="$(node -p 'require("/tmp/stage/package/package.json").name')"
+          version="$(node -p 'require("/tmp/stage/package/package.json").version')"
+          echo "发布物：$name@$version"
+          # 预检之后 install/check 会执行生命周期脚本，它们可以改写 package.json 的身份字段；
+          # 这一步把 tarball 的实际身份与预检输出逐字比对，比的是发布侧真正要推上去的字节。
+          if [ "$name" != "$EXPECTED_NAME" ] || [ "$version" != "$EXPECTED_VERSION" ]; then
+            echo "::error::tarball 的 ${name}@${version} 与预检时的 ${EXPECTED_NAME}@${EXPECTED_VERSION} 不一致——发布物身份在预检后被改写，拒绝发布"
+            exit 1
+          fi
+          # 读 tarball 自己的版本（发布 job 不检出仓库），先判 registry 上有没有同名版本：
+          # 已存在时 pnpm 也会拒，但这里的报错能点名是哪个版本，而不是一句冲突。
+          encoded="${name/@/%40}"
+          encoded="${encoded//\//%2f}"
+          state=$(curl -s --max-time 20 --retry 3 --retry-connrefused "https://registry.npmjs.org/$encoded" | node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(Object.keys(j.versions??{}).includes(process.argv[1])?"yes":"no")}catch{process.stdout.write("error")}})' "$version")
+          case "$state" in
+            yes) echo "::error::$name@$version 已在 registry 上——先改版本再发"; exit 1;;
+            no) : ;;
+            *) echo "::error::读 $name 的元数据失败（响应不是预期的 JSON）——先查 registry 状态"; exit 1;;
+          esac
+          {
+            echo "TARBALL=$tarball"
+            echo "PKG_NAME=$name"
+            echo "PKG_VERSION=$version"
+          } >> "$GITHUB_ENV"
       # 凭据优先级：OIDC 在前，这枚 NODE_AUTH_TOKEN 在后（pnpm 的 publish_options.rs 原话
       # "OIDC takes precedence over a configured static token"）。trusted publisher 配好时
       # 它根本不参与认证，交换失败才轮到它——留着是兜底，不是主路。
@@ -277,9 +321,8 @@ jobs:
       # 一个换行就变成「whoami 通过、publish 401」，两处必须是同一份清洗。
       # --provenance 取的是另一枚 id-token（audience 为 sigstore），与 npm 交换那枚互相独立，
       # 所以它不受 trusted publisher 是否已配影响；少了它，产物只剩 npm 自己的签名。
-      # --ignore-scripts：发布对象是 build job 已经打好、check 已经验过的那份字节，这里展开成
-      # 目录再发布——pnpm 对目录发布默认会跑 prepack 等生命周期脚本，而本 job 没有 node_modules，
-      # 跑了必炸；跳过它们同时意味着发布侧不执行任何仓库与依赖的代码（这正是拆 job 的意义）。
+      # --ignore-scripts：发布对象是 build job 已经打好、check 已经验过的那枚 tarball，
+      # 直接把它交给 pnpm（tarball 参数），发布侧不重打包、也不执行仓库或依赖的代码。
       # pnpm 12 的 publish 不接受 --publish-wait-timeout（CI 实测参数解析即退 2），
       # 因此这里不带它；发布后由 registry 逐步可见。
       # 若要改成 staged 发布（CI 只 stage、人工 approve）：发布命令换成 `pnpm stage publish`。
@@ -306,4 +349,17 @@ jobs:
           else
             echo "凭据：OIDC trusted publishing"
           fi
-          pnpm publish "$PKG_DIR" --ignore-scripts --no-git-checks --access public --provenance
+          pnpm publish "$TARBALL" --ignore-scripts --no-git-checks --access public --provenance
+          # 发布命令成功不等于 registry 已可读：轮询到同名版本出现为止（上限 5 分钟）。
+          encoded="${PKG_NAME/@/%40}"
+          encoded="${encoded//\//%2f}"
+          for attempt in $(seq 1 30); do
+            if curl -s --max-time 20 --retry 3 --retry-connrefused "https://registry.npmjs.org/$encoded" | node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(Object.keys(j.versions??{}).includes(process.argv[1])?"yes":"no")}catch{process.stdout.write("error")}})' "$PKG_VERSION" | grep -qx yes; then
+              echo "registry 已可见 $PKG_NAME@$PKG_VERSION"
+              exit 0
+            fi
+            echo "第 ${attempt} 次读取未命中，10 秒后重试"
+            sleep 10
+          done
+          echo "::error::发布命令成功，但 5 分钟内从 registry 读不到 $PKG_NAME@$PKG_VERSION——去 npmjs 面板核对，不要重发同一版本"
+          exit 1

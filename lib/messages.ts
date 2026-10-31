@@ -258,7 +258,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     errUnreadableDigest: "模型输出无法解析为 JSON 数组，请重试",
     errDigestTimeout:
       "蒸馏超时：{ms} 毫秒内模型请求没有完成；可重试，或在安装本插件的 entry config 里调大 digestTimeoutMs",
-    errDigestTimeoutInvalid: "蒸馏墙钟配置不合法：digestTimeoutMs 必须是不小于 1000 的整数",
+    errDigestTimeoutInvalid:
+      "蒸馏墙钟配置不合法：digestTimeoutMs 必须是正的有限毫秒数，且不超过 2147483647（设置卡另有 1000 的下限）",
 
     errIdAndActionRequired: "缺少 id 或 action",
     /** arm/edit 带空正文时的拒绝回显（库未动）。 */
@@ -359,7 +360,7 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     errDigestTimeout:
       "Distillation timed out: the model request did not finish within {ms} ms — retry, or raise digestTimeoutMs in the entry config",
     errDigestTimeoutInvalid:
-      "The distillation wall clock is invalid: digestTimeoutMs must be an integer of at least 1000",
+      "The distillation wall clock is invalid: digestTimeoutMs must be a positive finite number of milliseconds no greater than 2147483647 (the settings card enforces a minimum of 1000)",
 
     errIdAndActionRequired: "id and action required",
     /** arm/edit 带空正文时的拒绝回显（库未动）。 */

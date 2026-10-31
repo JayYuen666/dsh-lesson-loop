@@ -24,21 +24,22 @@
 
 运行期依赖的许可由各自包随包分发，本包不重复其文本：
 
-| 包 | 在本包里的角色 | 为什么只能是运行期依赖 |
-| --- | --- | --- |
-| `@jayyuen66/dsh-plugin-shared` | 自有同门库包（`dependencies`） | 它的 apply 幂等守卫落在 `globalThis` 上，必须全进程只有那一处读写；内联进每个插件会各得一份标记 |
-| `zod` | 设置卡请求 codec（`dependencies`） | `src/rules-reader.ts` 的 strict codec 用它校验形状；与 react 一样由宿主 `PLATFORM_MODULES` 提供，内联会得到第二份 zod 身份 |
-| `@deepseek-ai/schemastery` | 配置 schema（`peerDependencies`） | 只有宿主 fork 的 `resolve` 会把 `.volatile()` 字段包成 Volatile 引用；公共 `schemastery` 连该方法都没有 |
-| `@deepseek-ai/dsh-brand` | 幻影品牌构造（`peerDependencies`） | 宿主类型面用品牌串做名义类型，构造品牌需要**真实函数值**，没有 type-only 的构造途径；降为 `devDependencies` 会被打包器内联，于是每个包各得一份官方构造函数，单例语义失效 |
-| `@deepseek-ai/dsh-home-paths` | 数据落盘位置（`peerDependencies`） | `cacheFile()` 的路径解析规则必须由宿主单源提供，插件不该再实现一份 |
-| `@deepseek-ai/dsh` | 宿主本体（可选 `peerDependencies`） | 只在装机时由宿主在场提供，本包不安装它 |
+| 包                             | 在本包里的角色                      | 为什么只能是运行期依赖                                                                                                                                                   |
+| ------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@jayyuen66/dsh-plugin-shared` | 自有同门库包（`dependencies`）      | 它的 apply 幂等守卫落在 `globalThis` 上，必须全进程只有那一处读写；内联进每个插件会各得一份标记                                                                          |
+| `zod`                          | 设置卡请求 codec（`dependencies`）  | `src/rules-reader.ts` 的 strict codec 用它校验形状；与 react 一样由宿主 `PLATFORM_MODULES` 提供，内联会得到第二份 zod 身份                                               |
+| `@deepseek-ai/schemastery`     | 配置 schema（`peerDependencies`）   | 只有宿主 fork 的 `resolve` 会把 `.volatile()` 字段包成 Volatile 引用；公共 `schemastery` 连该方法都没有                                                                  |
+| `@deepseek-ai/dsh-brand`       | 幻影品牌构造（`peerDependencies`）  | 宿主类型面用品牌串做名义类型，构造品牌需要**真实函数值**，没有 type-only 的构造途径；降为 `devDependencies` 会被打包器内联，于是每个包各得一份官方构造函数，单例语义失效 |
+| `@deepseek-ai/dsh-home-paths`  | 数据落盘位置（`peerDependencies`）  | `cacheFile()` 的路径解析规则必须由宿主单源提供，插件不该再实现一份                                                                                                       |
+| `@deepseek-ai/dsh`             | 宿主本体（可选 `peerDependencies`） | 只在装机时由宿主在场提供，本包不安装它                                                                                                                                   |
 
 上表四枚 `@deepseek-ai/*` 一律**不进 `dependencies`**：消费方 profile 以 `nodeLinker: hoisted`
-+ `autoInstallPeers: false` 安装，宿主包只要出现在 `dependencies` 就会在 profile 里落成真实目录，
-与宿主进程已加载的那份并存。`@deepseek-ai/dsh-tools` 的 `TOOL_RUNTIME_SCHEDULER` 是普通
-`Symbol`（不是 `Symbol.for`），符号身份按模块实例计算，于是宿主读副本挂出的 `ToolRuntime` 会拿到
-`undefined`，整个 profile 的工具一起失效——而本包的构建、类型检查与覆盖率门禁在这之前全部照绿。
-判据因此落在 `test/publish-manifest.test.ts` 的 manifest 门上，而不是运行时。
+
+- `autoInstallPeers: false` 安装，宿主包只要出现在 `dependencies` 就会在 profile 里落成真实目录，
+  与宿主进程已加载的那份并存。`@deepseek-ai/dsh-tools` 的 `TOOL_RUNTIME_SCHEDULER` 是普通
+  `Symbol`（不是 `Symbol.for`），符号身份按模块实例计算，于是宿主读副本挂出的 `ToolRuntime` 会拿到
+  `undefined`，整个 profile 的工具一起失效——而本包的构建、类型检查与覆盖率门禁在这之前全部照绿。
+  判据因此落在 `test/publish-manifest.test.ts` 的 manifest 门上，而不是运行时。
 
 ## 机制来源
 

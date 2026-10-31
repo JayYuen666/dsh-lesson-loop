@@ -17,8 +17,11 @@ export const RULES_REMOTE_NAMESPACE = "lessonLoopRules";
  * 本包 bundle 的包名：`$mount` 的 `package` 位与 `plugins.bundle.config` 的槽位 key 都必须
  * 与宿主 bundle 包名**逐字相等**（key 写成条目 id 时插件页永不出卡），descriptor 的 id
  * 前缀也用它。两个 src（client-entry 的 $mount 槽位 / rules-reader 的 descriptor 与
- * codec typeSymbol）从这里取，字面量只有这一份——改名/fork 时漏改一处只会表现为
- * 「贡献挂不上、数据面永远读不到」，单靠门禁抓不住。
+ * codec typeSymbol）从这里取，**源码侧**字面量只有这一份。
+ * 但"只有这一份"止于 TypeScript：同一个包名还硬编码在配置与 CI 面——package.json 的
+ * name、cordis.patch.yml 的条目 id、.github/workflows/ci.yml 的包名过滤。那几处没法从
+ * TS 常量生成，改名/fork 时必须一起手改；漏改只会表现为「贡献挂不上、数据面永远读不到」
+ * 或 CI 静默少跑，单靠任何门禁都抓不住。
  */
 export const RULES_BUNDLE_PACKAGE = "@jayyuen66/dsh-lesson-loop";
 
@@ -72,7 +75,10 @@ export interface LessonView {
   readonly turn?: number;
   readonly signature: string;
   readonly detail: string;
-  readonly evidence?: Readonly<Record<string, unknown>>;
+  // 刻意没有 evidence：读面投影（lib/rules-remote.ts 的 lessonViewOf）逐字段写、不外借
+  // 原始证据——那里面是整段工具输出。曾经在这里声明过一个可选的 evidence，但没有任何
+  // 投影会填它，于是类型上"读面带证据"是个假承诺（消费方写 lesson.evidence 编译通过、
+  // 运行时恒 undefined）。
 }
 
 /** 规则列表的过滤入参；wire 字段名与宿主方法参数名同源（源码模式下网关按签名取参数名）。 */
@@ -80,9 +86,11 @@ export interface RulesRequest {
   readonly project?: string;
 }
 
-/** 事件流水的过滤入参：`limit` 缺省 / ≤ 0 取默认条数、非零值封顶——事件流水只追加
- *  不修剪，"缺省 = 全量"等于把整份流水（含每条工具输出的全文）挂在公开命名空间上，
- *  载荷随使用时长线性增长。detail 在下发前按读面常量截断（存储侧仍是零截断全量）。 */
+/** 事件流水的过滤入参：`limit` 缺省 / 非正 / 非有限数取默认值 `LESSONS_DEFAULT_LIMIT`
+ *  （= 50，见 lib/rules-remote.ts 的 limitOf），正值向下取整后封顶 `LESSONS_MAX_LIMIT`
+ *  （= 500）。为什么不给"缺省 = 全量"：事件流水只追加不修剪，全量等于把整份流水（含每条
+ *  工具输出的全文）挂在公开命名空间上，载荷随使用时长线性增长。detail 在下发前按读面常量
+ *  截断（存储侧仍是零截断全量）。 */
 export interface LessonsRequest {
   readonly project?: string;
   readonly limit?: number;

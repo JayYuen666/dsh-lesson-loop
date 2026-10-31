@@ -55,7 +55,7 @@ type StatementEntry =
 /** 登记分类 → 正文选型。键集与 lib/digest-prompt.ts 的类别白名单（DIGEST_CATEGORIES）
  *  同域，一致性由 test/digest.test.ts 的两条逐类探针钉住——两边漂移的后果是静默降级，
  *  不是崩溃，故必须有门禁。 */
-export const CATEGORY_STATEMENTS: Readonly<Record<string, StatementEntry>> = {
+export const CATEGORY_STATEMENTS: Readonly<Record<string, StatementEntry>> = Object.freeze({
   "factgate-deny": {
     kind: KIND_TWO_TIER,
     stable: "statementFactgateStable",
@@ -76,7 +76,7 @@ export const CATEGORY_STATEMENTS: Readonly<Record<string, StatementEntry>> = {
   "max-tokens": { kind: KIND_FIXED, template: "statementMaxTokens" },
   "unfinished-turn": { kind: KIND_FIXED, template: "statementUnfinishedTurn" },
   "feedback-digest": { kind: KIND_PASSTHROUGH },
-};
+});
 
 /**
  * 候选规则 statement 模板：按分类起草，signature 原文嵌入（可读性优先）。
@@ -98,16 +98,28 @@ export function draftStatement(
     return fill(messages.statementRejectedSummary, { signature });
   }
   if (signature.trim().length === 0) {
-    // 空签名（归一后为空/非字符串兜底）在旧分支会起草出坏正文：feedback-digest 直接
+    // 空签名（首尾空白折叠后为空）在旧分支会起草出坏正文：feedback-digest 直接
     // 透传成空 statement（arm 后注入面只剩一行空话），default 分支嵌出"详见证据"
     // 却无指向的半句。统一退到一条明说缺签名的占位正文，人审时看得见问题。
     return messages.statementMissingSignature;
   }
-  const entry = CATEGORY_STATEMENTS[category];
+  // 普通对象索引会走原型链：category 是模型/第三方给的数据，\`toString\` / \`constructor\`
+  // 这类键取到的是函数（entry.kind 为 undefined），于是落到文件末尾的原样透传——一条
+  // 本应走通用兜底的正文把函数对象塞进注入面。用 Object.hasOwn 收口，键集之外一律
+  // 走 statementGeneric（先 trim：登记分类是精确键，前后空白同样是漂移）。
+  const categoryKey = category.trim();
+  const entry = Object.hasOwn(CATEGORY_STATEMENTS, categoryKey)
+    ? CATEGORY_STATEMENTS[categoryKey]
+    : undefined;
   if (entry === undefined) {
     // 未登记分类（第三方上报）：通用兜底正文。
     return fill(messages.statementGeneric, { signature });
   }
+  // 下面两支按 entry.kind 收口。末尾**故意**保留 return signature 而不是写成第三条
+  // 判断：三档各自 return 会让 TS 把函数末尾判成不可达，而运行期再补一条 default /
+  // throw 纯属不可达代码，只会白送一行未覆盖（共享覆盖率基线是四项 100%）。代价是
+  // 「将来新增 kind 却忘了在这里跟」不会在编译期报错，而是静默落进原样透传——这条
+  // 已知缺口登记在 REPORT 的未完成项，不在这里用不可达分支遮住。
   if (entry.kind === KIND_TWO_TIER) {
     // 稳定签名 → 通用正文：不再把具体路径/命令嵌进规则（碎片化修复的一部分）。
     if (isStableSignature(category, signature)) {
@@ -118,5 +130,6 @@ export function draftStatement(
   if (entry.kind === KIND_FIXED) {
     return fill(messages[entry.template], { signature });
   }
+  // 只剩 passthrough 一档（feedback-digest）：signature 本身即正文，原样返回。
   return signature;
 }

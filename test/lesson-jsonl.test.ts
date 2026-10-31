@@ -9,19 +9,27 @@ import path from "node:path";
 import { readJsonl } from "../lib/lesson-jsonl.ts";
 import { loggedText } from "./setup-logs.ts";
 
-/** readFileSync 拦截开关：`mode = "throw"` 时对被瞄准的文件抛 ENOENT（模拟读取窗口内的删除）。 */
-const readHook = vi.hoisted(() => ({ mode: "" as "" | "throw", file: "" }));
+/** fs 拦截开关：`mode = "throw"` 时对被瞄准的文件抛 ENOENT（模拟读取窗口内的删除）；
+ *  `mode = "statThrow"` 时对它抛 EACCES（模拟 statSync 的非 ENOENT 读失败——ENOTDIR
+ *  这类错误码在 Windows 上造不出来，那里「父路径是文件」回的也是 ENOENT）。 */
+const fsHook = vi.hoisted(() => ({ mode: "" as "" | "throw" | "statThrow", file: "" }));
 
 // vi.mock 会被 vitest 提升到所有 import 之前执行，写在 import 之后不影响拦截时机。
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const readFileSyncSpy = (target: unknown, ...rest: unknown[]): unknown => {
-    if (readHook.mode === "throw" && String(target) === readHook.file) {
+    if (fsHook.mode === "throw" && String(target) === fsHook.file) {
       throw Object.assign(new Error("ENOENT: 文件在读取窗口内被删"), { code: "ENOENT" });
     }
     return (actual.readFileSync as (...args: unknown[]) => unknown)(target, ...rest);
   };
-  return { ...actual, readFileSync: readFileSyncSpy };
+  const statSyncSpy = (target: unknown, ...rest: unknown[]): unknown => {
+    if (fsHook.mode === "statThrow" && String(target) === fsHook.file) {
+      throw Object.assign(new Error("EACCES: permission denied（拦截注入）"), { code: "EACCES" });
+    }
+    return (actual.statSync as (...args: unknown[]) => unknown)(target, ...rest);
+  };
+  return { ...actual, readFileSync: readFileSyncSpy, statSync: statSyncSpy };
 });
 
 describe("readJsonl 读侧窗口", () => {
@@ -30,8 +38,8 @@ describe("readJsonl 读侧窗口", () => {
     scratch = mkdtempSync(path.join(tmpdir(), "lesson-jsonl-"));
   });
   afterEach(() => {
-    readHook.mode = "";
-    readHook.file = "";
+    fsHook.mode = "";
+    fsHook.file = "";
     rmSync(scratch, { recursive: true, force: true });
   });
 
@@ -44,12 +52,12 @@ describe("readJsonl 读侧窗口", () => {
       file,
       '{"category":"c","signature":"s","detail":"d"}\n{"category":"c","signature":"s2","detail":"d2"}\n',
     );
-    readHook.mode = "throw";
-    readHook.file = file;
+    fsHook.mode = "throw";
+    fsHook.file = file;
     assert.deepEqual(readJsonl(file), [], "读取窗口内被删：与「从未存在」同待遇");
     assert.ok(!loggedText().includes("lesson ledger unreadable"), "ENOENT 不是可读性事故");
     // 缓存状态已被清掉：文件恢复后再读是新解析，不是窗口前的旧内容
-    readHook.mode = "";
+    fsHook.mode = "";
     writeFileSync(file, '{"category":"c2","signature":"s","detail":"d2"}\n');
     const rows = readJsonl(file);
     assert.equal(rows.length, 1);
@@ -95,14 +103,16 @@ describe("readJsonl 的读失败口径（补测）", () => {
     }
   });
 
-  it("statSync 非 ENOENT（父路径是普通文件 → ENOTDIR）→ warn 一次 + 空表", () => {
+  it("statSync 非 ENOENT（拦截注入 EACCES）→ warn 一次 + 空表", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dsh-lesson-jsonl-stat-"));
     try {
-      // 父路径是文件，不是目录：statSync 抛 ENOTDIR（非 ENOENT），走 warnReadFailure
-      // 而不是"文件不存在"的静默分支。
-      const blocker = path.join(dir, "blocker");
-      writeFileSync(blocker, "x");
-      const file = path.join(blocker, "lessons.jsonl");
+      // statSync 抛非 ENOENT 走 warnReadFailure 而不是「文件不存在」的静默分支。
+      // ENOTDIR 这类错误码平台间造法不同（Windows 对「父路径是文件」回 ENOENT），
+      // 所以不靠真实文件系统摆形状，用拦截注入同一个错误码，三平台同判。
+      const file = path.join(dir, "lessons.jsonl");
+      writeFileSync(file, "x");
+      fsHook.mode = "statThrow";
+      fsHook.file = file;
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {
         // 断言在下方
       });

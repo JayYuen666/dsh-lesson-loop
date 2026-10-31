@@ -25,13 +25,16 @@ import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
+  linkSync,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 import { shrinkJsonlTail } from "@jayyuen66/dsh-plugin-shared/lib/jsonl";
+import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 /** 锁文件视为陈旧的**基础**门槛：正常临界区是同步调用，量级在毫秒；超时只可能是持有者
  *  死了（进程崩溃/被 SIGKILL）或临界区被大文件拖慢。没有这一层，一次崩溃会让该文件的
@@ -42,8 +45,22 @@ const LOCK_STALE_MS = 10_000;
  *  按 ≥20 MB/s 的保守磁盘速度估算耗时，把这段耗时加进陈旧门槛——否则几十上百 MB 的
  *  流水在慢盘上会超过基础门槛，被别的进程按"陈旧"接管一把**仍在使用**的锁。估算宁可
  *  偏慢（门槛偏大）：门槛过大只推迟接管（裁剪多等一轮，追加与读取不受影响），门槛过小
- *  却制造双持有者。 */
-const STALE_BYTES_PER_MS = 20;
+ *  却制造双持有者。
+ *  20 MB/s = 20 × 1024 × 1024 / 1000 ≈ 20_972 字节/毫秒（取 20_480 = 20 KiB/ms，
+ *  即 20.48 MB/s）；此前写成 20 是单位错（只有约 20 KB/s），100 MB 的流水会得到
+ *  ~83 分钟的陈旧门槛，裁剪要停摆一个多小时。 */
+const STALE_BYTES_PER_MS = 20_480;
+
+/** 流水文件**新建**时的权限：内容里有工具错误原文、命令串与路径，只给属主读写。
+ *  mode 只在创建那一刻生效（已存在的文件保持原 mode，与目录同一条纪律）——目录侧
+ *  0o700 只覆盖"目录由本进程创建"的形态，缓存目录常由宿主预先建好，文件这一道必须
+ *  自己收口，否则 appendFileSync 按 0o666 & umask（常见 0644）建出来。 */
+const LEDGER_FILE_MODE = 0o600;
+
+/** ENOENT 判据（与 lib/lesson-jsonl.ts 同口径）：只把"文件确实不在"当成被覆盖。 */
+function isEnoent(error: unknown): boolean {
+  return isRecord(error) && error["code"] === "ENOENT";
+}
 
 /** 本次进程的锁持有者令牌：写进锁文件正文，释放时据此确认"这锁还是我的"。
  *  进程号只用于事后读日志时对得上是谁，唯一性由 randomUUID 给。 */
@@ -61,6 +78,29 @@ function createLock(lock: string, token: string): boolean {
   }
 }
 
+/** "物归原主"的无覆盖恢复：把墓碑搬回锁路径，**只在原位仍空着时**落地。
+ *
+ *  为什么不能用 renameSync：rename 会替换目标（POSIX 语义），从"锁被搬走"到"搬回"的
+ *  窗口里第三方可能已经建了新锁，rename 会把别人的新锁换成墓碑里那份旧文件——它已超龄，
+ *  别人按陈旧接管，双持有者。硬链接对已存在的目标抛 EEXIST，恢复因此是"原子且不覆盖"的；
+ *  失败时墓碑留着（带本进程令牌的唯一命名），回收交给陈旧接管。 */
+function restoreLock(source: string, target: string): void {
+  let restored = false;
+  try {
+    linkSync(source, target);
+    restored = true;
+  } catch {
+    // 原位已被第三方占住（EEXIST）或文件系统不支持硬链接：留着墓碑，不覆盖别人的锁。
+  }
+  if (restored) {
+    try {
+      rmSync(source, { force: true });
+    } catch {
+      // 删不掉只是留下一枚带本进程令牌的墓碑，不影响锁的正确性。
+    }
+  }
+}
+
 /** 陈旧锁接管：新锁让位（false）；超龄则**原子搬走**再重抢（抢输/失败仍 false）。
  *
  *  不能写成 `rmSync` + `writeFileSync` 两步：两个进程同时判到"超龄"时，A 的 rm 与 B 的 rm
@@ -72,8 +112,8 @@ function createLock(lock: string, token: string): boolean {
  *  可能已经搬走老锁、建了**一把新鲜的新锁**——不验就等于把别人的新锁搬进墓碑，紧接着
  *  createLock 成功，两个持有者同时进临界区。验法：rename 前记下锁的 ino 与 mtimeMs，
  *  rename 后对墓碑再 stat 一次比对；不一致说明搬错了人，把墓碑搬回原位（原位若已被第三个
- *  进程占住，rename 会把它替换回去——这一步与建锁的竞态窗口只剩微秒级，且替换回去的是
- *  "合法持有者"的锁文件，锁语义仍然自洽）并放弃本轮。 */
+ *  进程占住，linkSync 会 EEXIST 而绝不替换别人的新锁；那枚墓碑留给陈旧接管回收）并
+ *  放弃本轮。 */
 function takeOverStaleLock(lock: string, file: string, token: string): boolean {
   let staleIno: number;
   let staleMtimeMs: number;
@@ -120,14 +160,8 @@ function takeOverStaleLock(lock: string, file: string, token: string): boolean {
     return false;
   }
   if (!movedTheStaleLock) {
-    // 搬走的是别人的新锁：物归原主，本轮让位。搬回失败时墓碑留在原地（带本进程令牌的
-    // 唯一命名，不会与别人撞名）；那一把锁文件已在墓碑里，合法持有者释放时读不到原位
-    // 的锁只会 no-op，锁的回收交给陈旧接管。
-    try {
-      renameSync(grave, lock);
-    } catch {
-      // 物归原主失败：留着墓碑，不误删。
-    }
+    // 搬走的是别人的新锁：无覆盖地放回原位，本轮让位（见 restoreLock 的取舍）。
+    restoreLock(grave, lock);
     return false;
   }
   const acquired = createLock(lock, token);
@@ -156,9 +190,9 @@ function tryAcquireLock(lock: string, file: string): string | null {
  *  被别人接管后，我们删的是**对方的**锁；以及"读到自己的令牌"与"rm"之间锁被接管——令牌
  *  校验只能缩小窗口、关不死。改成**原子搬走再验**：rename 这一发生，锁文件就从共享路径上
  *  消失（接管者要么已把它搬走让我们的 rename 拿 ENOENT、要么我们的 rename 搬走的是它刚建
- *  的新锁）；搬走后读墓碑里的令牌，是自己的就删，不是自己的就搬回原位。搬回与第三方建锁
- *  之间仍有微秒级窗口（rename 会替换占位者），与接管侧的验法同一条残留风险，两次系统调用
- *  之间没有原子性可用。 */
+ *  的新锁）；搬走后读墓碑里的令牌，是自己的就删，不是自己的就**无覆盖地**放回原位
+ *  （linkSync：原位已被第三方占住就留墓碑，不替换别人的锁——无条件 rename 会制造
+ *  "第三方以为自己持锁、别人却按超龄接管"的双持有者）。 */
 function releaseLock(lock: string, token: string): void {
   const released = `${lock}.${token}.released`;
   try {
@@ -175,12 +209,8 @@ function releaseLock(lock: string, token: string): void {
     return;
   }
   if (content !== token) {
-    // 搬走的是接管者的新锁：物归原主；失败就留墓碑，不误删。
-    try {
-      renameSync(released, lock);
-    } catch {
-      // 物归原主失败：留着墓碑。
-    }
+    // 搬走的是接管者的新锁：无覆盖地放回原位；原位被占就留墓碑，不误删也不替换别人。
+    restoreLock(released, lock);
     return;
   }
   try {
@@ -230,9 +260,13 @@ function shrinkLocked(file: string, maxBytes: number): void {
       return;
     }
     const snapshotBytes = before.size;
+    // 权限位只取低 12 位：statSync 的 mode 含文件类型位（S_IFREG），把 0o100644 当权限
+    // 传下去只是碰巧被内核掩掉，语义上不该依赖这层隐式掩码。
+    // oxlint-disable-next-line eslint/no-bitwise -- 取 statSync mode 的低 12 位权限位是位掩码的本意
+    const perm = before.mode & 0o7777;
     const text = readFileSync(file, "utf8");
     const shrunk = shrinkJsonlTail(text, maxBytes);
-    if (shrunk === text || statSync(file).size !== snapshotBytes) {
+    if (shrunk === text) {
       return;
     }
     // 临时文件按持有者唯一命名：固定 `${file}.tmp` 会让两个进程在同一个临时文件上互相
@@ -243,11 +277,23 @@ function shrinkLocked(file: string, maxBytes: number): void {
       // 权限沿用原文件：writeFileSync 的 mode 会经 umask 抹位，rename 覆盖后原文件的
       // mode/属主就此丢失——流水里带着工具错误原文与路径，权限被 umask 放宽是真实的事故面。
       // chmodSync 把被 umask 抹掉的位补回（Windows 上没有权限位语义，此调用无害）。
-      writeFileSync(tmp, shrunk, { mode: before.mode });
+      writeFileSync(tmp, shrunk, { mode: perm });
       try {
-        chmodSync(tmp, before.mode);
+        chmodSync(tmp, perm);
       } catch {
         // 补位失败不阻断替换：writeFileSync 的 mode 已经覆盖了绝大多数 umask 形态。
+      }
+      // 乐观并发校验放在 rename **紧前**：真正会被覆盖的是「写完 tmp → rename」这段窗口
+      // 里裸追加落下的行（大文件写 tmp 要几十到几百毫秒）。以前这道 stat 在写 tmp 之前，
+      // 窗口被放大一个数量级。漏网的一行由追加侧 lineSurvivedFuse 兜住（三角约定见头注释）。
+      if (statSync(file).size !== snapshotBytes) {
+        // 快照之后有人写过：放弃本轮裁剪，删掉自己的临时文件（不留全文副本）。
+        try {
+          rmSync(tmp, { force: true });
+        } catch {
+          // 删不掉只会留下一枚带唯一名字的临时文件，不挡下一轮。
+        }
+        return;
       }
       renameSync(tmp, file);
     } catch (error) {
@@ -285,9 +331,17 @@ function lineSurvivedFuse(file: string, payload: string): boolean {
   try {
     const text = readFileSync(file, "utf8");
     return text.includes(payload);
-  } catch {
-    // 读不到文件（被 rename 到别处/刚才还不存在）：按"不在"处理，让调用方补写。
-    return false;
+  } catch (error) {
+    if (isEnoent(error)) {
+      // 文件确实不在了（被 rename 到别处/刚才还不存在）：按"不在"处理，让调用方补写。
+      return false;
+    }
+    // EACCES/EMFILE/ENOSPC 一类瞬态读错**不等于**这一行被覆盖：保守视为"已在"，
+    // 绝不补写（补写会制造重复行，直接进阈值计数/蒸馏输入）。留一条日志便于排障。
+    console.warn(
+      `[lesson-loop] lesson ledger unreadable while verifying append (${errorText(error)}): ${file}`,
+    );
+    return true;
   }
 }
 
@@ -303,12 +357,12 @@ export function appendUnderFuse(file: string, payload: string, maxBytes: number)
     if (maxBytes > 0) {
       shrinkLocked(file, maxBytes);
     }
-    appendFileSync(file, payload);
+    appendFileSync(file, payload, { mode: LEDGER_FILE_MODE });
   });
   if (!locked) {
-    appendFileSync(file, payload);
+    appendFileSync(file, payload, { mode: LEDGER_FILE_MODE });
     if (!lineSurvivedFuse(file, payload)) {
-      appendFileSync(file, payload);
+      appendFileSync(file, payload, { mode: LEDGER_FILE_MODE });
     }
   }
 }

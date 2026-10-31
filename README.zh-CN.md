@@ -107,17 +107,17 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --dsh-version <exact running host version> --accept-risk
 ```
 
-  `version-exemptions` 列出这些授权，`revoke-version` 撤销其中一条；`--dsh-version` 必须等于运行中宿主自报的版本。
+`version-exemptions` 列出这些授权，`revoke-version` 撤销其中一条；`--dsh-version` 必须等于运行中宿主自报的版本。
 
 ## <img src="https://api.iconify.design/lucide/cable.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 教训总线
 
-| 方法 | 用途 |
-| --- | --- |
-| `report(input)` | 追加一条教训并归并进该键的卡片；返回 `{ ok, reason?, violationOf?, candidate?, ready?, justReady? }` |
-| `pass(input)` | 规则对应的场景触发且被遵守；会话结束时计为 `suppressed` |
-| `rules()` / `recentLessons(project?, limit?)` | 读规则库 / 读事件流 |
-| `ruleAction(id, action, statement?)` | 那六个人工动作 |
-| `stats()` | 卡片背后的计数器与配置摘要 |
+| 方法                                          | 用途                                                                                                 |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `report(input)`                               | 追加一条教训并归并进该键的卡片；返回 `{ ok, reason?, violationOf?, candidate?, ready?, justReady? }` |
+| `pass(input)`                                 | 规则对应的场景触发且被遵守；会话结束时计为 `suppressed`                                              |
+| `rules()` / `recentLessons(project?, limit?)` | 读规则库 / 读事件流                                                                                  |
+| `ruleAction(id, action, statement?)`          | 那六个人工动作                                                                                       |
+| `stats()`                                     | 卡片背后的计数器与配置摘要                                                                           |
 
 - `reason` 是 `disabled`、`rules-not-persisted`（这次改动没进规则库——重试）或 `error` 三者之一。它是回执码，不是翻译过的文案。
 - `source` 是开放集：`danger-guard`、`quality-gate`、`session-rescue`、`lessons-digest` 与 `manual` 是内置的，第三方可以自报名字（trim 后非空、不超过 64 字符，否则按 `manual` 记账并留一行日志）。有两种上报值得点名：`gate-not-run` 标记一次从未跑成的检查，因为环境问题不许被学成代码教训；证据里的 `needsUserConfirmation: true` 标记上报方做不了的判断——是证据，但不是违反。
@@ -128,19 +128,19 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 
 命名空间 = 条目 id `lesson-loop`。四个开关默认都是 `true`：`enabled`（总开关——关掉即不上报、不注入、不做退出清算、没有常驻段、周期衰减暂停，且 `/lessons-digest` 拒绝执行）、`reportEnabled`（教训**入口**闸门：只停 `report()` 与 `/lessons-digest`——pass 记账与退出清算只随 `enabled`）、`injectEnabled`、`sectionEnabled`。
 
-| 字段 | 默认值 | 取值范围 | 作用 |
-| --- | --- | --- | --- |
-| `promoteThreshold` | `3` | 1–20 | 同键教训达到此次数即把卡片标为待评审 |
-| `demoteThreshold` | `3` | 1–50 | 升格后被违反到此次数才降级 |
-| `demoteMinSamples` | `5` | 1–100 | 真实证据 `violation + suppressed` 的下限 |
-| `demoteRatio` | `0.5` | 0.05–1（步长 0.05） | 复发率红线 |
-| `decayDays` | `30` | 1–365 | armed 满这么久仍无干净命中，卡片转为不可判定；之后的复发不会重置窗口 |
-| `reviveThreshold` | `3` | 1–20 | 被拒的规则再见到此次数就回到候选 |
-| `maxLessonsBytes` | `0` | 0–1 GiB | 磁盘保险丝；`0` = 不设上限，内容绝不为了省上下文被截断 |
-| `maxStatementChars` | `4000` | 1–100000 | arm/edit 时生效正文的字符上限（UTF-16 码元）；超限的写入被拒，已落库正文不受影响 |
-| `digestTimeoutMs` | `120000` | ≥ 1000 | 一次蒸馏的墙钟（ms）；卡片上没有这一行 |
-| `decayIntervalMs` | `86400000` | ≥ 1000 | 周期衰减轮次的间隔（ms）；卡片上没有这一行 |
-| `maxInjectedRules` | `50` | 0–1000 | 每个会话注入的 armed 规则条数；设了上限时保留最新的若干条；`0` = 不设上限；卡片上没有这一行 |
+| 字段                | 默认值     | 取值范围            | 作用                                                                                        |
+| ------------------- | ---------- | ------------------- | ------------------------------------------------------------------------------------------- |
+| `promoteThreshold`  | `3`        | 1–20                | 同键教训达到此次数即把卡片标为待评审                                                        |
+| `demoteThreshold`   | `3`        | 1–50                | 升格后被违反到此次数才降级                                                                  |
+| `demoteMinSamples`  | `5`        | 1–100               | 真实证据 `violation + suppressed` 的下限                                                    |
+| `demoteRatio`       | `0.5`      | 0.05–1（步长 0.05） | 复发率红线                                                                                  |
+| `decayDays`         | `30`       | 1–365               | armed 满这么久仍无干净命中，卡片转为不可判定；之后的复发不会重置窗口                        |
+| `reviveThreshold`   | `3`        | 1–20                | 被拒的规则再见到此次数就回到候选                                                            |
+| `maxLessonsBytes`   | `0`        | 0–1 GiB             | 磁盘保险丝；`0` = 不设上限，内容绝不为了省上下文被截断                                      |
+| `maxStatementChars` | `4000`     | 1–100000            | arm/edit 时生效正文的字符上限（UTF-16 码元）；超限的写入被拒，已落库正文不受影响            |
+| `digestTimeoutMs`   | `120000`   | ≥ 1000              | 一次蒸馏的墙钟（ms）；卡片上没有这一行                                                      |
+| `decayIntervalMs`   | `86400000` | ≥ 1000              | 周期衰减轮次的间隔（ms）；卡片上没有这一行                                                  |
+| `maxInjectedRules`  | `50`       | 0–1000              | 每个会话注入的 armed 规则条数；设了上限时保留最新的若干条；`0` = 不设上限；卡片上没有这一行 |
 
 最后三行是部署值：不标 `.volatile()`，所以卡片上没有对应的行，只能在注册行的 `config:` 上给，重启后生效。
 
@@ -148,12 +148,12 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 
 官方 Typert Remote 命名空间 `lessonLoopRules` 上的四个方法。
 
-| 方法 | 入参 | 回执 |
-| --- | --- | --- |
-| `stats()` | — | `{ ok: true, …counters, …config summary, rules }`；规则投影带着派生的 `undeterminable` 标记，且**不带** `evidence` 正文 |
-| `rules(request)` | `{ project? }` | `{ ok: true, rules }`；`project` 不是字符串就按缺省读，也就是全量规则库 |
-| `lessons(request)` | `{ project?, limit? }` | `{ ok: true, count, lessons }`；`limit` 缺省、不是有限数或 ≤ 0 时取默认 50 条，显式值封顶 500 |
-| `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`，或 `{ ok: false, error, status }` |
+| 方法                  | 入参                         | 回执                                                                                                                    |
+| --------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `stats()`             | —                            | `{ ok: true, …counters, …config summary, rules }`；规则投影带着派生的 `undeterminable` 标记，且**不带** `evidence` 正文 |
+| `rules(request)`      | `{ project? }`               | `{ ok: true, rules }`；`project` 不是字符串就按缺省读，也就是全量规则库                                                 |
+| `lessons(request)`    | `{ project?, limit? }`       | `{ ok: true, count, lessons }`；`limit` 缺省、不是有限数或 ≤ 0 时取默认 50 条，显式值封顶 500                           |
+| `ruleAction(request)` | `{ id, action, statement? }` | `{ ok: true, id, action }`，或 `{ ok: false, error, status }`                                                           |
 
 - `action` 必须是那六个白名单值之一；`statement` 只由 `arm` 与 `edit` 读取，会被 trim，空白串按「没给」处理。生效正文超过 `maxStatementChars` 时回 `{ ok: false, status: 400 }`，库不动。
 - 拒绝回执里的 `status` 是**保留下来的语义码，不是 HTTP 状态**：缺字段或动作不在白名单是 400，未知的卡片是 404，规则库拒绝落盘是 500（带 `rules-not-persisted`）。
@@ -162,14 +162,14 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 
 ## <img src="https://api.iconify.design/lucide/lock.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 数据与隐私
 
-| 口径 | 内容 |
-| --- | --- |
-| 写盘 | 事件流写在 `$DSH_HOME/cache/lesson-loop/events.jsonl`（可丢弃的派生数据位置）与它瞬时的 `.lock` / `.tmp` 兄弟文件，以及设置文档 `lesson-loop` 段的 `rules` 数组 |
-| 网络 | 本包没有自己的网络调用。`/lessons-digest` 经宿主 `llm` 服务把本会话的人工差评与该项目的近期教训交给当前默认模型——那个模型在外网时，这些内容就出域了 |
-| 保留 | 事件流完整保留 detail 与规则正文，零截断；`maxLessonsBytes` 是磁盘保险丝，不是上下文上限 |
-| 证据收敛 | 规则卡的 `evidence` 是唯一例外：过长的 detail 截断并补省略号，每张卡只留最近的若干行，且只在落盘那一刻发生。`signature` 与计数器一律不裁 |
-| 并发 | 规则库写入带跨进程 CAS；事件流的追加与裁剪共用同一把锁 |
-| 语言 | host 侧文案随官方 locale 偏好走；已落库的规则正文是用户数据，永不改写 |
+| 口径     | 内容                                                                                                                                                            |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 写盘     | 事件流写在 `$DSH_HOME/cache/lesson-loop/events.jsonl`（可丢弃的派生数据位置）与它瞬时的 `.lock` / `.tmp` 兄弟文件，以及设置文档 `lesson-loop` 段的 `rules` 数组 |
+| 网络     | 本包没有自己的网络调用。`/lessons-digest` 经宿主 `llm` 服务把本会话的人工差评与该项目的近期教训交给当前默认模型——那个模型在外网时，这些内容就出域了             |
+| 保留     | 事件流完整保留 detail 与规则正文，零截断；`maxLessonsBytes` 是磁盘保险丝，不是上下文上限                                                                        |
+| 证据收敛 | 规则卡的 `evidence` 是唯一例外：过长的 detail 截断并补省略号，每张卡只留最近的若干行，且只在落盘那一刻发生。`signature` 与计数器一律不裁                        |
+| 并发     | 规则库写入带跨进程 CAS；事件流的追加与裁剪共用同一把锁                                                                                                          |
+| 语言     | host 侧文案随官方 locale 偏好走；已落库的规则正文是用户数据，永不改写                                                                                           |
 
 ## <img src="https://api.iconify.design/lucide/triangle-alert.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 已知边界
 
@@ -184,14 +184,14 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 
 ## <img src="https://api.iconify.design/lucide/circle-help.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 常见问题
 
-| 问题 | 回答 |
-| --- | --- |
-| 规则会不会自己生效？ | 不会。只有 `arm` 写 `armed`；达到 revive 阈值只把被拒的卡送回 `candidate`。 |
-| 把 `reportEnabled` 关掉会怎样？ | `report()` 立刻回 `{ ok: false, reason: "disabled" }`，`/lessons-digest` 同样拒绝；Remote 读面与卡片照常工作。 |
-| 卡片上点 arm 报 `rules-not-persisted`。 | 这次改动没进规则库；库里仍是旧状态，重试即可。 |
-| 规则一直显示「不可判定」。 | `suppressed` 仍是零，没有干净命中可作分母：规则要么静置超过 `decayDays`，要么违反已达 `demoteThreshold` 却始终没有一次被遵守的会话。违反也为零时这个比值是未定义的，不是 1.0——两种情况机器都不会替你做决定。自行停用或归档；一次 `pass` 即清除该标记。 |
-| 我把 `rules` 手改成了非数组。 | 规则面降级为「读空、写拒」，本进程一次都不写那一段；开关在你修好该字段之前照常工作。 |
-| 别的插件收不到总线。 | 没装本包，或 `ctx.provide` 不可用（一条明确的 error）时，上报方只丢报告，自身功能不受影响。 |
+| 问题                                    | 回答                                                                                                                                                                                                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 规则会不会自己生效？                    | 不会。只有 `arm` 写 `armed`；达到 revive 阈值只把被拒的卡送回 `candidate`。                                                                                                                                                                            |
+| 把 `reportEnabled` 关掉会怎样？         | `report()` 立刻回 `{ ok: false, reason: "disabled" }`，`/lessons-digest` 同样拒绝；Remote 读面与卡片照常工作。                                                                                                                                         |
+| 卡片上点 arm 报 `rules-not-persisted`。 | 这次改动没进规则库；库里仍是旧状态，重试即可。                                                                                                                                                                                                         |
+| 规则一直显示「不可判定」。              | `suppressed` 仍是零，没有干净命中可作分母：规则要么静置超过 `decayDays`，要么违反已达 `demoteThreshold` 却始终没有一次被遵守的会话。违反也为零时这个比值是未定义的，不是 1.0——两种情况机器都不会替你做决定。自行停用或归档；一次 `pass` 即清除该标记。 |
+| 我把 `rules` 手改成了非数组。           | 规则面降级为「读空、写拒」，本进程一次都不写那一段；开关在你修好该字段之前照常工作。                                                                                                                                                                   |
+| 别的插件收不到总线。                    | 没装本包，或 `ctx.provide` 不可用（一条明确的 error）时，上报方只丢报告，自身功能不受影响。                                                                                                                                                            |
 
 ## <img src="https://api.iconify.design/lucide/wrench.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 开发
 

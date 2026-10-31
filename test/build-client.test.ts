@@ -2,7 +2,12 @@
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildClient, clientExternals, singleEntryChunk } from "../build-client.mjs";
+import {
+  buildClient,
+  clientExternals,
+  declaredClientExternals,
+  singleEntryChunk,
+} from "../build-client.mjs";
 import { clientFreshnessEvidence } from "./client-freshness.ts";
 import { bundleSlotKeyFacts } from "./profile-bundle.ts";
 import { schemaCoverageProblems } from "./schema-coverage.ts";
@@ -166,10 +171,10 @@ const ARTIFACT_FILE = "artifact.js";
  * @returns 可交给 singleEntryChunk 的输出项
  */
 function outputItem(
-  type: string,
+  type: "chunk" | "asset",
   fileName: string,
-  extra: Partial<{ isEntry: boolean; code: string }> = {},
-): { type: string; fileName: string } & Partial<{ isEntry: boolean; code: string }> {
+  extra: { isEntry?: boolean; code?: string } = {},
+): { type: "chunk" | "asset"; fileName: string; isEntry?: boolean; code?: string } {
   return { type, fileName, ...extra };
 }
 
@@ -199,5 +204,36 @@ describe("单文件产物的输出守卫", () => {
     const output = [outputItem("chunk", ARTIFACT_FILE, { isEntry: true, code: CHUNK_CODE })];
     const chunk = singleEntryChunk(output, "entry.ts");
     assert.equal(chunk.code, CHUNK_CODE);
+  });
+});
+
+describe("declaredClientExternals()", () => {
+  it("声明段原样收：不裁剪首尾空白、不排序、不合并重复", () => {
+    assert.deepEqual(
+      declaredClientExternals({ dsh: { client: { external: [" zod ", "react-dom", "zod"] } } }),
+      [" zod ", "react-dom", "zod"],
+    );
+  });
+
+  it("未声明时返回空清单（只有基座）", () => {
+    assert.deepEqual(declaredClientExternals({}), []);
+  });
+
+  it("dsh 不是对象时响亮失败", () => {
+    assert.throws(() => declaredClientExternals({ dsh: "x" }), /dsh 必须是对象，实际是 string/u);
+  });
+
+  it("dsh.client 不是对象时响亮失败", () => {
+    assert.throws(
+      () => declaredClientExternals({ dsh: { client: ["react"] } }),
+      /dsh\.client 必须是对象，实际是 数组/u,
+    );
+  });
+
+  it("external 不是数组时响亮失败", () => {
+    assert.throws(
+      () => declaredClientExternals({ dsh: { client: { external: "react" } } }),
+      /dsh\.client\.external 必须是字符串数组/u,
+    );
   });
 });

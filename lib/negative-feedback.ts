@@ -45,7 +45,7 @@ function noteText(value: unknown): string {
   // **运行时**返回值是 undefined（类型面看不出这条，所以不用 ?? 判空而是按类型收窄）；
   // 循环引用/内嵌 BigInt 走 catch，退最后的辨认形态。
   try {
-    const text: string = JSON.stringify(value);
+    const text: string | undefined = JSON.stringify(value);
     return typeof text === "string" ? text : Object.prototype.toString.call(value);
   } catch {
     return Object.prototype.toString.call(value);
@@ -161,7 +161,10 @@ function appendSessionRecord(data: unknown, ledger: SlotLedger): void {
   const text = fieldOf(data, "text");
   const category = fieldOf(data, "category");
   const note = noteText(text);
-  const catStr = typeof category === "string" ? category : undefined;
+  // 空白分类视同缺省：\`category: ""\` 若算"已定义"，正文为空的那条会话备注就能穿过
+  // 下面的空判落槽，同时在指纹上与"没填分类"混成同一个键（去重口径被污染）。
+  const catText = typeof category === "string" ? category.trim() : "";
+  const catStr = catText.length > 0 ? catText : undefined;
   if (note.trim().length === 0 && catStr === undefined) {
     return;
   }

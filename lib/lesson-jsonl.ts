@@ -93,9 +93,13 @@ function rememberParse(
   ctimeMs: number,
   rows: Record<string, unknown>[],
 ): void {
-  if (parseCache.size >= PARSE_CACHE_MAX) {
-    // 腾一格：Map 保持插入序，首个键就是最旧的。默认值兜住"空表"这一格（那时删的就是
-    // 正要写入的这个键，等于把它挪到队尾），因此不需要一条判空分支。
+  if (parseCache.has(file)) {
+    // 键已存在（同一文件追加/裁尾后重新解析）：先删再 set 才把它挪到插入序队尾——
+    // Map.set 对已有键不改顺序，那个文件会一直停在旧位置，成为下一轮淘汰的牺牲品。
+    parseCache.delete(file);
+  } else if (parseCache.size >= PARSE_CACHE_MAX) {
+    // 腾一格：Map 保持插入序，首个键就是最旧的。只有**新增键**才需要腾——否则满表时
+    // 一次同文件刷新会白白牺牲另一个文件的缓存。
     const [oldest = file] = parseCache.keys();
     parseCache.delete(oldest);
   }
@@ -177,6 +181,9 @@ export function readJsonl(file: string): readonly Readonly<Record<string, unknow
     cached.ctimeMs === stats.ctimeMs
   ) {
     // 数组浅拷贝一份数组：缓存里的那份只许本层改，行对象共享（见函数 JSDoc）。
+    // 缓存命中同样是"读成功"：上一次非 ENOENT 的读故障若不清闩，权限恢复后的第二次
+    // 事故会被静默吞掉（stat 成功不算读成功——路径是目录时 stat 成功、read 才 EISDIR）。
+    lastReadError.delete(file);
     return [...cached.rows];
   }
   let text: string;

@@ -6,7 +6,9 @@
 # publish_results 只在默认分支上有效：上传的身份由 OIDC 换得，所以要 id-token: write。
 name: scorecard
 on:
-  # 分支保护/ruleset 变更时重跑，否则 Branch-Protection 这项检查只会停在旧值上。
+  # 只订阅 branch_protection_rule：GitHub Actions 的触发事件里没有 repository_ruleset
+  # （它是 webhook 事件，actionlint 判为 unknown event）。因此迁到 ruleset 管理的保护
+  # 策略变更不会即时重跑，Branch-Protection 一项要等下一次 cron 或 push 才刷新。
   branch_protection_rule:
   # 手动入口：同上。注意下面的 if 要求「在默认分支上跑」，所以在功能分支上手跑时该 job
   # 会被跳过——这不是故障。

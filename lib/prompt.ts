@@ -10,6 +10,7 @@
 // 注入帧的不可信文本一律经 fenceUntrusted 定界（见该函数注释）：教训正文来自
 // 工具错误原文/模型输出/人工备注，裸拼进编号列表或 Markdown 分节里就能伪造条目。
 
+import type { ContextForm } from "@deepseek-ai/dsh-llm/message";
 import type { RuleCard } from "./lesson-store.ts";
 import { fill } from "./messages.ts";
 import type { LessonLoopMessages } from "./messages.ts";
@@ -46,7 +47,7 @@ export const LESSON_SOURCE_KIND = `plugin:${PLUGIN_NAME}`;
  *  上下文语义位（`instructions` = 模型要遵守的指令；官方 `ContextForm` 的取值）。 */
 interface LessonMessageSource {
   readonly kind: typeof LESSON_SOURCE_KIND;
-  readonly form?: string;
+  readonly form?: ContextForm;
 }
 
 /**
@@ -145,10 +146,40 @@ function armedMetric(messages: LessonLoopMessages, rule: RuleCard): string {
  * 帧的行数去减，就等于把"帧尾那行说明不算规则"这条约定编进算术里——一处漏改就是一条
  * 虚报的计数。选取口径只此一份，两边都对得上。
  */
+/** `armedAt` 的有效性归一：排序与日期渲染共用同一套判据（缺值/非有限一律无效）。
+ *  两个导出面的调用方都可能传入内存里手工构造、`armedAt: NaN` 的卡；两处口径分家会
+ *  出现"帧里日期是 ?、顺序却按 0 排在中间"这种无信号的错序。 */
+function armedTimeOf(rule: RuleCard): number | undefined {
+  let result: number | undefined;
+  if (rule.armedAt !== undefined) {
+    const time = new Date(rule.armedAt).getTime();
+    if (Number.isFinite(time)) {
+      result = time;
+    }
+  }
+  return result;
+}
+
+/** 比较器：缺值与非法 `armedAt` 都排在最后；两者都无效时保持入参顺序。 */
+function compareArmedAt(left: RuleCard, right: RuleCard): number {
+  const leftAt = armedTimeOf(left);
+  const rightAt = armedTimeOf(right);
+  if (leftAt === undefined && rightAt === undefined) {
+    return 0;
+  }
+  if (leftAt === undefined) {
+    return 1;
+  }
+  if (rightAt === undefined) {
+    return -1;
+  }
+  return leftAt - rightAt;
+}
+
 export function armedRulesOf(rules: readonly RuleCard[], project: string): RuleCard[] {
   return rules
     .filter((rule) => rule.status === "armed" && rule.project === project)
-    .toSorted((left, right) => (left.armedAt ?? 0) - (right.armedAt ?? 0));
+    .toSorted(compareArmedAt);
 }
 
 /**
@@ -176,10 +207,8 @@ export function renderRulesDigest(
     // 越界时间戳（读取层只保证有限数，1e300 这类值超出 Date 的 ±8.64e15）会让
     // toISOString 抛 RangeError——一张坏卡不该让本项目全部 armed 规则的注入失败，
     // 日期渲染与 armedAt 缺值走同一个 "?"。
-    const armedTime = rule.armedAt === undefined ? Number.NaN : new Date(rule.armedAt).getTime();
-    const armedDay = Number.isFinite(armedTime)
-      ? new Date(armedTime).toISOString().slice(0, 10)
-      : "?";
+    const armedTime = armedTimeOf(rule);
+    const armedDay = armedTime === undefined ? "?" : new Date(armedTime).toISOString().slice(0, 10);
     // statement 是模型蒸馏/人工改写正文（不可信），逐行定界后才进编号帧。
     lines.push(
       fill(messages.digestRuleLine, {

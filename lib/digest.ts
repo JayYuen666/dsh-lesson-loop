@@ -285,22 +285,33 @@ interface ResolvedModelSelection {
  */
 /**
  * 等一条已被竞速放弃的流落定：落定值无人消费，这里只防 unhandledRejection。
- * 正常路径下（没超时就落定）走不到日志——那次落定是竞速的赢家。
+ * **这里不打日志**：没超时时的失败本来就是竞速赢家、由外层 catch 原样透出；超时后的
+ * 落定由超时文案统一收场，底层错误经 cause 可查。以前那条 "settled after the command
+ * already failed" 的条件写反了——它只在"未超时"时打，正好是重复且误导的那一档。
  */
-async function awaitStreamSettled(stream: Promise<string>, timedOut: () => boolean): Promise<void> {
+async function settleAbandonedStream(stream: Promise<string>): Promise<void> {
   try {
     await stream;
-  } catch (error) {
-    if (!timedOut()) {
-      console.error(
-        `[lesson-loop] digest stream settled after the command already failed: ${errorText(error)}`,
-      );
-    }
+  } catch {
+    // 落定值无人消费：接住它只防 unhandledRejection。
   }
 }
 
 /** 超时门的哨兵：门以 resolve 交出它（不 reject），竞速里它一出现即按超时收场。 */
 const TIMEOUT_MARK = Symbol("lesson-loop-digest-timeout");
+
+/** 超时收场的专用错误类型：识别"已经是本地化超时错误"必须靠类型，不能靠人读文案——
+ *  文案由消息表注入（中/英两语各不相同），按子串匹配在英文界面下必然失效，同一条超时
+ *  错误会被再包一层 cause；反过来底层错误只要恰好含那几个字也会被误认成"已本地化"。 */
+class DigestTimeoutError extends Error {
+  public constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DigestTimeoutError";
+  }
+}
+
+/** Node 定时器的延时上限（2^31-1 毫秒）：超出会溢出成立即触发，等于零墙钟。 */
+const MAX_TIMER_MS = 2_147_483_647;
 
 /** 墙钟到点后的**收尾宽限**（毫秒）：到点先 abort，给协作式适配器一小段时间自行收场
  *  ——abort 后立刻恢复并交出合法 finish 的流不算失败（test/digest.test.ts 钉着这条）；
@@ -366,17 +377,19 @@ async function streamDigestText(
     // 门赢了（超时收场）之后流才会落定：abort 引发的失败已按超时呈报，这一次落定
     // 无人等待——接住它只是防 unhandledRejection，不是吞掉正常路径的错误（竞速
     // 赢家若是流自己的错误，走的是下面 catch 的原样透出）。
-    void awaitStreamSettled(drained, () => timeoutState.fired);
+    void settleAbandonedStream(drained);
     try {
       const settled = await Promise.race([drained, timeoutGate]);
       if (settled === TIMEOUT_MARK) {
-        throw new Error(fill(messages.errDigestTimeout, { ms: timeoutMs }));
+        throw new DigestTimeoutError(fill(messages.errDigestTimeout, { ms: timeoutMs }));
       }
       return settled;
     } catch (error) {
-      if (timeoutState.fired && !(error instanceof Error && error.message.includes("蒸馏超时"))) {
+      if (timeoutState.fired && !(error instanceof DigestTimeoutError)) {
         // 超时的一档把底层错误拴在 cause 上（排障可见），给人看的是本地化文案。
-        throw new Error(fill(messages.errDigestTimeout, { ms: timeoutMs }), { cause: error });
+        throw new DigestTimeoutError(fill(messages.errDigestTimeout, { ms: timeoutMs }), {
+          cause: error,
+        });
       }
       throw error;
     } finally {
@@ -514,6 +527,13 @@ export async function runDigest(
   if (provider.length === 0 || model.length === 0) {
     throw new Error(messages.errNoModelSelection);
   }
+  // 墙钟口径只在三处出现：configSchema 的 min(1000) 是**配置面**约束（设置卡/文档），
+  // 本守卫只管"能不能拿去 setTimeout"——有限正数且不超过 Node 的 2^31-1 毫秒上限
+  // （超出会溢出成立即触发，等于零墙钟）。文案因此只说本守卫自己的口径，不重复
+  // schema 的 1000 下限：单测要用几十毫秒的墙钟驱动超时分支。
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_MS) {
+    throw new Error(messages.errDigestTimeoutInvalid);
+  }
   // 交付面守卫：events 非数组（host 取数失败交回了别的形状）退空表继续跑，但必须留下
   // 一条诊断——"零证据蒸馏"与"真的没有差评"在回执上同形（feedbackCount: 0），没有这条
   // 日志，取数侧的集成故障会长期隐形。
@@ -527,9 +547,6 @@ export async function runDigest(
   const background = lessonsBackground(store, project, messages);
   const prompt = buildDigestPrompt(feedbacks, background, messages, extra);
 
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new Error(messages.errDigestTimeoutInvalid);
-  }
   const resolved: ResolvedModelSelection = {
     provider,
     model,

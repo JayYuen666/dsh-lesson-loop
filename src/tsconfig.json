@@ -6,8 +6,9 @@
 // 于是 .toSorted、Promise.withResolvers 这类 ES2023+ API 假报 TS2550，并级联出 no-unsafe-*
 // 与 no-undef（实测 zvec-grep 因此多出 34 条、ctx-observe 一处 .toSorted 带出 8 条）。
 // 写 extends ../tsconfig.client.json 而不是自己列 include：TS 对"来自基配置的相对路径按基配置
-// 所在目录解析"，所以 include 仍覆盖 src/** 加上该包在 client 配置里额外列的项，声明一处、两处生效；
-// 自己列 include 会漏掉那些额外项（实测漏掉 settings/ 与 ../lib 的包立刻炸出 TS2304）。
+// 所在目录解析"，所以 include 沿用基配置那一条（本包只有 src/**/*.ts），生效范围与包根那份
+// client 程序逐字一致，声明一处、两处生效。别照抄"基配置还列了 settings/、../lib"的形状——
+// 本包基配置没有那些额外项，照抄会在本文件里写出一个不存在的范围，把 include 面变成假承诺。
 //
 // ⚠ "不在 include 里"不等于"不进 host 程序"：被 import 的文件不受 include/exclude 约束。三个
 // host 侧测试直接 import 本目录（test/host.test.ts 取 UI_MESSAGES、test/rules-reader.test.ts 与
@@ -15,8 +16,9 @@
 // rules-reader.ts 仍会被 host 程序（lib 只有 ES2024、types 只有 node）再检查一遍。今天这没有问题：
 // 这两份都是纯数据/纯协议消费的面，一个 DOM 标识符都不用（实测给它们注入 document 立刻是
 // TS2584 "Cannot find name 'document'"）。所以新增 client 侧文件时别顺手往这两个里塞 DOM 用法
-// ——它们不是 client 程序独有的。真正的 client 面（client-entry.ts）不被拉进来，那才是
-// 包根 exclude: ["test/client-*.test.ts"] 在挡的东西。
+// ——它们不是 client 程序独有的。client-entry.ts 不进 host 程序是两个独立原因叠加：它既不在
+// 包根 include 里，也没有任何 host 侧文件 import 它（包根 exclude: ["test/client-*.test.ts"]
+// 挡的是另一件事：让 host 程序不去检查纯客户端测试）。
 {
   "extends": "../tsconfig.client.json"
 }

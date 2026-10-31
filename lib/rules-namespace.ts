@@ -30,7 +30,13 @@ import { errorText, isSettingsConflict } from "@jayyuen66/dsh-plugin-shared/lib/
 import type { RuleCard, RulesRead, RulesRepository, RulesWriteOutcome } from "./lesson-store.ts";
 // 段名与 `rules` 字段名（以及"解析值 → 卡数组"那一步投影）在 lib/rules-layout.ts：本文件是
 // 端口实现，坐标是另一端，两边各改各的就会长成"卡片绑的段 ≠ 这里读的段"。
-import { RULES_FIELD, SETTINGS_NAMESPACE, cardsOfValue, capEvidence } from "./rules-layout.ts";
+import {
+  RULES_FIELD,
+  SETTINGS_NAMESPACE,
+  capDroppedRowEvidence,
+  capEvidence,
+  cardsOfValue,
+} from "./rules-layout.ts";
 import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 /**
@@ -223,12 +229,18 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
   // 任何必填字段，升级后所有旧卡都会"看起来缺 id"，不搬回去就是让一次升级把整库清空。
   // 只记数不够用：复原地需要那几行本身。
   let droppedRowsKept: readonly unknown[] = [];
+  // 上一次告警时的坏行**内容签名**：节流判据只比条数会漏掉坏行"一换一"（删一条旧坏行、
+  // 又添一条新坏行）——那恰好是"有一行新的存量被降级保留"最该被看见的时刻。行来自
+  // JSON 解析，JSON.stringify 对同一批行稳定。
+  let droppedRowsSignature = "";
   const reportDroppedRows = (droppedRows: readonly unknown[]): void => {
-    if (droppedRows.length > 0 && droppedRows.length !== droppedRowsKept.length) {
+    const signature = JSON.stringify(droppedRows);
+    if (droppedRows.length > 0 && signature !== droppedRowsSignature) {
       console.warn(
         `[${SETTINGS_NAMESPACE}] ${String(droppedRows.length)} rule row(s) without a usable id kept as-is in "${SETTINGS_NAMESPACE}.${RULES_FIELD}" (unreadable to this version — fix or remove them by hand)`,
       );
     }
+    droppedRowsSignature = signature;
     droppedRowsKept = droppedRows;
   };
   // describe() 抛错那一路同样按"状态翻转才报"的节流：load() 在 /stats 轮询与每次
@@ -272,14 +284,26 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
       }
     },
     async save(cards: readonly RuleCard[], revision: number): Promise<RulesWriteOutcome> {
+      // 端口内闭环：不可用读给出的 -1 哨兵不许出端口。各 provider 对负数 expectedRevision
+      // 的处理并不一致（抛错 / 当作无条件写都有），调用方一旦漏检 usable 就等于用一枚
+      // 不成立的 CAS 条件覆写别人刚写好的规则库——守卫因此落在端口内，而不是只靠
+      // LessonStore.commit 的 trustworthy 判断。
+      if (!isUsableRevision(revision)) {
+        console.error(
+          `[${SETTINGS_NAMESPACE}] rules write refused: no usable revision (${String(revision)}) — reload the rule library before writing`,
+        );
+        return "rejected";
+      }
       try {
         // 整段替换 rules 键（mergeLayers 对数组是整体覆盖），故传入的数组必须
         // 来自"写这一刻"的读取——见 LessonStore.commit 的 CAS 纪律。
         // 证据在落盘前收敛（细节截断 + 只留最近 N 条）：否则 patch 文档随失败次数无界增长。
         // 读不动的存量行原样追加在末尾：它们不是本次改动的一部分，但整片覆盖会把它们
         // 删掉。补回去而不是拒写——拒写会让一件坏行把整个规则库锁死（记账、衰减、
-        // 规则动作全停），代价远大于"这段坏数据继续留着等人修"。
-        const payload = [...capEvidence(cards), ...droppedRowsKept];
+        // 规则动作全停），代价远大于"这段坏数据继续留着等人修"。坏行的 evidence 仍按
+        // 同一口径收敛（见 capDroppedRowEvidence）：否则「证据是唯一无界字段」这条约束
+        // 在坏行上失效，每次 CAS 写都会把那份转储重新序列化一遍。
+        const payload = [...capEvidence(cards), ...capDroppedRowEvidence(droppedRowsKept)];
         await surface.update(SETTINGS_NAMESPACE, { [RULES_FIELD]: payload }, revision);
         return "persisted";
       } catch (error) {

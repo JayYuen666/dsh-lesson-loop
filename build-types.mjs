@@ -5,7 +5,7 @@
 // 编排（两阶段草稿→替换、说明符正典化、清单口径）统一住在 @jayyuen66/dsh-plugin-shared/
 // lib/build-types，一处可改；本文件只定位本仓依赖图里的 tsc 入口并转交目录约定。
 // 为什么需要后处理与两阶段——见 shared 同名切面的文件头。
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { buildDeclarations, runTool } from "@jayyuen66/dsh-plugin-shared/lib/build-types";
@@ -19,6 +19,42 @@ export { listDeclarations } from "@jayyuen66/dsh-plugin-shared/lib/build-types";
 
 const root = import.meta.dirname;
 const require = createRequire(import.meta.url);
+
+/**
+ * 从一份包清单解析 tsc 入口。读取、解析与入口校验的失败都带上清单路径：裸 SyntaxError
+ * 只报 "Unexpected token"，读的人不知道坏的是哪份文件。
+ * @param {string} pkgPath - 包清单绝对路径
+ * @returns {string} tsc 入口绝对路径
+ */
+export function tscEntryFromManifest(pkgPath) {
+  /** @type {unknown} */
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(pkgPath, "utf8"));
+  } catch (error) {
+    throw new Error(`读取/解析 ${pkgPath} 失败：${String(error)}`, { cause: error });
+  }
+  const binTable = isRecord(manifest) ? manifest["bin"] : undefined;
+  const bin = isRecord(binTable) ? binTable["tsc"] : binTable;
+  if (typeof bin !== "string" || bin.length === 0) {
+    throw new Error(`${pkgPath} 没有可用的 bin.tsc`);
+  }
+  const packageDir = path.dirname(pkgPath);
+  const entry = path.resolve(packageDir, bin);
+  const relative = path.relative(packageDir, entry);
+  if (
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error(`${pkgPath} 的 bin.tsc 指向包目录之外：${bin}`);
+  }
+  if (!existsSync(entry) || !statSync(entry).isFile()) {
+    throw new Error(`${pkgPath} 的 bin.tsc 指向的入口不存在：${entry}`);
+  }
+  return entry;
+}
 
 /**
  * 本地 tsc 的入口文件绝对路径。
@@ -41,14 +77,7 @@ function tscEntry() {
       { cause: error },
     );
   }
-  /** @type {unknown} */
-  const manifest = JSON.parse(readFileSync(pkgPath, "utf8"));
-  const binTable = isRecord(manifest) ? manifest["bin"] : undefined;
-  const bin = isRecord(binTable) ? binTable["tsc"] : binTable;
-  if (typeof bin !== "string" || bin.length === 0) {
-    throw new Error(`typescript 的 package.json 没有可用的 bin.tsc：${pkgPath}`);
-  }
-  return path.resolve(path.dirname(pkgPath), bin);
+  return tscEntryFromManifest(pkgPath);
 }
 
 /**

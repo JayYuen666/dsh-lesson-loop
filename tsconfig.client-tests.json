@@ -1,11 +1,15 @@
 // lesson-loop/tsconfig.client-tests.json —— 客户端测试的类型程序。
-// 测试直接用 node:fs / node:path 造夹具，故显式加载 node 类型；src/** 只经由测试的
-// import 进入这个程序。纯客户端程序（tsconfig.client.json）保持 types: [] 的纯净度，
-// 两者不要合并——合并会把 node 类型注入 src 的判定面。
+// 测试直接用 node:fs / node:path 造夹具，故显式加载 node 类型。src/** 在这里是**根文件**
+// （include 直接列它），不是只靠测试 import 进来的：这份程序与纯客户端程序
+// （tsconfig.client.json，types: []）是两条独立的腿，types: ["node"] 只作用于本程序，
+// 不会把 node 类型注入 client 那一侧——同一个 src 文件在 client 程序里仍按零 node 类型检查。
+// 两者不要合并：合并等于给 lib/rules-shape.ts「客户端叶子零 node 依赖」的判据开一道口子。
+// include 用 client-*.ts 而不是 client-*.test.ts：文件名以 client- 开头的夹具（如
+// test/client-freshness.ts）同样是测试面的一部分，漏掉它这个程序就少检查一份文件。
 {
   "extends": "@jayyuen66/dsh-plugin-shared/config/tsconfig.client.base.json",
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "test/client-*.test.ts"]
+  "include": ["src/**/*.ts", "test/client-*.ts"]
 }

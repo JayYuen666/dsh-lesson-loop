@@ -56,9 +56,11 @@ export const CATEGORY_SIGNATURES: Readonly<Record<string, string>> = Object.free
 const STABLE_SIGNATURES: ReadonlyMap<string, string> = new Map(Object.entries(CATEGORY_SIGNATURES));
 
 /** 该 (category, signature) 是否就是这一类的稳定签名（正文起草按它选通用模板）。
- *  两段都比对其归一形态：签名的来源之一是持久化卡（卡解析只兜类型、不归一），历史/
- *  外部写入的 `" edit-before-factgate "` 若按原文精确比对会被判成"非稳定"，起草侧把它
- *  当路径嵌进正文，而写入侧早已折叠——"写得进、查不到"的键漂移。 */
+ *  两段都比对其归一形态：签名的来源不止持久化卡（卡解析 normalizeRuleCardRow **会**归一），
+ *  还有旧补丁文档里直写的值、迁移输入与调用方自己算出的细签名。历史/外部写入的
+ *  `" edit-before-factgate "` 若按原文精确比对会被判成"非稳定"，起草侧把它当路径嵌进
+ *  正文，而写入侧早已折叠——"写得进、查不到"的键漂移。比对不依赖调用方是否归一，
+ *  这正是这两段各自再归一一遍的理由。 */
 export function isStableSignature(category: string, signature: string): boolean {
   return STABLE_SIGNATURES.get(category.trim()) === normalizeSignature(signature);
 }
@@ -81,7 +83,18 @@ export function stableSignatureFor(category: string, signature: unknown): string
   const normalized = normalizeSignature(signature);
   // category 同样先 trim 再查表：上报方带来的首尾空白会让登记类别漏折叠，
   // 同一条教训的 report 键与 pass 键从此对不上（armed 规则静默失效）。
-  return STABLE_SIGNATURES.get(category.trim()) ?? normalized;
+  const stable = STABLE_SIGNATURES.get(category.trim());
+  if (stable === undefined) {
+    return normalized;
+  }
+  // rejected 归档汇总签名（stable:rejected）不是"这一类的一张卡"，而是归档记录自己的键：
+  // 它由 lesson-store 的 migrateRejectedFragments 直接拼出。若有人把它喂回这个"写入侧唯一
+  // 入口"，按表折叠会换回 stable，汇总卡与 armed 活卡撞成同一个键（人工拒绝记录被活卡
+  // 吞掉）。汇总签名是终态，原样返回。
+  if (normalized === stable + REJECTED_SUMMARY_SUFFIX) {
+    return normalized;
+  }
+  return stable;
 }
 
 /** 路径/文件名形态签名判定（迁移归并的识别器，factgate / secret-path 的碎片是文件路径）。 */
@@ -104,10 +117,25 @@ const ANY_SIGNATURE_FRAGMENTS: ReadonlySet<string> = new Set(["dangerous-bash"])
  * 的稳定卡被当碎片反复归并"这类迁移不收敛才真正结构性堵死。
  */
 export function isFragmentSignatureOf(category: string, signature: string): boolean {
-  if (isStableSignature(category, signature) || isRejectedSummarySignature(category, signature)) {
+  // 两半都比对归一口径：category 是上报方数据（首尾空白会让登记类别漏判），signature
+  // 来自持久化卡/旧补丁文档（可能带首尾空白或折叠前的内部多空白）。此前 category 用原文
+  // 进 Set、signature 用原文进路径判据，与 isStableSignature 的归一口径不一致——带空白的
+  // dangerous-bash 碎片被判成"非碎片"，迁移永远不收它。
+  const categoryKey = category.trim();
+  const normalized = normalizeSignature(signature);
+  if (
+    isStableSignature(categoryKey, normalized) ||
+    isRejectedSummarySignature(categoryKey, normalized)
+  ) {
     return false;
   }
-  return ANY_SIGNATURE_FRAGMENTS.has(category) || looksLikePathSignature(signature);
+  return ANY_SIGNATURE_FRAGMENTS.has(categoryKey) || looksLikePathSignature(normalized);
+}
+
+/** 键段归一：去分隔符（\u0000）与首尾空白。模块级——不捕获任何外层变量，提出来
+ *  是为了让 ruleKey 的拼接一眼读完。 */
+function keyPart(value: string): string {
+  return value.replaceAll("\u0000", "").trim();
 }
 
 /**
@@ -122,12 +150,6 @@ export function isFragmentSignatureOf(category: string, signature: string): bool
  * 与 `("a","b\u0000c")` 会拼出同一个键，两条不同的教训被静默归并成一张卡；project /
  * category 只差首尾空白时同理（"repo" 与 "repo " 拼不出同一个键，armed 规则静默失效）。
  */
-/** 键段归一：去分隔符（\u0000）与首尾空白。模块级——不捕获任何外层变量，提出来
- *  是为了让 ruleKey 的拼接一眼读完。 */
-function keyPart(value: string): string {
-  return value.replaceAll("\u0000", "").trim();
-}
-
 export function ruleKey(project: string, category: string, signature: string): string {
   return `${keyPart(project)}\u0000${keyPart(category)}\u0000${keyPart(normalizeSignature(signature))}`;
 }

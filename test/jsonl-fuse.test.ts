@@ -46,9 +46,14 @@ const renameHook = vi.hoisted(() => ({
  *  `prefix` 时按 `file` 与 `file.` 前缀匹配——释放锁的令牌读的是 rename 后的
  *  `<lock>.<token>.released` 路径，测试拿不到那枚随机令牌，只能按前缀瞄准。 */
 const readHook = vi.hoisted(() => ({
-  mode: "" as "" | "throw" | "truncate",
+  mode: "" as "" | "throw" | "eacces" | "truncate",
   file: "",
   prefix: false,
+}));
+/** linkSync 拦截开关：armed 时抛 EEXIST——模拟"无覆盖恢复时原位已被第三方占住"。 */
+const linkHook = vi.hoisted(() => ({
+  armed: false,
+  calls: 0,
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -110,15 +115,30 @@ vi.mock("node:fs", async (importOriginal) => {
       (String(target) === readHook.file ||
         (readHook.prefix && String(target).startsWith(`${readHook.file}.`)));
     if (aimed) {
-      if (readHook.mode === "throw") {
-        throw Object.assign(new Error("ENOENT: 文件已被移走"), { code: "ENOENT" });
+      if (readHook.mode === "throw" || readHook.mode === "eacces") {
+        // ENOENT 判"这一行不在、必须补写"；其余读错（这里造 EACCES）判"读不到 ≠ 没写"。
+        const code = readHook.mode === "eacces" ? "EACCES" : "ENOENT";
+        throw Object.assign(new Error(`${code}: 模拟回读失败`), { code });
       }
       const text = (actual.readFileSync as (...args: unknown[]) => string)(target, "utf8");
       return text.slice(0, Math.max(0, text.length - 1));
     }
     return (actual.readFileSync as (...args: unknown[]) => unknown)(target, ...rest);
   };
-  return { ...actual, statSync, renameSync, readFileSync: readFileSyncSpy };
+  const linkSyncSpy = (source: unknown, target: unknown): void => {
+    if (linkHook.armed) {
+      linkHook.calls += 1;
+      throw Object.assign(new Error("EEXIST: 原位已被第三方占住"), { code: "EEXIST" });
+    }
+    (actual.linkSync as (from: unknown, to: unknown) => void)(source, target);
+  };
+  return {
+    ...actual,
+    statSync,
+    renameSync,
+    readFileSync: readFileSyncSpy,
+    linkSync: linkSyncSpy,
+  };
 });
 
 /** 与生产同形的单条流水行（前导换行 + 结尾换行）。 */
@@ -332,6 +352,31 @@ describe("jsonl-fuse", () => {
     assert.equal(readFileSync(file, "utf8"), `${OLD}${payloadOf({ a: 1 })}`, "只跳过裁剪");
   });
 
+  it("无覆盖恢复时原位已被占（linkSync EEXIST）→ 留墓碑、绝不替换别人的锁", () => {
+    const file = path.join(scratch, "restore-occupied.jsonl");
+    const lock = `${file}.lock`;
+    writeFileSync(file, OLD);
+    writeFileSync(lock, "");
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(lock, past, past);
+    statHook.armed = true;
+    statHook.file = lock;
+    statHook.mode = "swap";
+    linkHook.armed = true;
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10);
+    linkHook.armed = false;
+    statHook.armed = false;
+    assert.equal(linkHook.calls, 1, "恢复只尝试一次硬链接");
+    // 恢复失败 = 原位没被我们写回（谁占了就是谁的），墓碑留给我们自己回收。
+    assert.equal(existsSync(lock), false, "恢复失败不落地新锁");
+    assert.equal(
+      readdirSync(scratch).some((name) => name.endsWith(".stale")),
+      true,
+      "墓碑留着，交给陈旧接管回收",
+    );
+    assert.equal(readFileSync(file, "utf8"), `${OLD}${payloadOf({ a: 1 })}`, "只跳过裁剪");
+  });
+
   it("释放时锁已被别人搬走（rename 失败）→ 静默返回，不误删", () => {
     const file = path.join(scratch, "release-gone.jsonl");
     writeFileSync(file, "keep\n");
@@ -393,5 +438,27 @@ describe("jsonl-fuse", () => {
     appendUnderFuse(file, payloadOf({ a: 1 }), 10);
     assert.equal(readFileSync(file, "utf8"), `${OLD}${payloadOf({ a: 1 })}`, "接管失败只跳过裁剪");
     assert.ok(existsSync(lock), "接管失败的锁保持原样");
+  });
+
+  it("拿不到锁且回读抛非 ENOENT（EACCES）→ 视为这一行已在，绝不补写成重复行", () => {
+    const file = path.join(scratch, "fuse-eacces.jsonl");
+    const lock = `${file}.lock`;
+    writeFileSync(file, OLD);
+    writeFileSync(lock, "");
+    readHook.mode = "eacces";
+    readHook.file = file;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+      // 断言在下方
+    });
+    appendUnderFuse(file, payloadOf({ a: 1 }), 10);
+    readHook.mode = "";
+    // 读错不等于"被覆盖"：补写会制造重复行（直接进阈值计数/蒸馏输入），宁可漏判一次。
+    assert.equal(
+      readFileSync(file, "utf8"),
+      OLD + payloadOf({ a: 1 }),
+      "EACCES 只留一条日志，不补写",
+    );
+    assert.match(String(warn.mock.calls[0]?.[0]), /unreadable while verifying append/u);
+    warn.mockRestore();
   });
 });

@@ -1193,28 +1193,35 @@ describe("digest 蒸馏管线", () => {
       }
     });
 
-    it("timeoutMs 配成 0 / 负数 / NaN → 当场拒（配置漂移不许等流才炸）", async () => {
-      await assert.rejects(
-        runDigest(makeStore(), fakeSession(), fakeLlm("[]"), selection, { ...runZh, timeoutMs: 0 }),
-        /不小于 1000 的整数/u,
-        "0 不合法",
+    it("timeoutMs 配成 0 / 负数 / NaN / 超 2^31-1 → 当场拒（配置漂移不许等流才炸）", async () => {
+      // 口径分两层：configSchema 的 min(1000) 管配置面；runDigest 的守卫只管"能不能拿去
+      // setTimeout"（有限正数且不溢出 2^31-1）。单测用 30ms 驱动超时分支，所以这里必须
+      // 允许 < 1000 的正数——文案也只断言守卫自己的口径。
+      await Promise.all(
+        (
+          [
+            [0, "0"],
+            [-5, "负数"],
+            [Number.NaN, "NaN"],
+            [2_147_483_648, "超 2^31-1"],
+          ] as const
+        ).map(([bad, label]) =>
+          assert.rejects(
+            runDigest(makeStore(), fakeSession(), fakeLlm("[]"), selection, {
+              ...runZh,
+              timeoutMs: bad,
+            }),
+            /正的有限毫秒数/u,
+            [label, " 不合法"].join(""),
+          ),
+        ),
       );
-      await assert.rejects(
-        runDigest(makeStore(), fakeSession(), fakeLlm("[]"), selection, {
-          ...runZh,
-          timeoutMs: -5,
-        }),
-        /不小于 1000 的整数/u,
-        "负数不合法",
-      );
-      await assert.rejects(
-        runDigest(makeStore(), fakeSession(), fakeLlm("[]"), selection, {
-          ...runZh,
-          timeoutMs: Number.NaN,
-        }),
-        /不小于 1000 的整数/u,
-        "NaN 不合法",
-      );
+      // 反向一侧：30ms 被受理（既有超时用例依赖这一档），证明守卫没有把 1000 下限写进来。
+      const accepted = await runDigest(makeStore(), fakeSession(), fakeLlm("[]"), selection, {
+        ...runZh,
+        timeoutMs: 30,
+      });
+      assert.equal(accepted.feedbackCount, 0, "30ms 不该被配置守卫拒");
     });
 
     it("provider / model 是空白串 → 同缺位拒（适配器的模糊错误不给用户）", async () => {
@@ -1284,5 +1291,18 @@ describe("digest 蒸馏管线", () => {
       );
       assert.match(loggedText(), /digest persist failed: 存储炸了/u);
     });
+  });
+});
+
+describe("parseDigestOutput 的多候选计数优先级", () => {
+  it("后面更小的全拒收档不顶掉前面更大的 rejected 计数", () => {
+    const bad = '[{"category":"hallucinated"},{"category":"hallucinated"}]';
+    const smaller = '[{"category":"hallucinated"}]';
+    // 前一档 2 条被拒、后一档 1 条被拒：回退结论必须取大者（rejected 是"全拒收"告警的
+    // 唯一来源，取后一档会把 2 条报成 1 条，更早的实现还会把它归零）。
+    const out = parseDigestOutput(`前言 ${bad} 中间 ${smaller} 尾注`);
+    assert.equal(out.rules.length, 0);
+    assert.equal(out.parsed, true, "两档都解析成了数组 ⇒ parsed 为真");
+    assert.equal(out.rejected, 2, "取大者");
   });
 });

@@ -18,9 +18,7 @@
     "vitest.config.ts",
     "oxlint.config.ts",
     "oxfmt.config.ts",
-    "build-client.mjs",
-    "build-host.mjs",
-    "build-types.mjs"
+    "build-*.mjs"
   ],
   "exclude": ["test/client-*.test.ts"]
 }

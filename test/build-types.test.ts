@@ -10,11 +10,11 @@
 // `Command failed: <argv>`，那样即使诊断被吞，消息里也照样含标记，断言就成了自证。
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { runCommand } from "../build-types.mjs";
+import { runCommand, tscEntryFromManifest } from "../build-types.mjs";
 
 function isRecord(raw: unknown): raw is Record<string, unknown> {
   return raw !== null && typeof raw === "object" && !Array.isArray(raw);
@@ -123,6 +123,77 @@ describe("runCommand()", () => {
       assert.ok(
         error.message.includes("TS2322"),
         `错误信息必须含 TS2322：${JSON.stringify(error.message.slice(0, 300))}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/** tscEntryFromManifest 用例共用的临时目录前缀。 */
+const MANIFEST_PREFIX = "lesson-loop-tsc-manifest-";
+
+/** 写一份临时包清单并交出它的路径。 */
+function writeManifest(dir: string, body: string): string {
+  const file = path.join(dir, "package.json");
+  writeFileSync(file, body, "utf8");
+  return file;
+}
+
+/** 建一个临时包目录，把 body 当作 package.json 写进去，交出清单路径。 */
+function manifestDir(body: string): { dir: string; pkgPath: string } {
+  const dir = mkdtempSync(path.join(tmpdir(), MANIFEST_PREFIX));
+  return { dir, pkgPath: writeManifest(dir, body) };
+}
+
+describe("tscEntryFromManifest()", () => {
+  it("bin.tsc 解析为包目录内的绝对路径", () => {
+    const { dir, pkgPath } = manifestDir(JSON.stringify({ bin: { tsc: "bin/tsc" } }));
+    try {
+      const entry = path.join(dir, "bin", "tsc");
+      mkdirSync(path.dirname(entry), { recursive: true });
+      writeFileSync(entry, "#!/usr/bin/env node\n", "utf8");
+      assert.equal(tscEntryFromManifest(pkgPath), entry);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("清单不是 JSON 时，错误消息带清单路径", () => {
+    const { dir, pkgPath } = manifestDir("{ not json");
+    try {
+      const error = errorOf(() => {
+        tscEntryFromManifest(pkgPath);
+      });
+      assert.ok(error.message.includes(pkgPath), `错误信息必须点名清单：${error.message}`);
+      assert.ok(error.message.includes("读取/解析"), `错误信息必须说明读取失败：${error.message}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("bin.tsc 指向包目录之外时拒绝", () => {
+    const { dir, pkgPath } = manifestDir(JSON.stringify({ bin: { tsc: "../escape.js" } }));
+    try {
+      const error = errorOf(() => {
+        tscEntryFromManifest(pkgPath);
+      });
+      assert.ok(error.message.includes("包目录之外"), `错误信息必须点明越界：${error.message}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("bin.tsc 指向的入口不存在时，错误消息带解析后的路径", () => {
+    const { dir, pkgPath } = manifestDir(JSON.stringify({ bin: { tsc: "bin/missing.js" } }));
+    try {
+      const error = errorOf(() => {
+        tscEntryFromManifest(pkgPath);
+      });
+      assert.ok(error.message.includes("不存在"), `错误信息必须点明入口缺失：${error.message}`);
+      assert.ok(
+        error.message.includes(path.join(dir, "bin", "missing.js")),
+        `错误信息必须带解析后的入口路径：${error.message}`,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

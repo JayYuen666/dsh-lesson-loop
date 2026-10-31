@@ -2,6 +2,34 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.8
+
+一轮跨面审查修复：保险丝的锁恢复改无覆盖、蒸馏超时改类型识别，规则库写面与读面判据收口，
+发布链同步加固。
+
+### Changed
+
+- **接口收窄**：`LessonView` 删除无人产出也无从消费的 `evidence` 字段，`CardsProjection` 删除恒等于 `droppedRows.length` 的 `dropped` 字段；蒸馏超时的错误类型变更为 `DigestTimeoutError`。
+- **发布链加固**（`.github/workflows/publish.yml`）：预检遍历全部 `catalog:` 依赖并拒命名 catalog、发布改直接上传已校验的 tarball（不再解包重 pack）、加 tarball 身份比对与 registry 冲突预检、发布后 5 分钟可见性轮询；CI 侧 pnpm 版本改读 `packageManager`、actionlint 改按文件豁免、codeql 对 fork PR 只对 analyze 步容错不再整 job 跳过。
+- **依赖与元数据**：author 改对象形；新增 `packageManager` 字段；`@deepseek-ai/schemastery` peer 放宽为 `^3.18.6-alpha.1`；catalog 的 shared 抬到 0.2.2；devDependencies 新增 fast-check 4.10.2。
+- **lint/fmt 门禁**：sync IO 白名单由全局 ignores 收窄为按文件的 `syncIoScopes`（jsonl-fuse / lesson-jsonl / test 各自声明）；oxfmt 把四份随包 Markdown 纳入格式化门禁。
+- **体积预算棘轮上调**：host.js 199,000→204,000 字节（实测 200,383 B）。
+
+### Fixed
+
+- **锁恢复改无覆盖**（`lib/jsonl-fuse.ts`）：`restoreLock()` 改 linkSync，原位被占即 EEXIST 留墓碑，替换原 renameSync「物归原主」，不再覆盖第三方新建的锁；同文件的陈旧门槛 `STALE_BYTES_PER_MS` 20→20_480（原单位写错，100MB 流水的门槛曾达约 83 分钟）、账本新建权限 0o600、乐观 size 校验移到 rename 紧前、读回校验只把 ENOENT 当「行被覆盖」（其余读错视为已在并告警，绝不补写）。
+- **蒸馏超时改类型识别**（`lib/digest.ts`）：新增 `DigestTimeoutError` 与 `MAX_TIMER_MS=2^31-1`，替代按「蒸馏超时」文案子串匹配；`runDigest` 入口先校验 timeoutMs（非有限/≤0/超上限即拒）；被放弃的流静默落定不再误报日志。
+- **蒸馏解析健化**（`lib/digest-prompt.ts`）：超长切片及时 break、尝试超限时仍交回 `parsedButEmpty`（保住 rejected 计数）、空结果按 rejected 取大者。
+- **衰减裁决脏输入收口**（`lib/decay-policy.ts`）：负/小数/NaN/Infinity 一律 keep，四档阈值非法回落默认档，`now` 非有限回落当前时间。
+- **签名与起草**（`lib/rule-signature.ts`、`lib/statement-draft.ts`）：rejected 汇总签名原样返回不再折回 stable 与活卡撞键；起草查表改 freeze + `Object.hasOwn`，原型链键不再把函数透传进注入面。
+- **规则库写面**（`lib/rules-layout.ts`、`lib/rules-namespace.ts`、`lib/rules-remote.ts`）：坏行 evidence 也按上限收敛堵写放大；`save` 拒绝不可用 revision（-1/1.5/NaN）；`limit` 归一后下限 1（`limit:0.5` 不再折成 0=全量）。
+- **读面与排序**（`lib/lesson-jsonl.ts`、`lib/negative-feedback.ts`、`lib/prompt.ts`）：缓存命中即清 lastReadError、同文件刷新先删再 set；空白分类视同缺省；无效 `armedAt` 排最后、双方无效保持原序。
+- **构建脚本硬化**（`build-types.mjs`、`build-client.mjs`）：tsc 入口读/解析失败带清单路径、bin 越界或缺失分别报错；client 外置清单校验 `dsh` / `dsh.client` 必须是对象，防 external 清单静默消失。
+
+### Added
+
+- **测试三层**：`test/property/invariants.property.test.ts`（fast-check：衰减裁决、签名折叠、fenceUntrusted、蒸馏解析）、`test/platform/cross-file.platform.test.ts`（CRLF 容错、权限位、并发裁剪语义）、`test/e2e/jsonl-fuse.e2e.test.ts`（双进程真盘锁竞争）；新增 `test/decay-policy.test.ts`。
+
 ## 0.1.7
 
 这一版把插件页的展示面交给 locale 与详情文档，设置卡与请求校验统一到 shared 组件和 zod，读面失败改走本地化回执；同时修掉重试重复记账、整片覆盖删存量行与升格时间戳被拉早这三处会静默算错或丢数据的边。
@@ -10,6 +38,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - **插件页展示面下沉到 locale**：新增 `locale/en.json` / `locale/zh.json` 的 `meta.title`、`meta.description` 与 `meta.detail`；详情页英文读 `docs/DETAIL.md`、中文读 `docs/DETAIL.zh.md`。`exports` 增加 `./locale/*.json`，`files` 在 locale 两条之后紧跟 `docs`。插件页不再从 README 取标题与说明。
 - **设置卡迁到 shared 组件与 zod 校验**：开关、数字、保存条与状态条改用 `@jayyuen66/dsh-plugin-shared/lib/card-ui`，卡片文案按分区、状态条与单位拆开；`src/rules-reader.ts` 的 strict codec 由手写判断换成 zod schema。`zod` 因此进入 `dependencies`，与 react 一样由宿主平台模块提供，避免第二份身份。
+- **宿主开发线抬到 `0.2.2-alpha.2`**：devDependencies 与 catalog/overrides 同值；`engines.dsh` 与
+  `@deepseek-ai/dsh*` peer 写支持窗口 `^0.2.1-rc.3`。
 - **读面失败改走本地化回执**：`stats` / `rules` / `lessons` 不再把宿主异常抛给网关折成英文内部错误，而是回 `{ ok: false, error, status: 500 }`；卡片按方法显示对应文案，日志保留原文。
 - **摘要候选解析改用 zod**：`lib/digest-prompt.ts` 的类别白名单、正文非空与签名兜底收敛为一张 schema；白名单仍与输出契约行同源。
 
