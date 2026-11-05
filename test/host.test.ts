@@ -120,6 +120,13 @@ interface FakeCtx {
    *  迁移前这一档由 `agent.session.snapshotEvents()` 给；官方已把那条同步读面标为
    *  `@deprecated`，host 侧改走 sessionQuery（见 host.ts 的 digestEvents），假件因此挪到这里。 */
   sessionEvents: Record<string, unknown>[];
+  /** `observeSession` 的调用记录：投影模式必须显式为 none（只读事件时不该算全投影）。 */
+  observeCalls: {
+    sessionId: unknown;
+    options: { projectionMode?: string } | undefined;
+  }[];
+  /** 观察租约的释放次数。 */
+  disposeCalls: number;
   inject: (deps: readonly string[], attach: (child: unknown) => void) => void;
   on: (event: string, handler: (payload: unknown, ...rest: unknown[]) => void) => void;
   effect: (fn: () => (() => void) | undefined) => void;
@@ -183,6 +190,8 @@ function makeCtx(
     services: over.services ?? {},
     // 蒸馏事件流的默认交付：空表（个别用例往里塞 feedback 事件）。
     sessionEvents: [],
+    observeCalls: [],
+    disposeCalls: 0,
     // 这四个假件字段不写 `{} as …` 断言：`const ctx: FakeCtx` 已给出上下文类型，
     // 断言在 oxlint 的类型感知规则下就是冗余（0.2.1-alpha.2 迁移把 describe() 的返回收成
     // unknown[]、给 ctx 补上 FakeCtx 标注之后，它们成了迁移漏下的四条 lint 错）。
@@ -312,7 +321,15 @@ function makeCtx(
   // 蒸馏要用的会话事件流经**官方** `ctx.sessionQuery.observeSession()` 取（host 侧
   // digestEvents 的读面）：默认空事件流，个别用例改 ctx.queryEvents。
   ctx.services["sessionQuery"] = {
-    observeSession: async () => ({ events: ctx.sessionEvents }),
+    observeSession: async (sessionId: unknown, options?: { projectionMode?: string }) => {
+      ctx.observeCalls.push({ sessionId, options });
+      return {
+        events: ctx.sessionEvents,
+        [Symbol.dispose]() {
+          ctx.disposeCalls += 1;
+        },
+      };
+    },
   };
   ctx.services["commands"] = {
     register(desc: Record<string, unknown>, handler?: unknown) {
@@ -573,9 +590,14 @@ function volatileFormOf(node: SchemaNode): string[] | null {
  *  读文件而不是抄常量：卡片绑的段 / 端点前缀 / 规则库读的段都按它对齐，写死会让测试与包体漂移。 */
 function patchEntryId(): string {
   const yml = readFileSync(fileURLToPath(new URL("../cordis.patch.yml", import.meta.url)), "utf8");
-  const match = /^\s*-\s+id:\s*(?<id>\S+)\s*$/mu.exec(yml);
-  const id = match?.groups?.["id"];
-  assert.ok(typeof id === "string" && id.length > 0, "cordis.patch.yml 里没有裸 `- id:` 条目");
+  const id = Array.from(
+    yml.matchAll(/^\s*-\s+id:\s*(?<id>\S+)\s*$/gmu),
+    (row) => row.groups?.["id"] ?? "",
+  ).find((candidate) => candidate !== "" && candidate !== "shared");
+  assert.ok(
+    typeof id === "string" && id.length > 0,
+    "cordis.patch.yml 里没有本包的裸 `- id:` 条目",
+  );
   return id;
 }
 
@@ -1272,6 +1294,22 @@ describe("host：lesson-loop 的宿主半", () => {
       });
       assert.equal(result.kind, "success");
       assert.match(result.text, /候选规则/u);
+    });
+
+    it("事件读取只算 events（projectionMode none）并归还观察租约", async () => {
+      const ctx = makeCtx({
+        services: {
+          llm: fakeLlm("[]"),
+          agentDefaultModel: { currentSelection: () => ({ provider: "p", model: "m" }) },
+        },
+      });
+      apply(ctx);
+      const result = await ctx.command?.handler(digestInvocation());
+      assert.equal(result?.kind, "success");
+      assert.deepEqual(ctx.observeCalls, [
+        { sessionId: "s1", options: { projectionMode: "none" } },
+      ]);
+      assert.equal(ctx.disposeCalls, 1, "观察租约必须释放");
     });
 
     it("llm 缺失 → error 回执；非会话内 → error 回执", async () => {

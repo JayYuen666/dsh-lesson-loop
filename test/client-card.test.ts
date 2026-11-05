@@ -73,7 +73,12 @@ function patchEntryId(): string {
   // `groups["id"]` 被 dot-notation 规则拒（host.test.ts 的同名 helper 走它自己的
   // tsconfig 语境，不受这条约束），而强制命名组的那条规则又会拦匿名组，两头堵；
   // 前缀替换 + trim 同时绕开两者，判据不变（整行形状不对就当没有）。
-  const line = yml.split("\n").find((item) => /^\s*-\s+id:\s*\S+\s*$/u.test(item));
+  const line = yml.split("\n").find((item) => {
+    if (!/^\s*-\s+id:\s*\S+\s*$/u.test(item)) {
+      return false;
+    }
+    return item.replace(/^\s*-\s+id:\s*/u, "").trim() !== "shared";
+  });
   const id = line?.replace(/^\s*-\s+id:\s*/u, "").trim();
   assert.ok(typeof id === "string" && id !== "", "cordis.patch.yml 里没有裸 `- id:` 条目");
   return id;

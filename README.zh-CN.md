@@ -11,8 +11,8 @@
   <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/d18m/@jayyuen66/dsh-lesson-loop?style=flat-square" alt="npm downloads (total)" /></a>
   <a href="https://github.com/JayYuen666/dsh-lesson-loop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-lesson-loop/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
   <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/node-%3E%3D22.12-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
-  <img src="https://img.shields.io/badge/dsh-%5E0.2.1--rc.3-658EFF?style=flat-square" alt="dsh" />
+  <img src="https://img.shields.io/badge/node-%3E%3D24.9-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
+  <img src="https://img.shields.io/badge/dsh-%5E0.2.1--rc.5-658EFF?style=flat-square" alt="dsh" />
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/powered_by_dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white" alt="powered by dsh" /></a>
 </p>
 
@@ -69,7 +69,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 卸载用 `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`。本包在公共 npm registry 上，所以安装不需要凭据。
 
-- **Node.js `>= 22.12`、宿主 `dsh` 在滚动的 `^0.2.1-rc.3` 窗口上。** 插件自己的下限是 `engines.node`（`>=22.12.0`）；`0.2.2-alpha.2` 宿主自身声明的 Node 下限是 `>=24.9.0`，所以本包虽然能在 Node 22 上装，那一版宿主本身起不来。宿主读取的版本要求是 `engines.dsh`（`^0.2.1-rc.3`），而且它**单独决定**——这个字段在时，`evaluatePluginCompatibility` 从不看 `@deepseek-ai/dsh*` 这批 peer。实测：`0.2.0-rc.2` 与 `0.2.1-rc.1` 被拒，`0.2.1-rc.3` 与 `0.2.2-alpha.2` 通过，`0.3.0` 被拒。支持窗口是滚动的：本包在发布时最近的三个已发布宿主版本上逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
+- **Node.js `>= 24.9`、宿主 `dsh` 在滚动的 `^0.2.1-rc.5 || ^0.2.2-alpha.3` 窗口上。** 插件自己的下限是 `engines.node`（`>=24.9.0`），这一档取自宿主：`0.2.2` 系列从 `alpha.2` 起每一版宿主都声明 Node `>=24.9.0`，写得更低等于承诺一个宿主起不来的运行环境。宿主读取的版本要求是 `engines.dsh`（`^0.2.1-rc.5 || ^0.2.2-alpha.3`），而且它**单独决定**——这个字段在时，`evaluatePluginCompatibility` 从不看 `@deepseek-ai/dsh*` 这批 peer。实测：`0.2.0-rc.2`、`0.2.1-rc.1` 与 `0.2.1-rc.3` 被拒，`0.2.1-rc.5` 到 `0.2.2-rc.1`（含 `0.2.2-alpha.3`）通过，`0.3.0` 被拒。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
 - **按契约，`dependencies` 下不放任何 `@deepseek-ai/*`。** profile 以 `nodeLinker: hoisted` 与 `autoInstallPeers: false` 安装，那里放一个宿主包就会变成真实的第二份副本；`@deepseek-ai/dsh-tools` 用普通 `Symbol` 给调度器做键，于是那个 profile 里**每一次原生工具调用都抛错**，而构建、类型检查与覆盖率一直全绿。`host.js` 按值导入的四枚宿主包都是必需 peer，并在 `devDependencies` 里按同一个精确钉版再写一份，好让打包器把它们外部化，而不是内联官方函数体；`test/publish-manifest.test.ts` 把这两半都钉住。产物由 `prepack` 重建，从不提交。
 
 ### <img src="https://api.iconify.design/lucide/arrow-down-to-line.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> shared 的版本下限
@@ -95,7 +95,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 ## <img src="https://api.iconify.design/lucide/plug.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 在 dsh 里启用
 
-- `dsh.bundle.patch` 指向 `cordis.patch.yml`，其中唯一的注册行是 `- id: lesson-loop`，带 `name: "@jayyuen66/dsh-lesson-loop"`。让宿主去扫描 client 半的是**裸包名**。
+- `dsh.bundle.patch` 指向 `cordis.patch.yml`，里面是**两条条目**：`- name: "@jayyuen66/dsh-plugin-shared"`（卡片组件的供应行，**刻意不写 `id`**，所以插件页不会把它列成可停用组件）与 `- id: lesson-loop`，带 `name: "@jayyuen66/dsh-lesson-loop"`。让宿主去扫描 client 半的是**裸包名**。
 - **一个条目，一份 `Config`。** 设置命名空间就是条目 id，于是开关、阈值与 `rules` 数组共用同一段、同一枚 revision。`rules` 带了 `.loose()`，读侧经 `describe().user` 检查原文形状（读不懂就拒写，而不是覆写），每次写都是一次 CAS 提交加重读重放。
 - `settings` 是唯一插件级硬依赖。`timer` / `commands` / `systemPrompt` / `llm` 可选：缺一个只让对应能力消失，插件照常装载。
 - 卡片的数据面在 apply fiber 上无条件安装，所以即使宿主的 web 层到得晚，它也在。
@@ -177,7 +177,7 @@ dsh plugin --profile web allow-version @jayyuen66/dsh-lesson-loop@<version> --ds
 - **不可判定的规则不收敛**：没有干净命中就没有分母，只有人工能退掉它，而注入上限让这一批规则不进上下文。
 - **子代理会话被跳过**——再注入一次会让子代理在一批没见过的规则上被计成暴露。
 - **卡片是拉取式的**，所以跨重连缓存下来的值按设计就是旧的。
-- **证据正文永不过线**；卡片看到的是签名与计数器。
+- **证据正文不进卡片**：`lessons()` 读面可以带回一条教训的 `detail`，长度截到 400 字，而卡片只渲染签名与计数器。
 - **没有机器翻译**：规则正文与证据是用户数据。
 - **可选服务去掉的是能力，不是插件**：没有 `commands` 就没有 `/lessons-digest`，没有 `systemPrompt` 就没有常驻段，没有 `llm` 蒸馏会拒绝，没有 `timer` 就只剩人工评审；没有 `settings` 则条目永不被激活，启动诊断会点名它。
 - **一次蒸馏可以局部失败**：没进规则库的卡分开报，而回执绝不会对盘上没有的卡声称「已蒸馏」。模型输出里找不到可解析的 JSON 数组时按硬错误上报，不当成「零条候选」。

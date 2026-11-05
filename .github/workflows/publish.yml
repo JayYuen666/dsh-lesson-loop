@@ -50,7 +50,7 @@ jobs:
         # 版本取自 package.json 的 packageManager，与 ci.yml 同一枚钉版。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 24.9
           # registry-url 留空，与 ci.yml 同一条口径（见 ci.yml 里的那段注释）：这一步只装依赖与跑
           # check，不发布，配上它只会让 setup-node 生成一份带 `${NODE_AUTH_TOKEN}` 占位的用户级
           # .npmrc。pnpm 12 不展开仓库可控配置里的环境变量（实测打一条 Ignored project-level auth
@@ -183,13 +183,19 @@ jobs:
             if (version === undefined) {
               throw new Error(`pnpm-workspace.yaml 的 catalog 里没有 ${name}`);
             }
-            if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version)) {
-              throw new Error(`catalog 里的 ${name} 不是精确版本：${version}`);
+            // 取值按伞根口径写成范围（shared 是 `^<版本>`，八个消费者的发布物因此声明
+            // semver 范围，0.2.x 的 bugfix 只需发 shared，不必重发八仓）。可满足性由
+            // **范围下限**那一版是否在 registry 上公开来判：下限永远落在自己声明的范围里，
+            // 这与根侧 `sync --check` 拿「该条范围的最低版本」的产物导出面作比是同一口径。
+            // 认不出的写法照旧拒发，不让依赖库可见性这道门被绕过。
+            const floor = version.replace(/^(?:\^|~|>=)\s*/u, "");
+            if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(floor)) {
+              throw new Error(`catalog 里的 ${name} 既不是精确版本也读不出下限：${version}`);
             }
-            process.stdout.write(`${name} ${version}\n`);
+            process.stdout.write(`${name} ${floor}\n`);
           }
           NODE
-          # 逐个依赖库查同一件事：catalog 解析出的那个精确版本是否已公开。只查第一条会放行
+          # 逐个依赖库查同一件事：catalog 那条范围的下限版本是否已公开。只查第一条会放行
           # 「另一条 catalog 依赖没发」的发布，消费方安装时才在解析依赖处失败。
           while read -r shared_name shared_version; do
             [ -n "$shared_name" ] || continue
@@ -249,7 +255,7 @@ jobs:
       # NPM_CONFIG_USERCONFIG 指过去，发布步的静态 token 兜底走的就是这条机制。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 24.9
           registry-url: https://registry.npmjs.org
       - name: 取回发布物
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

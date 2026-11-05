@@ -11,8 +11,8 @@
   <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/d18m/@jayyuen66/dsh-lesson-loop?style=flat-square" alt="npm downloads (total)" /></a>
   <a href="https://github.com/JayYuen666/dsh-lesson-loop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-lesson-loop/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
   <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/node-%3E%3D22.12-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
-  <img src="https://img.shields.io/badge/dsh-%5E0.2.1--rc.3-658EFF?style=flat-square" alt="dsh" />
+  <img src="https://img.shields.io/badge/node-%3E%3D24.9-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
+  <img src="https://img.shields.io/badge/dsh-%5E0.2.1--rc.5-658EFF?style=flat-square" alt="dsh" />
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/powered_by_dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white" alt="powered by dsh" /></a>
 </p>
 
@@ -69,7 +69,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 Remove with `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`. The package is on the public npm registry, so installation needs no credentials.
 
-- **Node.js `>= 22.12`, host `dsh` on the rolling `^0.2.1-rc.3` window.** The plugin's own floor is `engines.node` (`>=22.12.0`); the `0.2.2-alpha.2` host itself declares Node `>=24.9.0`, so that host cannot run on Node 22 even though this package can. The requirement the host reads is `engines.dsh` (`^0.2.1-rc.3`), and it **decides alone** — with that field present, `evaluatePluginCompatibility` never looks at the `@deepseek-ai/dsh*` peers. Measured: `0.2.0-rc.2` and `0.2.1-rc.1` are refused, `0.2.1-rc.3` and `0.2.2-alpha.2` pass, `0.3.0` is refused. The support window rolls: this package is verified against the three most recently released host versions at publish time and re-verified once the window moves, so the version number in this bullet is not a standing promise.
+- **Node.js `>= 24.9`, host `dsh` on the rolling `^0.2.1-rc.5 || ^0.2.2-alpha.3` window.** The plugin's own floor is `engines.node` (`>=24.9.0`), which is the host's floor from `0.2.2-alpha.2` up: a host below it never starts, so a lower claim here would promise an environment nobody can install into. The requirement the host reads is `engines.dsh` (`^0.2.1-rc.5 || ^0.2.2-alpha.3`), and it **decides alone** — with that field present, `evaluatePluginCompatibility` never looks at the `@deepseek-ai/dsh*` peers. Measured: `0.2.0-rc.2`, `0.2.1-rc.1` and `0.2.1-rc.3` are refused, `0.2.1-rc.5` through `0.2.2-rc.1` pass, `0.3.0` is refused. The support window rolls: this package is verified against every released host version inside the window at publish time and re-verified once the window moves, so the version number in this bullet is not a standing promise.
 - **No `@deepseek-ai/*` under `dependencies`, by contract.** Profiles install with `nodeLinker: hoisted` and `autoInstallPeers: false`, so a host package there becomes a real second copy; `@deepseek-ai/dsh-tools` keys its scheduler with a plain `Symbol`, so **every native tool call throws** in that profile while build, typecheck and coverage stay green. The four host packages `host.js` imports for value are required peers and repeated under `devDependencies` at the same exact pin, so the bundler externalizes them instead of inlining the official function bodies; `test/publish-manifest.test.ts` enforces both halves. Artifacts are rebuilt by `prepack`, never committed.
 
 ### <img src="https://api.iconify.design/lucide/arrow-down-to-line.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Shared version floor
@@ -95,7 +95,7 @@ If your profile pins `@jayyuen66/dsh-plugin-shared` with a pnpm `overrides` entr
 
 ## <img src="https://api.iconify.design/lucide/plug.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Enabling it in dsh
 
-- `dsh.bundle.patch` points at `cordis.patch.yml`, whose single registration line is `- id: lesson-loop` with `name: "@jayyuen66/dsh-lesson-loop"`. The **bare package name** is what makes the host scan the client half.
+- `dsh.bundle.patch` points at `cordis.patch.yml`, which carries **two entries**: `- name: "@jayyuen66/dsh-plugin-shared"` (the supplier of the card components, deliberately **without an `id`** so the plugin page does not list it as a switchable component) and `- id: lesson-loop` with `name: "@jayyuen66/dsh-lesson-loop"`. The **bare package name** is what makes the host scan the client half.
 - **One entry, one `Config`.** The settings namespace is the entry id, so switches, thresholds and the `rules` array share one section and one revision. `rules` carries `.loose()`, the read side checks the raw shape through `describe().user` (unreadable means it refuses to write rather than overwriting), and every write is one CAS commit with re-read and replay.
 - `settings` is the only plugin-level hard dependency. `timer` / `commands` / `systemPrompt` / `llm` are optional: a missing one removes that capability, the plugin still loads.
 - The card's data plane is installed unconditionally on the apply fiber, so it exists even on a host whose web layer arrives late.
@@ -177,7 +177,7 @@ Four methods on one official Typert Remote namespace, `lessonLoopRules`.
 - **Undeterminable rules do not converge**: with no clean hit there is no denominator, so only a human retires them, and the injection cap keeps that population out of the context.
 - **Subagent sessions are skipped** — a second injection would count as exposure for a rule they never saw.
 - **The card is pull-based**, so a value cached across a reconnect would be stale by design.
-- **Evidence bodies never cross the wire**; the card sees the signature and the counters.
+- **Evidence bodies stay out of the card**: the `lessons()` read face may carry a lesson's `detail`, capped at 400 characters, and the card renders only the signature and the counters.
 - **No machine translation**: rule statements and evidence are user data.
 - **Optional services remove capabilities, not the plugin**: no `commands` means no `/lessons-digest`, no `systemPrompt` means no standing section, no `llm` means the digest refuses, no `timer` leaves manual review only; without `settings` the entry never activates and the startup diagnostic names it.
 - **A digest run can partially fail**: cards that did not reach the library are reported separately, and the receipt never claims "distilled" for a card that is not on disk. A response that contains no parseable JSON array is a hard error, not "zero candidates".

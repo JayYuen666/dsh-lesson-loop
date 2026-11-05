@@ -40,8 +40,6 @@ import { UI_MESSAGES } from "./ui-messages.ts";
 import type { LocaleNs, Translate, UiMessages } from "./ui-messages.ts";
 import { createRulesReader } from "./rules-reader.ts";
 import type { RulesReader } from "./rules-reader.ts";
-import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
-import { diffTouched } from "@jayyuen66/dsh-plugin-shared/lib/card-diff";
 import {
   CARD_UI_CSS,
   CardForm,
@@ -50,8 +48,11 @@ import {
   Section,
   StatusBar,
   ToggleField,
+  diffTouched,
+  fieldOf,
+  isRecord,
   splitHint,
-} from "@jayyuen66/dsh-plugin-shared/lib/card-ui";
+} from "@jayyuen66/dsh-plugin-shared/client";
 
 /** 本包 `NS` 的第三重身份：官方 locale 的命名空间（前两重 = loader 条目 id 与 settings
  *  命名空间 = `configForms.get(NS)` 的入参，见下面那段「两个不同的标识」）。这一重必须

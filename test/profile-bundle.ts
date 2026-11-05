@@ -159,10 +159,16 @@ export function entryIdFromPatchYml(yml: string): string {
     .map((line) => /^\s*-\s+id:\s*(?<value>.*?)\s*$/u.exec(line)?.groups?.["value"])
     .filter((value): value is string => value !== undefined)
     .map((value) => yamlScalar(value));
-  assert.ok(ids.length > 0, "cordis.patch.yml 里没有 `- id:` 条目");
-  assert.equal(new Set(ids).size, 1, `cordis.patch.yml 里有多条不同的 - id:（${ids.join(", ")}）`);
-  assert.notEqual(ids[0], "", "cordis.patch.yml 的 - id: 是空值");
-  return ids[0]!;
+  // shared 是卡片组件行，不是本包的 settings 命名空间；只收本包自己的裸条目。
+  const ownIds = ids.filter((id) => id !== "shared");
+  assert.ok(ownIds.length > 0, "cordis.patch.yml 里没有本包的 `- id:` 条目");
+  assert.equal(
+    new Set(ownIds).size,
+    1,
+    `cordis.patch.yml 里有多条不同的本包 - id:（${ownIds.join(", ")}）`,
+  );
+  assert.notEqual(ownIds[0], "", "cordis.patch.yml 的 - id: 是空值");
+  return ownIds[0]!;
 }
 
 /** 本包 cordis.patch.yml 的裸条目 id。 */

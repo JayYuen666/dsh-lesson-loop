@@ -17,8 +17,8 @@ describe("profile-bundle 解析守卫", () => {
     assert.equal(entryIdFromPatchYml("- id: bare-id  # 行尾注释"), "bare-id");
     assert.equal(entryIdFromPatchYml("- id: 'single-quoted' # x"), "single-quoted");
     assert.equal(entryIdFromPatchYml("- id: plain\nother: line"), "plain");
-    assert.throws(() => entryIdFromPatchYml("- id: a\n    - id: b"), /多条不同的 - id:/u);
-    assert.throws(() => entryIdFromPatchYml("no id line here"), /没有 `- id:` 条目/u);
+    assert.throws(() => entryIdFromPatchYml("- id: a\n    - id: b"), /多条不同的(?:本包 )?- id:/u);
+    assert.throws(() => entryIdFromPatchYml("no id line here"), /没有(?:本包的 )?`- id:` 条目/u);
   });
 
   it("bundle 清单：非字符串条目即红（静默滤掉会把清单损坏伪装成没装这个包）", () => {

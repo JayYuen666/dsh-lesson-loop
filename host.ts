@@ -636,8 +636,12 @@ async function digestEvents(svc: HostCtx, session: SessionLike): Promise<readonl
   if (sessionId === undefined) {
     return [];
   }
+  let observation: Awaited<ReturnType<SessionQueryFace["observeSession"]>> | undefined;
   try {
-    const observation = await queryRaw.observeSession(brandString<SessionId>(sessionId));
+    // 本包只读 events：`projectionMode: "none"` 避免宿主为整份日志算一遍全部投影。
+    observation = await queryRaw.observeSession(brandString<SessionId>(sessionId), {
+      projectionMode: "none",
+    });
     // 交付判据只当**布尔**用，不经 `Array.isArray` 收窄：那条守卫会把官方
     // `readonly SessionEvent[]`（installed dsh-session-query/lib/types/observation.d.ts:19）
     // 塌成 `any[]`，类型面当场作废并让返回值变成 unsafe return。数组性由这个不收窄的
@@ -648,6 +652,14 @@ async function digestEvents(svc: HostCtx, session: SessionLike): Promise<readonl
     return observation.events;
   } catch {
     return [];
+  } finally {
+    // 冷读的 observation 是一条 pin 住缓存的 lease；不还就会让会话数据一直留在内存里。
+    // 旧宿主的观察面可能没有 Symbol.dispose，释放失败也不改变本次读窗的结论。
+    try {
+      observation?.[Symbol.dispose]?.();
+    } catch {
+      // 释放是尽力而为：读窗已经交回，不能因为归还失败把命令变成异常。
+    }
   }
 }
 

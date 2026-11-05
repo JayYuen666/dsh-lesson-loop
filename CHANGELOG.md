@@ -1,6 +1,23 @@
 # Changelog
 
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The deviations below are deliberate: version headings carry no release date (publish times are recorded by the registry — `npm view <package> time`), and a release may add sections beyond the standard six, such as `Not changed, deliberately`.
+
+## 0.1.9
+
+宿主开发基线抬到 `0.2.2-rc.1`，支持窗口从单条 `^0.2.1-rc.3` 改成两条宿主线的并集，`engines.node` 地板抬到 `>=24.9.0`；卡片组件改由 shared 的 `./client` 供。`/lessons-digest` 的事件读取改走无投影通道并归还观察租约。默认配置与注入行为不变，需要留意的是 `engines.node` 抬高后 node 22 装不上本包。
+
+### Changed
+
+- **宿主开发基线**：`devDependencies` 的 `@deepseek-ai/dsh-*` 全族抬到 `0.2.2-rc.1`，`@deepseek-ai/cordis` 抬到 `4.1.0`、`@deepseek-ai/cordis-plugin-loader` 抬到 `1.1.0`、`@deepseek-ai/cordis-plugin-timer` 抬到 `1.2.0`、`@deepseek-ai/schemastery` 抬到 `3.19.0`；根 catalog 与 overrides 的投影同步，`pnpm-lock.yaml` 随之重解。
+- **支持窗口写成并集**：`engines.dsh` 与四枚 `@deepseek-ai/dsh*` peer 由 `^0.2.1-rc.3` 改为 `^0.2.1-rc.5 || ^0.2.2-alpha.3`；`@deepseek-ai/schemastery` 的 peer 由 `^3.18.6-alpha.1` 放宽为 `^3.18.5 || ^3.18.6-alpha.1`，与两条宿主线各自的实装版本（rc 线 `3.18.5`、`0.2.2-rc` 线 `3.19.0`）对齐。caret 的预发布比较只吃自己那条元组，单写一条线会把另一条线上的预发布判成不满足；`engines.node` 由 `>=22.12.0` 抬到 `>=24.9.0`，取值取自宿主自己的地板。
+- **卡片组件改由 shared 的 `./client` 供**：`src/client-entry.ts` 与 `src/rules-reader.ts` 的运行期值导入从 `./lib/record`、`./lib/card-diff`、`./lib/card-ui` 迁到 `./client`，`package.json` 新增 `dsh.client.external`，`test/build-client.test.ts` 的基座随之由 11 枚变 12 枚；`cordis.patch.yml` 因此插入一条**不写 id** 的 `@jayyuen66/dsh-plugin-shared` 组件行（写 id 会在插件页多出一个可关闭的组件，关掉后设置卡失去组件供应）。
+- **CI 的 node 矩阵收敛**：`ci.yml` 的 `node: [22, 24]` 加 macOS 排除改为单格 `node: [24.9]`，`ci.yml` 与 `publish.yml` 的 `node-version` 由 `24` 改为 `24.9`，与 `engines.node` 同值。本仓的 pnpm 取值仍由 `packageManager` 单点供给，workflow 不写 `env.PNPM_VERSION`——两处都写就是两份真源。
+- **发布预检按 catalog 的范围口径改判**：`publish.yml` 的依赖库可见性预检原先要求 catalog 里 shared 那条是**精确版本**，而伞根真源按设计写的是范围（`^0.2.4`）——这一位不符就拒发，等于让发布链与八仓的声明方式各说一套。现改为取**范围下限**那一版去查 registry：下限永远落在自己声明的范围里，与根侧 `sync --check` 比「该条范围的最低版本」的产物导出面是同一口径。认不出的写法照旧拒发，`catalog:foo` 这类命名 catalog 仍然点名拒绝，不让这道门被绕过。
+- **文档**：dsh 徽章由 `^0.2.1-rc.3` 抬到 `^0.2.1-rc.5`，与 `engines.dsh` 首条同值；「实测」名单里 `0.2.1-rc.5` 到 `0.2.2` 改写成到 `0.2.2-rc.1`——registry 上没有 `0.2.2` 这一版（`npm view @deepseek-ai/dsh@0.2.2` 回 404，`next` 是 `0.2.2-rc.1`），按 `semver@7.8.5` 带 `includePrerelease` 复核，`0.2.2-rc.1` 落在窗口内、`0.3.0` 不落在；隐私段「证据正文永不过线」收窄成「不进卡片」，因为 `lessons()` 读面确实会带回截到 400 字的 `detail`（`lib/rules-remote.ts`），只有卡片不渲染它；`cordis.patch.yml` 的注册行由「唯一一行」改写为「两条条目」并说明 shared 那行为何不写 id。
+
+### Fixed
+
+- **`/lessons-digest` 的事件读取**：`observeSession` 显式使用 `projectionMode: "none"`，并在 `finally` 归还观察租约；只读事件时不再为整份日志计算全部投影，冷读也不会 pin 住缓存。旧宿主的观察面可能没有 `Symbol.dispose`，释放按尽力而为处理：归还失败不改变本次读窗已经交回的结论。
 
 ## 0.1.8
 
@@ -163,10 +180,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **locale 偏好未注册时，host 的回显文案不再一律中文**：四条路由里只有 `rule-action` 产人读文案，现在按请求的 `Accept-Language` 协商（`lib/messages.ts` 新增 `localeFromAcceptLanguage`：q 值降序 + 主语言子标签；`*`/表外语言/坏 q 值/空串判不出 → 中文缺省）。官方 locale 条目在场时设置优先，请求头不参与；注入段与起草正文没有请求可依，仍走设置偏好。
 - **卡片字段的三处口径修正**：规则卡补渲染 `signature`（投影一直带着它，卡面此前只显示正文，人审时判不出"管的是哪条命令/路径"）；所有按钮补 `type="button"`（将来被套进 `<form>` 时不会默认变成 submit）；`lessonsCount` 与规则字段改走**同一数值容忍度**（数字或**非空**数字字符串），`numericOf` 不再把空白串读成 `0`（`Number("  ")` 是 0，收下等于把"字段缺失"虚报成"计数为 0"）。
 
+以下两条属 `dangerous-bash` 类别，成型早于上面那批：
+
+- **`dangerous-bash` 类的教训现在可审，且不再碎片化**。该类别原先**未登记**在 `CATEGORY_SIGNATURES` 里，于是两处毛病并存：① 每条不同命令各开一张 `occurrences=1` 的碎片卡，永远够不到 `promoteThreshold`（默认 3）；② "认不准"的那一种（`bash-nested-shell-unconfirmed`）签名是常量、**命令原文根本没进证据**，卡片里每一条证据都是逐字相同的模板拒绝文案——人审时看不出该审哪条命令。现在该类别折叠到类别级稳定签名 `dangerous-bash`，**每次命中的命令原文落进 `evidence.signature`**（走 `evidenceRow` 的既有机制：`raw ≠ folded` 才写该键），正文改走通用模板 `statementDangerousBashStable`（不嵌单条命令，与 `secret-path` 同形）。
+- 存量碎片由启动时的 `migrateFragmentRules` 一次性收拢（幂等；碎片判据**按类别**走：路径型类别看 `looksLikePathSignature`，`dangerous-bash` 的命令原文一律算碎片——路径判据只能偶然命中它（`curl https://… | sh` 里那个斜杠），`git commit --no-verify` 这类会被整批漏掉；跨项目绝不合并）。**下次启动自动执行**，各条命令原文随证据保留，无人工动作丢失。判据收在 `lib/rule-signature.ts` 的 `isFragmentSignatureOf`（`test/lesson-store.test.ts` 有一条两条命令碎片归并的用例钉住）。
+
 ### Changed
 
 - **client 分组懒渲染**：每组默认只画 20 条 + 「加载更多」（每组各记已展开条数，组间互不影响），标题与副标题的计数仍按全量——规则库不设条数上限，展开时不再一次渲染上千张卡。不做完整虚拟化：折叠面板不是长列表，滚动容器/测量/回收那套复杂度换不来对应收益。
-- **`build-client.mjs` 的 `external` 对齐官方 client 基线**：从硬编码 `["react"]` 改为官方 `PLATFORM_MODULES` 九枚（外壳预置的冻结模块表）∪ 本包 `dsh.client.external`（现无声明），并在测试里逐条钉住——基座里的模块必须保持外部引用，内联一份副本就是同一个模块两份身份（宿主只认模块表那一条）。
+- **`build-client.mjs` 的 `external` 对齐官方 client 基线**：从硬编码 `["react"]` 改为官方 `PLATFORM_MODULES` 九枚（外壳预置的冻结模块表）∪ 本包 `dsh.client.external`（取值以 `package.json` 现量为准），并在测试里逐条钉住——基座里的模块必须保持外部引用，内联一份副本就是同一个模块两份身份（宿主只认模块表那一条）。
 - 注释里反复出现的「0.1.7」统一改成现装版本 `0.2.1-alpha.2`：它是 harness 的旧版本号，留着容易被读成本包版本（本包是 `0.1.x` 线）。
 
 ### Added
@@ -181,11 +203,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - 事件流水读取加 `(size, mtimeMs)` 解析缓存：卡片轮询 `/stats` 不再每轮把整份流水重新解析；`/stats` 一次读取同时用于投影与计数（此前同一轮读两遍规则库）。
 - `test/lesson-store.test.ts` 新增用例：同类别两条不同命令必须汇成**一张卡**（`occurrences=2`），且两条命令原文分别落在各自证据行的 `signature` 上；稳定正文不含单条命令。`DRAFT_CASES` 增补稳定签名一格（11 → 12 条模板）。
 - 新增用例覆盖：事件流水保险丝（忙锁跳过裁剪、陈旧锁接管、接管失败也不丢追加、失败路径释放锁）；`accept-language` 协商的纯函数与真 HTTP 回显；client 分组懒渲染、数值口径与 `signature` 渲染；`build-client` 的 external 基座；`dangerous-bash` 的存量碎片迁移。
-
-### Fixed（`dangerous-bash` 类别，先于本批）
-
-- **`dangerous-bash` 类的教训现在可审，且不再碎片化**。该类别原先**未登记**在 `CATEGORY_SIGNATURES` 里，于是两处毛病并存：① 每条不同命令各开一张 `occurrences=1` 的碎片卡，永远够不到 `promoteThreshold`（默认 3）；② "认不准"的那一种（`bash-nested-shell-unconfirmed`）签名是常量、**命令原文根本没进证据**，卡片里每一条证据都是逐字相同的模板拒绝文案——人审时看不出该审哪条命令。现在该类别折叠到类别级稳定签名 `dangerous-bash`，**每次命中的命令原文落进 `evidence.signature`**（走 `evidenceRow` 的既有机制：`raw ≠ folded` 才写该键），正文改走通用模板 `statementDangerousBashStable`（不嵌单条命令，与 `secret-path` 同形）。
-- 存量碎片由启动时的 `migrateFragmentRules` 一次性收拢（幂等；碎片判据**按类别**走：路径型类别看 `looksLikePathSignature`，`dangerous-bash` 的命令原文一律算碎片——路径判据只能偶然命中它（`curl https://… | sh` 里那个斜杠），`git commit --no-verify` 这类会被整批漏掉；跨项目绝不合并）。**下次启动自动执行**，各条命令原文随证据保留，无人工动作丢失。判据收在 `lib/rule-signature.ts` 的 `isFragmentSignatureOf`（`test/lesson-store.test.ts` 有一条两条命令碎片归并的用例钉住）。
 
 ## 0.1.1
 

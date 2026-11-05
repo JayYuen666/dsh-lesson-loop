@@ -376,7 +376,8 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     // 过滤出违规项再一次性断言，而不是在循环里按条件 expect：失败时 diff 直接列出
     // 「哪个包钉成了什么」，比逐条抛错更好读。
     const ranged = Object.entries(manifest.devDependencies ?? {}).filter(
-      ([name, range]) => name.startsWith(DSH_PREFIX) && !/^\d+\.\d+\.\d+-/u.test(range),
+      ([name, range]) =>
+        name.startsWith(DSH_PREFIX) && !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/u.test(range),
     );
     expect(ranged, "这些 dsh-* 开发依赖没有精确钉住版本").toStrictEqual([]);
   });
@@ -515,12 +516,13 @@ describe("dsh 声明面（宿主按这些字段决定装什么、加载什么）
     );
   });
 
-  it("client.js 只 require 平台模块（其余依赖一律内联，避免第二份实例）", async () => {
+  it("client.js 只 require 平台模块与共享客户端行（其余依赖一律内联，避免第二份实例）", async () => {
     const out = await readFile(path.join(pkgDir, "client.js"), "utf8");
     const required = requiresIn(out);
-    // 平台模块由宿主 shell 提供（react 与 zod 都是 harness PLATFORM_MODULES 的成员）；再出现
-    // 别的裸说明符就等于把一份依赖整包内联/外置进浏览器，符号身份与版本都不再由宿主决定。
-    expect(required, "client.js 的 require 清单只允许平台模块").toStrictEqual([
+    // 平台模块由宿主 shell 提供；shared/client 由本包 cordis.patch.yml 启用的共享行提供。
+    // 再出现别的裸说明符就等于把一份依赖整包内联/外置进浏览器，符号身份与版本都不再由宿主决定。
+    expect(required, "client.js 的 require 清单只允许平台模块与共享客户端行").toStrictEqual([
+      'require("@jayyuen66/dsh-plugin-shared/client")',
       'require("react")',
       'require("zod")',
     ]);
