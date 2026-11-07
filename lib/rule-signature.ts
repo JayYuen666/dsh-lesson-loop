@@ -4,7 +4,7 @@
 // （report / addCandidate）、查找侧（pass / findByKey）、迁移侧（migrateFragmentRules /
 // mergeProjectKeyCollisions）与正文起草（lib/statement-draft.ts 按稳定签名选模板）必须算出
 // **同一个串**——一处漏调就长成"写得进、查不到"的键漂移，这正是碎片化缺陷的成因。判据与
-// store 的度量/落盘纪律无关，故独立成模块；此前它们的 export 只因单测按这层边界取用，
+// store 的度量/写到磁盘纪律无关，故独立成模块；此前它们的 export 只因单测按这层边界取用，
 // `fallow --production` 把整层判成「只被测试养着的导出」。
 //
 // 旧版 factgate-deny 的 signature 是「编辑目标路径」→ 同一条通用教训（编辑前
@@ -29,7 +29,7 @@ function warnNonStringSignature(value: unknown): void {
   );
 }
 
-/** 规则归并键。签名归一：trim + 内部空白折叠（大小写保留——路径/命令大小写有意）。 */
+/** 规则归并键。签名归一：trim + 内部连续空白并成单个空格（大小写保留——路径/命令大小写有意）。 */
 export function normalizeSignature(signature: unknown): string {
   if (typeof signature !== "string") {
     warnNonStringSignature(signature);
@@ -41,10 +41,10 @@ export function normalizeSignature(signature: unknown): string {
 export const CATEGORY_SIGNATURES: Readonly<Record<string, string>> = Object.freeze({
   "factgate-deny": "edit-before-factgate",
   // 密钥路径与 factgate 同类：一张卡代表"这类文件不要碰"，具体是哪个 .env 落在
-  // 证据里。旧形态下每个凭据文件一张 occurrences=1 的卡，永远够不到升格门槛。
+  // 证据里。旧形态下每个凭据文件一张 occurrences=1 的卡，永远够不到升格阈值。
   "secret-path": "edit-before-secret-path",
   // 危险 shell 形态同理，且此处**两件事**一起收：① 每条不同命令各开一张碎片卡
-  // （occurrences=1，够不到升格门槛）；② "认不准"那一类（`bash-nested-shell-unconfirmed`）
+  // （occurrences=1，够不到升格阈值）；② "认不准"那一类（`bash-nested-shell-unconfirmed`）
   // 的签名是常量、命令原文原先根本没进证据，卡片里只有一段逐字相同的模板文，人审时
   // 看不出该审什么。折叠到类别级稳定键后，**命令原文落进 evidence.signature**
   // （见 lesson-store 的 evidenceRow：raw ≠ folded 才写该键），一张卡既收敛又可审。
@@ -65,7 +65,7 @@ export function isStableSignature(category: string, signature: string): boolean 
   return STABLE_SIGNATURES.get(category.trim()) === normalizeSignature(signature);
 }
 
-/** 该 (category, signature) 是否是这一类的 rejected 归档汇总签名（归一口径同上）。 */
+/** 该 (category, signature) 是否是这一类的 rejected 归档汇总签名（归一规则同上）。 */
 export function isRejectedSummarySignature(category: string, signature: string): boolean {
   const stable = STABLE_SIGNATURES.get(category.trim());
   return (
@@ -117,9 +117,9 @@ const ANY_SIGNATURE_FRAGMENTS: ReadonlySet<string> = new Set(["dangerous-bash"])
  * 的稳定卡被当碎片反复归并"这类迁移不收敛才真正结构性堵死。
  */
 export function isFragmentSignatureOf(category: string, signature: string): boolean {
-  // 两半都比对归一口径：category 是上报方数据（首尾空白会让登记类别漏判），signature
-  // 来自持久化卡/旧补丁文档（可能带首尾空白或折叠前的内部多空白）。此前 category 用原文
-  // 进 Set、signature 用原文进路径判据，与 isStableSignature 的归一口径不一致——带空白的
+  // 两半都比对归一规则：category 是上报方数据（首尾空白会让登记类别漏判），signature
+  // 来自持久化卡/旧补丁文档（可能带首尾空白或归一前的内部多空白）。此前 category 用原文
+  // 进 Set、signature 用原文进路径判据，与 isStableSignature 的归一规则不一致——带空白的
   // dangerous-bash 碎片被判成"非碎片"，迁移永远不收它。
   const categoryKey = category.trim();
   const normalized = normalizeSignature(signature);
@@ -146,7 +146,7 @@ function keyPart(value: string): string {
  * 同一个键，人工拒绝记录会被活卡吞掉。
  *
  * 三段拼键前各自去 NUL 并 trim（project / category 原样进来）：`\u0000` 是本函数的
- * 分隔符，normalizeSignature 只折叠空白、不去控制字符——不去掉它，`("a\u0000b","c")`
+ * 分隔符，normalizeSignature 只把连续空白并成单个空格、不去控制字符——不去掉它，`("a\u0000b","c")`
  * 与 `("a","b\u0000c")` 会拼出同一个键，两条不同的教训被静默归并成一张卡；project /
  * category 只差首尾空白时同理（"repo" 与 "repo " 拼不出同一个键，armed 规则静默失效）。
  */

@@ -10,7 +10,7 @@
 // 为什么追加也要进临界区：追加是 O_APPEND 写、裁剪是"读整份 → 写临时文件 → rename 覆盖"。
 // 两进程各写各的时，另一进程在「裁剪读完、rename 之前」追加的那一行会被新内容整体覆盖掉
 // （事件静默消失，而 report 仍回 ok）。锁只把**持有者之间**的读改写串行，这还不够：
-// **拿不到锁时仍然追加、只跳过裁剪**（宁可这轮不裁，绝不丢事件），那条裸追加照样可能落进
+// **拿不到锁时仍然追加、只跳过裁剪**（宁可这轮不裁，绝不丢事件），那次不加锁的追加照样可能落进
 // 持有者的 read→rename 窗口。所以持有者还要在 rename 前做一次乐观并发控制——比对快照字节数
 // 与当前字节数，变了就放弃本轮裁剪（见 shrinkLocked）。代价是两进程持续抢写时裁剪可能长期
 // 不生效（文件停在 maxBytes 之上）：这是"最多超配额"换"绝不丢事件"的刻意取舍。
@@ -18,7 +18,7 @@
 //
 // 原子替换的取舍：`.tmp` + rename 让读者（readJsonl）要么见旧全文、要么见新全文，不会读到
 // 写了一半的中间态。代价是崩溃时可能留下兄弟文件：`.lock`（超龄即视为持有者已死、可被接管，
-// 超龄门槛随数据文件大小放大，见 {@link LOCK_STALE_MS}）与一枚**按持有者唯一命名**的
+// 超龄阈值随数据文件大小放大，见 {@link LOCK_STALE_MS}）与一枚**按持有者唯一命名**的
 // `.tmp`（一次崩溃残留一份，不覆盖别人的在途临时文件；进程正常退出的路径会自己删掉）。
 
 import { randomUUID } from "node:crypto";
@@ -36,28 +36,28 @@ import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
 import { shrinkJsonlTail } from "@jayyuen66/dsh-plugin-shared/lib/jsonl";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
-/** 锁文件视为陈旧的**基础**门槛：正常临界区是同步调用，量级在毫秒；超时只可能是持有者
+/** 锁文件视为陈旧的**基础**阈值：正常临界区是同步调用，量级在毫秒；超时只可能是持有者
  *  死了（进程崩溃/被 SIGKILL）或临界区被大文件拖慢。没有这一层，一次崩溃会让该文件的
  *  裁剪永久停摆。 */
 const LOCK_STALE_MS = 10_000;
 
-/** 陈旧门槛随数据文件大小的放大率（字节/毫秒）：临界区是"读整份 → 写整份 → rename"，
- *  按 ≥20 MB/s 的保守磁盘速度估算耗时，把这段耗时加进陈旧门槛——否则几十上百 MB 的
- *  流水在慢盘上会超过基础门槛，被别的进程按"陈旧"接管一把**仍在使用**的锁。估算宁可
- *  偏慢（门槛偏大）：门槛过大只推迟接管（裁剪多等一轮，追加与读取不受影响），门槛过小
+/** 陈旧阈值随数据文件大小的放大率（字节/毫秒）：临界区是"读整份 → 写整份 → rename"，
+ *  按 ≥20 MB/s 的保守磁盘速度估算耗时，把这段耗时加进陈旧阈值——否则几十上百 MB 的
+ *  流水在慢盘上会超过基础阈值，被别的进程按"陈旧"接管一把**仍在使用**的锁。估算宁可
+ *  偏慢（阈值偏大）：阈值过大只推迟接管（裁剪多等一轮，追加与读取不受影响），阈值过小
  *  却制造双持有者。
  *  20 MB/s = 20 × 1024 × 1024 / 1000 ≈ 20_972 字节/毫秒（取 20_480 = 20 KiB/ms，
  *  即 20.48 MB/s）；此前写成 20 是单位错（只有约 20 KB/s），100 MB 的流水会得到
- *  ~83 分钟的陈旧门槛，裁剪要停摆一个多小时。 */
+ *  ~83 分钟的陈旧阈值，裁剪要停摆一个多小时。 */
 const STALE_BYTES_PER_MS = 20_480;
 
 /** 流水文件**新建**时的权限：内容里有工具错误原文、命令串与路径，只给属主读写。
  *  mode 只在创建那一刻生效（已存在的文件保持原 mode，与目录同一条纪律）——目录侧
  *  0o700 只覆盖"目录由本进程创建"的形态，缓存目录常由宿主预先建好，文件这一道必须
- *  自己收口，否则 appendFileSync 按 0o666 & umask（常见 0644）建出来。 */
+ *  自己统一处理，否则 appendFileSync 按 0o666 & umask（常见 0644）建出来。 */
 const LEDGER_FILE_MODE = 0o600;
 
-/** ENOENT 判据（与 lib/lesson-jsonl.ts 同口径）：只把"文件确实不在"当成被覆盖。 */
+/** ENOENT判据（与 lib/lesson-jsonl.ts 同一种做法）：只把"文件确实不在"当成被覆盖。 */
 function isEnoent(error: unknown): boolean {
   return isRecord(error) && error["code"] === "ENOENT";
 }
@@ -125,13 +125,13 @@ function takeOverStaleLock(lock: string, file: string, token: string): boolean {
     if (!info.isFile()) {
       return false;
     }
-    // 超龄门槛 = 基础门槛 + 按数据文件大小估算的临界区耗时；数据文件 stat 不到时
-    // （恰好被裁剪 rename 走）按 0 字节取基础门槛，下一轮再试。
+    // 超龄阈值 = 基础阈值 + 按数据文件大小估算的临界区耗时；数据文件 stat 不到时
+    // （恰好被裁剪 rename 走）按 0 字节取基础阈值，下一轮再试。
     let bytes = 0;
     try {
       bytes = statSync(file).size;
     } catch {
-      // 数据文件 stat 不到（恰好被裁剪 rename 走）：按 0 取基础门槛，下一轮再试。
+      // 数据文件 stat 不到（恰好被裁剪 rename 走）：按 0 取基础阈值，下一轮再试。
     }
     staleMs = LOCK_STALE_MS + Math.ceil(bytes / STALE_BYTES_PER_MS);
     staleIno = info.ino;
@@ -186,7 +186,7 @@ function tryAcquireLock(lock: string, file: string): string | null {
 
 /** 归还锁：**只删自己那把**，且裁决与搬走是同一步。
  *
- *  无所有权校验的 `rmSync(lock, {force:true})` 在两种情形下都会删错人：临界区拖过超龄门槛
+ *  无所有权校验的 `rmSync(lock, {force:true})` 在两种情形下都会删错人：临界区拖过超龄阈值
  *  被别人接管后，我们删的是**对方的**锁；以及"读到自己的令牌"与"rm"之间锁被接管——令牌
  *  校验只能缩小窗口、关不死。改成**原子搬走再验**：rename 这一发生，锁文件就从共享路径上
  *  消失（接管者要么已把它搬走让我们的 rename 拿 ENOENT、要么我们的 rename 搬走的是它刚建
@@ -270,12 +270,12 @@ function shrinkLocked(file: string, maxBytes: number): void {
       return;
     }
     // 临时文件按持有者唯一命名：固定 `${file}.tmp` 会让两个进程在同一个临时文件上互相
-    // 覆盖（A 写完 shrunk、B 覆盖成自己的、A rename —— 落盘的是谁的正文全看时序）。
+    // 覆盖（A 写完 shrunk、B 覆盖成自己的、A rename —— 写到磁盘的是谁的正文全看时序）。
     // 名字里带 pid 与随机 uuid，同一进程内的多次裁剪也不会互相踩。
     const tmp = `${file}.${newToken()}.tmp`;
     try {
       // 权限沿用原文件：writeFileSync 的 mode 会经 umask 抹位，rename 覆盖后原文件的
-      // mode/属主就此丢失——流水里带着工具错误原文与路径，权限被 umask 放宽是真实的事故面。
+      // mode/属主就此丢失——流水里带着工具错误原文与路径，权限被 umask 放宽是真实的事故。
       // chmodSync 把被 umask 抹掉的位补回（Windows 上没有权限位语义，此调用无害）。
       writeFileSync(tmp, shrunk, { mode: perm });
       try {
@@ -284,7 +284,7 @@ function shrinkLocked(file: string, maxBytes: number): void {
         // 补位失败不阻断替换：writeFileSync 的 mode 已经覆盖了绝大多数 umask 形态。
       }
       // 乐观并发校验放在 rename **紧前**：真正会被覆盖的是「写完 tmp → rename」这段窗口
-      // 里裸追加落下的行（大文件写 tmp 要几十到几百毫秒）。以前这道 stat 在写 tmp 之前，
+      // 里那次不加锁的追加落下的行（大文件写 tmp 要几十到几百毫秒）。以前这道 stat 在写 tmp 之前，
       // 窗口被放大一个数量级。漏网的一行由追加侧 lineSurvivedFuse 兜住（三角约定见头注释）。
       if (statSync(file).size !== snapshotBytes) {
         // 快照之后有人写过：放弃本轮裁剪，删掉自己的临时文件（不留全文副本）。
@@ -312,13 +312,13 @@ function shrinkLocked(file: string, maxBytes: number): void {
 /**
  * 裸追加之后的自查：这一行还在文件里吗？不在就补写。
  *
- * 为什么需要：拿不到锁的一方走裸追加，而锁的持有者可能正处在这条窗口里——它已取完快照、
+ * 为什么需要：拿不到锁的一方走不加锁的追加，而锁的持有者可能正处在这条窗口里——它已取完快照、
  * 做过 rename 前那次 stat，我们这一行恰好落在 stat 之后、rename 之前，于是被 rename 整片
  * 覆盖（事件静默消失，而追加方已正常返回）。shrinkLocked 的那次 stat 只能把窗口缩窄，
  * 不能关死：两次系统调用之间没有原子性可用。
  *
  * 判据用「正文里是否还找得到本次写的这批字节」而不是「是否以它结尾」：我们写完之后、
- * 读回之前，任何第三方（另一进程的裸追加、或同一持有者在临界区外的追加）都可能又写了
+ * 读回之前，任何第三方（另一进程不加锁的追加、或同一持有者在临界区外的追加）都可能又写了
  * 一笔，把我们的行从尾部顶掉——按结尾比对会误判成"被覆盖"而补写，流水里出现重复行。
  * 全文查找对这种情况是准确的：只要这批字节还在文件里，事件就没丢。代价是"被覆盖、
  * 但文件里恰好存在逐字节相同的另一条"会漏补——那批字节本身就是同一条事件的内容，

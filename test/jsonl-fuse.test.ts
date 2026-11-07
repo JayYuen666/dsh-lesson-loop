@@ -3,7 +3,7 @@
 //
 // 为什么单独立一份：这一层此前只由 lesson-store 的用例间接覆盖，而它最关键的一条不变式
 // ——**并发追加的事件不许被裁剪的 rename 抹掉**——必须有一条自己的判据。锁只串行持有者，
-// 拿不到锁的一方走裸追加，它落进别人的 read→rename 窗口时会被整片覆盖（事件静默消失）。
+// 拿不到锁的一方走不加锁的追加，它落进别人的 read→rename 窗口时会被整片覆盖（事件静默消失）。
 //
 // 那条窗口无法在单进程里用真实 fs 稳定制造（临界区全是同步调用），故只有它走 `statSync`
 // 拦截：对**同一个路径**的第 1 次 stat 报真值（快照基准取在读取之前，超限判定与快照是
@@ -180,7 +180,7 @@ describe("jsonl-fuse", () => {
     const file = path.join(scratch, "small.jsonl");
     writeFileSync(file, "keep\n");
     appendUnderFuse(file, payloadOf({ a: 1 }), 10_000);
-    // payload 自带前导换行（封残行用），故落盘是 "keep" + 空行 + 记录。
+    // payload 自带前导换行（封残行用），故写到磁盘是 "keep" + 空行 + 记录。
     assert.equal(readFileSync(file, "utf8"), `keep\n${payloadOf({ a: 1 })}`);
   });
 
@@ -240,7 +240,7 @@ describe("jsonl-fuse", () => {
     assert.ok(!existsSync(lock), "接管成功=我们成了持有者，临界区结束要释放");
   });
 
-  it("裁剪写临时文件/rename 失败 → 临时文件被清掉、错因不上抛，本次追加照常落盘", () => {
+  it("裁剪写临时文件/rename 失败 → 临时文件被清掉、错因不上抛，本次追加照常写到磁盘", () => {
     const file = path.join(scratch, "rename-fail.jsonl");
     writeFileSync(file, `${OLD}${NEW}`);
     renameHook.armed = true;
@@ -256,16 +256,16 @@ describe("jsonl-fuse", () => {
     );
   });
 
-  it("拿不到锁且回读发现这一行没落盘（被持有者 rename 覆盖）→ 补写一次", () => {
+  it("拿不到锁且回读发现这一行没写到磁盘（被持有者 rename 覆盖）→ 补写一次", () => {
     const file = path.join(scratch, "fuse-retry.jsonl");
     const lock = `${file}.lock`;
     writeFileSync(file, OLD);
-    // 别人的新锁：走裸追加那一路。
+    // 别人的新锁：走不加锁追加那一路。
     writeFileSync(lock, "");
     readHook.mode = "truncate";
     readHook.file = file;
     appendUnderFuse(file, payloadOf({ a: 1 }), 10);
-    // 断言面必须是真文件内容，别让钩子把自己也截了。
+    // 断言内容必须是真文件内容，别让钩子把自己也截了。
     readHook.mode = "";
     // 读取被截断 => 尾部比对判"不在" => 补写；于是这一行出现两次（宁可重复，绝不丢）。
     assert.equal(
@@ -279,12 +279,12 @@ describe("jsonl-fuse", () => {
     const file = path.join(scratch, "fuse-vanish.jsonl");
     const lock = `${file}.lock`;
     writeFileSync(file, OLD);
-    // 别人的新锁：走裸追加那一路。
+    // 别人的新锁：走不加锁追加那一路。
     writeFileSync(lock, "");
     readHook.mode = "throw";
     readHook.file = file;
     appendUnderFuse(file, payloadOf({ a: 1 }), 10);
-    // 断言面必须是真文件内容，别让钩子把自己也挡了。
+    // 断言内容必须是真文件内容，别让钩子把自己也挡了。
     readHook.mode = "";
     // 读不到就补写：补写那次是真 fs 写，所以文件末尾一定有这一行。
     const tail = readFileSync(file, "utf8");

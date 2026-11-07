@@ -1,7 +1,7 @@
 // statement-draft：候选规则**正文**的起草（按分类选模板，signature 原文嵌入）。
 //
 // 为什么从 lib/lesson-store.ts 拆出来：起草是"产出一段要注入给模型的文案"，与 store 的
-// 沉淀/度量/落盘纪律无关；它只依赖两样东西——消息表的两语模板（lib/messages.ts 的
+// 写入/度量/写到磁盘纪律无关；它只依赖两样东西——消息表的两语模板（lib/messages.ts 的
 // `statement*` 段）与类别级稳定签名（lib/rule-signature.ts，决定走通用正文还是嵌占位）。
 // 留在 store 里时它的 export 只因单测逐条模板取用，`fallow --production` 判成
 // 「只被测试养着的导出」。
@@ -18,7 +18,7 @@
 //
 // 分类 → 模板的对应收成一张表（不再用 switch 逐类枚举）：lib/digest-prompt.ts 的类别白名单、
 // lib/rule-signature.ts 的登记表与本表是三份各自演化的数据，新增登记分类时漏改这里
-// 会落到通用兜底、把稳定签名原文当具体路径嵌进正文。两条门禁在 test/digest.test.ts：
+// 会落到通用后备、把稳定签名原文当具体路径嵌进正文。两条门禁在 test/digest.test.ts：
 // 「类别清单与 CATEGORY_STATEMENTS 同域」管键集，「每个登记分类都真的起草出分类专属正文」
 // 管选型（键集对上但模板 key 指错的形态只有后者抓得住）。
 
@@ -53,7 +53,7 @@ type StatementEntry =
   | { readonly kind: typeof KIND_PASSTHROUGH };
 
 /** 登记分类 → 正文选型。键集与 lib/digest-prompt.ts 的类别白名单（DIGEST_CATEGORIES）
- *  同域，一致性由 test/digest.test.ts 的两条逐类探针钉住——两边漂移的后果是静默降级，
+ *  同域，一致性由 test/digest.test.ts 的两条逐类探测用例钉住——两边漂移的后果是静默降级，
  *  不是崩溃，故必须有门禁。 */
 export const CATEGORY_STATEMENTS: Readonly<Record<string, StatementEntry>> = Object.freeze({
   "factgate-deny": {
@@ -98,14 +98,14 @@ export function draftStatement(
     return fill(messages.statementRejectedSummary, { signature });
   }
   if (signature.trim().length === 0) {
-    // 空签名（首尾空白折叠后为空）在旧分支会起草出坏正文：feedback-digest 直接
-    // 透传成空 statement（arm 后注入面只剩一行空话），default 分支嵌出"详见证据"
+    // 空签名（去掉首尾空白后为空）在旧分支会起草出坏正文：feedback-digest 直接
+    // 透传成空 statement（arm 后注入只剩一行空话），default 分支嵌出"详见证据"
     // 却无指向的半句。统一退到一条明说缺签名的占位正文，人审时看得见问题。
     return messages.statementMissingSignature;
   }
   // 普通对象索引会走原型链：category 是模型/第三方给的数据，\`toString\` / \`constructor\`
   // 这类键取到的是函数（entry.kind 为 undefined），于是落到文件末尾的原样透传——一条
-  // 本应走通用兜底的正文把函数对象塞进注入面。用 Object.hasOwn 收口，键集之外一律
+  // 本应走通用兜底的正文把函数对象塞进注入。用 Object.hasOwn统一处理，键集之外一律
   // 走 statementGeneric（先 trim：登记分类是精确键，前后空白同样是漂移）。
   const categoryKey = category.trim();
   const entry = Object.hasOwn(CATEGORY_STATEMENTS, categoryKey)
@@ -115,7 +115,7 @@ export function draftStatement(
     // 未登记分类（第三方上报）：通用兜底正文。
     return fill(messages.statementGeneric, { signature });
   }
-  // 下面两支按 entry.kind 收口。末尾**故意**保留 return signature 而不是写成第三条
+  // 下面两支按 entry.kind 统一处理。末尾**故意**保留 return signature 而不是写成第三条
   // 判断：三档各自 return 会让 TS 把函数末尾判成不可达，而运行期再补一条 default /
   // throw 纯属不可达代码，只会白送一行未覆盖（共享覆盖率基线是四项 100%）。代价是
   // 「将来新增 kind 却忘了在这里跟」不会在编译期报错，而是静默落进原样透传——这条

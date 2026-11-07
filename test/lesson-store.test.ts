@@ -1,4 +1,4 @@
-// lesson-store 单元测试：沉淀/归并/人工升格/度量/衰减 全领域规则 + 存量漂移容错
+// lesson-store 单元测试：写入/归并/人工升格/度量/衰减 全领域规则 + 存量漂移容错
 // + 规则库端口（RulesRepository）的跨进程纪律。
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
 import assert from "node:assert/strict";
@@ -22,7 +22,7 @@ import {
   normalizeRuleCardRow,
 } from "../lib/lesson-store.ts";
 import type { RuleCard, RulesRepository } from "../lib/lesson-store.ts";
-// 键算法 / 正文起草 / 衰减裁决 / 事件流水落盘四层已从领域核心分家（lib/rule-signature.ts、
+// 键算法 / 正文起草 / 衰减裁决 / 事件流水写到磁盘四层已从领域核心分家（lib/rule-signature.ts、
 // lib/statement-draft.ts、lib/decay-policy.ts、lib/lesson-jsonl.ts）：用例打的就是这四层自己
 // 的边界，不再绕道 lesson-store 的转发出口。
 import {
@@ -87,7 +87,7 @@ const RULE_ACTION_INVALID_STATEMENT = "invalid-statement";
 const RULE_ACTION_STATEMENT_TOO_LONG = "statement-too-long";
 
 /** 往 store 的流水文件直接追加一行原始 JSON（绕过 report 的归一）：造"可解析但
- *  归一不了"的行，供 lessonsCount 与 recentLessons 的口径对账用。 */
+ *  归一不了"的行，供 lessonsCount 与 recentLessons 的规则对账用。 */
 function appendJsonlRaw(file: string, row: Record<string, unknown>): void {
   writeFileSync(file, `${JSON.stringify(row)}\n`, { flag: "a" });
 }
@@ -125,7 +125,7 @@ const CAS_RETRY_LIMIT = 3;
 const payloadOf = (row: object): string => `\n${JSON.stringify(row)}\n`;
 
 let scratch: string;
-/** 本测试的规则库面（旧写法是每个测试一个临时 rules.json）。 */
+/** 本测试的规则库（旧写法是每个测试一个临时 rules.json）。 */
 let facet: RulesFacet;
 
 function makeStore(overrides: Record<string, unknown> = {}, nowSeq: number[] = []): LessonStore {
@@ -162,9 +162,9 @@ function otherProcess(
 }
 
 /**
- * 按 id 取一张卡：`LessonStore.ruleById` 这个成员已删——生产侧从不调它（端点与服务面都取
+ * 按 id 取一张卡：`LessonStore.ruleById` 这个成员已删——生产侧从不调它（端点与宿主服务都取
  * `rules()` 全量投影，人工动作在 commit 的工作数组上自己按 id 找），留着就成了一枚
- * "只被测试养着"的读面。这里的读法与旧成员逐字相同（同一条 `rules()` 读面、同一次 find），
+ * "只被测试养着"的读取接口。这里的读法与旧成员逐字相同（同一条 `rules()` 读取接口、同一次 find），
  * 用例钉的仍是卡片落库后的状态，而不是新行为。
  */
 function ruleById(store: LessonStore, id: string): RuleCard | undefined {
@@ -257,7 +257,7 @@ function seedStore(rows: readonly unknown[]): LessonStore {
 /**
  * 让规则库写不进去：provider 的 update 连续被拒（端口回执 rejected）。
  * 旧实现靠"把 rulesFile 的父路径造成普通文件"制造 ENOTDIR；新边界下失败发生在
- * 端口回执上——路径形态不再是行为面，回执才是。
+ * 端口回执上——路径形态不再是行为测试，回执才是。
  * 独立于上面那套（会改写模块级 facet 的）seedRules：它造的是另一份库。
  */
 const stuckFacet = (rows: readonly unknown[] = [], times = 99): RulesFacet => {
@@ -323,7 +323,7 @@ const stableCandidateRow = (over: Record<string, unknown>): Record<string, unkno
   ...over,
 });
 
-/** 一张真规则卡（走生产归一器，避免手搓字段漏项）：端口队列与"另一进程"用。 */
+/** 一张真规则卡（走生产归一器，避免自己写字段时漏项）：端口队列与"另一进程"用。 */
 const cardOf = (over: Record<string, unknown> = {}): RuleCard =>
   normalizeRuleCardRow(diskRow({ category: CATEGORY_GATE_FAILURE, ...over }))!;
 
@@ -351,7 +351,7 @@ const stuckRow = (
 ): Record<string, unknown> =>
   diskRow({ id, category: CATEGORY_GATE_FAILURE, signature: id, status, ...over });
 
-/** 收 console.error 的一次性探针（坏存量点名的断言用；不捕获外层作用域，故放在 describe 之外）。 */
+/** 收 console.error 的一次性收集器（坏存量点名的断言用；不捕获外层作用域，故放在 describe 之外）。 */
 function captureErrors(): { text: () => string; count: () => number; restore: () => void } {
   const calls: unknown[][] = [];
   const original = console.error;
@@ -1134,7 +1134,7 @@ describe("lesson-store：台账、规则库与度量", () => {
     });
   });
 
-  describe("report：候选归并与升格门槛", () => {
+  describe("report：候选归并与升格阈值", () => {
     it("首报建候选；同键累积 occurrences；达阈值 ready", async () => {
       const store = makeStore({ promoteThreshold: 3 });
       const r1 = await store.report(rec() as never);
@@ -1145,7 +1145,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(r2.ready, false);
       const r3 = await store.report(rec() as never);
       assert.equal(r3.ready, true);
-      assert.equal(r3.justReady, true, "刚越过门槛的那一次是边沿");
+      assert.equal(r3.justReady, true, "刚越过阈值的那一次是边沿");
       // 登记表内的类别：换目标路径不再另开一张卡（Part 1 的汇聚点）
       const r4 = await store.report(rec({ signature: SIGNATURE_PATH_B }) as never);
       assert.equal(store.rules().length, 1);
@@ -1161,7 +1161,7 @@ describe("lesson-store：台账、规则库与度量", () => {
     it("dangerous-bash 折成一张卡，且每次命中的**命令原文**都落在证据里", async () => {
       const store = makeStore({ promoteThreshold: 3 });
       // 旧形态的两处毛病一起钉住：① 每条不同命令各开一张碎片卡，occurrences 恒为 1、
-      // 永远够不到升格门槛；② "认不准"那一类（bash-nested-shell-unconfirmed）签名是常量、
+      // 永远够不到升格阈值；② "认不准"那一类（bash-nested-shell-unconfirmed）签名是常量、
       // 命令原文压根没进证据，卡片里只有逐字相同的模板文——人审时看不出该审什么。
       const first = await store.report(
         rec({ category: CATEGORY_DANGEROUS_BASH, signature: BASH_CMD_NO_VERIFY }) as never,
@@ -1225,7 +1225,7 @@ describe("lesson-store：台账、规则库与度量", () => {
 
     it("needsUserConfirmation 的上报不算违规：只补证据，不动复发率", async () => {
       // 「判据看不见、要人拍板」不是「已确认违规」。计进去会让一条从不产生违规的规则
-      // 凭"问过几次"累积到降级门槛，而分母（suppressed）永远是 0，卡只能停在不可判定。
+      // 凭"问过几次"累积到降级阈值，而分母（suppressed）永远是 0，卡只能停在不可判定。
       const store = makeStore();
       const { candidate } = await store.report(rec() as never);
       const { id } = candidate!;
@@ -1439,7 +1439,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(provider.peek(SETTINGS_NAMESPACE)?.["enabled"], true);
     });
 
-    it("merge 与读面的原型/隔离守卫：__proto__ 落自有属性；describe 与 rawRules 交深拷贝", async () => {
+    it("merge 与读取接口的原型/隔离守卫：__proto__ 落自有属性；describe 与 rawRules 交深拷贝", async () => {
       const rows = [diskRow({ id: "iso", category: CATEGORY_GATE_FAILURE, signature: "s" })];
       const isoFacet = makeRulesFacet(rows);
       // merge 层：带 __proto__ 键的 patch 落自有属性，不改掉 merged 的原型
@@ -1453,7 +1453,7 @@ describe("lesson-store：台账、规则库与度量", () => {
         "写 __proto__ 不许改掉 section 的原型",
       );
       assert.equal(section["polluted"], undefined);
-      // 读面隔离：改 describe().user / rawRules() 的返回值不许渗回假件状态
+      // 读取接口隔离：改 describe().user / rawRules() 的返回值不许渗回假件状态
       const [descriptor] = isoFacet.provider.describe();
       assert.ok(descriptor !== undefined, "describe 至少交回本条目那一行");
       const user = descriptor.user as Record<string, unknown>;
@@ -1474,7 +1474,7 @@ describe("lesson-store：台账、规则库与度量", () => {
     });
 
     it("段落存量不合 schema → 端口退不可用，读空且不抛", async () => {
-      // 旧实现面对的是"半个 JSON 文件"，新边界下面对的是"解析不过的存量段"：
+      // 旧实现对的是"半个 JSON 文件"，新边界下面对的是"解析不过的存量段"：
       // 注册被打回 → 读空 + 拒写（详见 describe("规则库端口 createRulesRepository")）
       const provider = makeSettingsProvider({ [SETTINGS_NAMESPACE]: { rules: "不是数组" } });
       const store = otherProcess(attachRulesRepository(provider));
@@ -1584,7 +1584,7 @@ describe("lesson-store：台账、规则库与度量", () => {
         /fragment migration: \d+ merge\(s\) were NOT persisted/u,
       );
       const migrated = await store.migrateProjectKeys();
-      assert.deepEqual(migrated, { rewrites: 0, merged: 0 }, "键迁移同口径");
+      assert.deepEqual(migrated, { rewrites: 0, merged: 0 }, "键迁移同样不落盘就不报数");
       assert.match(
         String(error.mock.calls[1]?.[0]),
         /project key migration: \d+ rewrite\(s\) \/ \d+ merge\(s\) were NOT persisted/u,
@@ -1678,7 +1678,7 @@ describe("lesson-store：台账、规则库与度量", () => {
           "不可用读的 revision 恒 -1（0 是合法版本号，不与哨兵混淆）",
         );
       }
-      // 负例一侧：非负整数 revision 正常可读，值原样交出
+      // 负例：非负整数 revision 正常可读，值原样交出
       const boxed = surface(() => [{ ns: SETTINGS_NAMESPACE, value: { rules: [] }, revision: 3 }]);
       const read = createRulesRepository(boxed.cas).load();
       assert.equal(read.usable, true);
@@ -1736,7 +1736,7 @@ describe("lesson-store：台账、规则库与度量", () => {
     it("读到过归一不了的行之后写回：坏行原样留在库里，不许被整片覆盖抹掉", async () => {
       // save 是整段替换（mergeLayers 对数组整体覆盖），归一不了的行不在 cards 里，
       // 直接写就是把用户存量删掉且无备份。坏数据可以被人工修好，被覆盖掉就找不回来。
-      // 也不选"拒写"：一件坏行会锁死整个规则库（记账、衰减、规则动作全停），
+      // 也不选"拒写"：一件坏行会锁死整个规则库（记录下来、衰减、规则动作全停），
       // 代价大于让这段坏数据继续留着等人修。
       const bad = { category: "c", signature: "s" };
       const rows: unknown[] = [{ id: "kept", category: "c", signature: "s", status: "armed" }, bad];
@@ -1804,7 +1804,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.deepEqual(capDroppedRowEvidence(untouched), untouched);
     });
 
-    it("坏行的 evidence 收敛发生在落盘那一刻，且不影响好卡各自的收敛", async () => {
+    it("坏行的 evidence 收敛发生在写到磁盘那一刻，且不影响好卡各自的收敛", async () => {
       const long = "x".repeat(MAX_EVIDENCE_DETAIL_CHARS + 20);
       const bad = {
         category: "c",
@@ -1827,7 +1827,7 @@ describe("lesson-store：台账、规则库与度量", () => {
     });
   });
 
-  describe("capEvidence（落盘前的证据收敛）", () => {
+  describe("capEvidence（写到磁盘前的证据收敛）", () => {
     it("detail 截断到上限并加省略号；每卡只留最近 N 条；不改入参", () => {
       const long = "d".repeat(MAX_EVIDENCE_DETAIL_CHARS + 120);
       const rows: RuleCard["evidence"] = [];
@@ -1869,7 +1869,7 @@ describe("lesson-store：台账、规则库与度量", () => {
     });
   });
 
-  describe("来源归一的日志面（noteSourceFallback）", () => {
+  describe("来源归一的日志（noteSourceFallback）", () => {
     it("超长来源 warn；非字符串来源也 warn（静默降级要有迹可循）", async () => {
       const store = makeStore();
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {
@@ -1973,7 +1973,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(decayVerdict(card, DEFAULT_DECAY, Date.now()), "keep");
     });
 
-    it("恰好挂满 decayDays 也算挂满（>= 口径）", () => {
+    it("恰好挂满 decayDays 也算挂满（>= 规则）", () => {
       const armedAt = Date.now() - DEFAULT_DECAY.decayDays * 86_400_000;
       const card = cardOf({
         id: "d1",
@@ -2019,10 +2019,10 @@ describe("lesson-store：台账、规则库与度量", () => {
       // 原始行缺 category（normalizeLessonRow 返回 null）：行在文件里、计数不含它。
       appendJsonlRaw(path.join(scratch, LEDGER_FILE_NAME), { ts: 1, source: "manual" });
       assert.equal(store.recentLessons().length, 1, "列表只收归一得了的行");
-      assert.equal(store.lessonsCount(), 1, "计数与列表同一口径");
+      assert.equal(store.lessonsCount(), 1, "计数与列表用同一套归一规则");
     });
 
-    it("空白 category 的存量行不丢弃，归一到 unknown（别让一条坏行从读面消失）", async () => {
+    it("空白 category 的存量行不丢弃，归一到 unknown（别让一条坏行从读取接口消失）", async () => {
       const store = makeStore();
       appendJsonlRaw(path.join(scratch, LEDGER_FILE_NAME), {
         ts: 1,
@@ -2218,7 +2218,7 @@ describe("lesson-store：台账、规则库与度量", () => {
         id,
       );
       await store.sessionEnded(PROJECT_KEY_FIXTURE, new Set(), new Set([id]), "s-1");
-      // 表外类别的另一张卡：不碰上面这张 armed 卡的 violation 记账
+      // 表外类别的另一张卡：不碰上面这张 armed 卡的 violation 记录下来
       await store.report(rawRec({ signature: SIGNATURE_PATH_OTHER }) as never);
       const [card] = facet.persisted();
       assert.equal(typeof card?.armedAt, "number");
@@ -2274,7 +2274,7 @@ describe("lesson-store：台账、规则库与度量", () => {
     });
   });
 
-  describe("落盘失败可观测（规则库写不进）", () => {
+  describe("写到磁盘失败可观测（规则库写不进）", () => {
     // 写失败的 error 日志形状另有专测（test/rules-namespace.test.ts），这里只断言回执
     beforeEach(() => {
       vi.spyOn(console, "error").mockImplementation(() => {
@@ -2320,7 +2320,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(facet.persisted().find((row) => row.id === "s-cand")?.occurrences, 1);
     });
 
-    it("达 promoteThreshold 的新卡在无法落盘时不报 ready", async () => {
+    it("达 promoteThreshold 的新卡在无法写到磁盘时不报 ready", async () => {
       facet = stuckFacet();
       const store = makeStore();
       const ready = await store.report(rawRec({ signature: "s1" }) as never);
@@ -2410,7 +2410,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(facet.provider.writesOf(SETTINGS_NAMESPACE), 2, "首次写成功 + 重放写成功");
     });
 
-    it("revive 达阈值时同样把落盘失败带回来", async () => {
+    it("revive 达阈值时同样把写到磁盘失败带回来", async () => {
       facet = stuckFacet([stuckRow("s-rev", "rejected", { recurrences: 2, occurrences: 2 })]);
       const store = makeStore();
       const revived = await store.report(rawRec({ signature: "s-rev" }) as never);
@@ -2420,9 +2420,9 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(ruleById(store, "s-rev")?.status, "rejected", "库里仍按旧状态读");
     });
 
-    it("规则面写失败后重试同一条教训：流水只留一行，规则卡只加一次", async () => {
-      // report 的两笔写没有事务：流水（cache 追加）在前、规则面（settings CAS）在后。
-      // 上一次规则面失败、调用方按回执重试时，若不认得"这条流水已经写过"，就会在流水
+    it("规则写失败后重试同一条教训：流水只留一行，规则卡只加一次", async () => {
+      // report 的两笔写没有事务：流水（cache 追加）在前、规则库（settings CAS）在后。
+      // 上一次规则库写失败、调用方按回执重试时，若不认得"这条流水已经写过"，就会在流水
       // 里留下两条"这条教训发生过"，而规则卡只累加一次——两个计数从此对不上。
       const scripted = scriptedRulesRepository({ outcomes: ["rejected", "persisted"] });
       const store = makeStore({ rules: scripted.repo });
@@ -2432,9 +2432,9 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(second.ok, true, "重试这次规则面写成了");
       const rows = readJsonl(path.join(scratch, LEDGER_FILE_NAME));
       assert.equal(rows.length, 1, "同一条教训重试不追加第二行流水");
-      // 端口记账：两次 save 各带一张卡、occurrences 都是 1——重试没有把同一条教训
-      // 在规则面上累加两次（若流水去重顺手把规则面也折了，这里会少一次写）。
-      assert.equal(scripted.saves(), 2, "规则面照常各写一次（去重只针对流水）");
+      // 端口记录下来：两次 save 各带一张卡、occurrences 都是 1——重试没有把同一条教训
+      // 在规则库里累加两次（若流水去重顺手把规则库那次也折了，这里会少一次写）。
+      assert.equal(scripted.saves(), 2, "规则库照常各写一次（去重只针对流水）");
       for (const [index, batch] of scripted.batches().entries()) {
         assert.equal(batch.cards.length, 1, `第 ${String(index + 1)} 次写回执带一张卡`);
         assert.equal(batch.cards[0]!.occurrences, 1, `第 ${String(index + 1)} 次写不带二次累加`);
@@ -2443,7 +2443,7 @@ describe("lesson-store：台账、规则库与度量", () => {
 
     it("换一条教训（不同签名或不同会话轮次）照常各写一行流水", async () => {
       // 去重只认"同一次发生"：签名/会话/轮次/细节任何一位变了就是另一件事，
-      // 上一笔失败的记号不许吃掉它。
+      // 上一笔失败的记号不许顶掉它。
       const scripted = scriptedRulesRepository({
         outcomes: ["rejected", "persisted", "persisted"],
       });
@@ -2455,7 +2455,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       const secondRetry = await store.report(rec() as never);
       assert.equal(secondRetry.ok, true);
       const rows = readJsonl(path.join(scratch, LEDGER_FILE_NAME));
-      // 三行各是三次不同发生：①原条目（规则面失败）②另一签名 ③原条目在此后的
+      // 三行各是三次不同发生：①原条目（规则库失败）②另一签名 ③原条目在此后的
       // 真实再次发生（②已成功，记号已清，故③照写）。
       assert.equal(rows.length, 3, "记号只吃掉紧邻那一次重试，不吃掉后来的真实发生");
       assert.deepEqual(
@@ -2464,7 +2464,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       );
     });
 
-    it("规则面写成功之后不残留去重记号：同一教训再次真实发生要能再落一行", async () => {
+    it("规则写成功之后不残留去重记号：同一教训再次真实发生要能再落一行", async () => {
       const scripted = scriptedRulesRepository({ outcomes: ["persisted", "persisted"] });
       const store = makeStore({ rules: scripted.repo });
       const once = await store.report(rec() as never);
@@ -2528,7 +2528,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(readFileSync(fresh, "utf8"), payloadOf({ a: 3 }));
     });
 
-    it("appendJsonl 自建缺失目录；尺寸没超阈值时裁剪空转", () => {
+    it("appendJsonl 自建缺失目录；尺寸没超阈值时裁剪不做任何事", () => {
       const file = path.join(scratch, "deep", "nested", LEDGER_FILE_NAME);
       appendJsonl(file, { a: 1 }, 0);
       assert.equal(readJsonl(file).length, 1);
@@ -2807,7 +2807,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(decayVerdict({ ...base, armedAt: t0 }, DEFAULT_DECAY, late), "undeterminable");
       // 锚点缺 armedAt → 回退 createdAt
       assert.equal(decayVerdict(base, DEFAULT_DECAY, late), "undeterminable");
-      // 关键反例：armed 已挂满、最近还有复发（lastViolationAt 很近）、复发没到门槛、
+      // 关键反例：armed 已挂满、最近还有复发（lastViolationAt 很近）、复发没到阈值、
       // 零遵守 → 按 armedAt 起算点出"不可判定"。旧锚点（最近一条证据）在这里会被
       // 复发一次次重置窗口，这条卡就永远 keep 下去。
       const recentViolation = t0 + 5 * 86_400_000;
@@ -2863,7 +2863,7 @@ describe("lesson-store：台账、规则库与度量", () => {
         store.pass("other-project", CATEGORY_FACTGATE_DENY, STABLE_SIG_FACTGATE),
         undefined,
       );
-      // 无 sessionId 的收尾清算：只记账不写日志
+      // 无 sessionId 的收尾清算：只记录下来不写日志
       const info = vi.spyOn(console, "info").mockImplementation(() => {
         // 断言在下方
       });
@@ -2948,13 +2948,13 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(store.rules().length, 4);
       // 人工已定态的三张卡：蒸馏产出**一格都不许落**。旧断言恰恰钉的是反面
       // （rejected 卡的 evidence.at(-1).source === "manual"、archived 卡 evidence.length === 2）
-      // ——那正是本次修掉的缺陷：证据落盘时 capEvidence 只留最近几条，模型连报几条同键条目
+      // ——那正是本次修掉的缺陷：证据写到磁盘时 capEvidence 只留最近几条，模型连报几条同键条目
       // 就能把人工卡此前的真实证据整批挤出，而状态与计数一格不动。
       assert.equal(armedCard.evidence.length, 1, "armed 卡不接受蒸馏证据");
       assert.equal(rejectedCard.evidence.length, 1, "rejected 卡不接受蒸馏证据");
       assert.equal(rejectedCard.evidence.at(-1)?.source, SOURCE_DANGER_GUARD);
       assert.equal(archivedCard.evidence.length, 1, "archived 卡不接受蒸馏证据");
-      // 反向一侧：候选卡照旧消费（occurrences + 证据），豁免面没有开得过宽。
+      // 反向用例：候选卡照旧消费（occurrences + 证据），豁免名单没有开得过宽。
       const candidateCard = candidateReceipt.card;
       assert.equal(candidateCard.id, candidate.id);
       assert.equal(candidateCard.status, "candidate");
@@ -3100,7 +3100,7 @@ describe("lesson-store：台账、规则库与度量", () => {
   });
 
   describe("ruleAction 全动作", () => {
-    it("edit 带正文才改写：空白/缺省正文回 invalid-statement，库未动；与现文相同回 unchanged 不落盘", async () => {
+    it("edit 带正文才改写：空白/缺省正文回 invalid-statement，库未动；与现文相同回 unchanged 不写到磁盘", async () => {
       const store = makeStore();
       const receipt = await store.report(rec() as never);
       const { id } = receipt.candidate!;
@@ -3132,7 +3132,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       );
       assert.equal(ruleById(store, id)?.status, "candidate", "三次拒收都没动库");
       assert.equal(await store.ruleAction(id, "edit", "12345"), "persisted", "恰好上限允许");
-      // 存量正文超长的候选：arm 不带正文时按继承的正文判，不许借一次人工动作绕过闸门。
+      // 存量正文超长的候选：arm 不带正文时按继承的正文判，不许借一次人工动作绕过这条上限。
       seedRules([diskRow({ id: "long-seed", statement: "y".repeat(6) })]);
       const limited = makeStore({ maxStatementChars: 5 });
       assert.equal(await limited.ruleAction("long-seed", "arm"), RULE_ACTION_STATEMENT_TOO_LONG);
@@ -3280,7 +3280,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       );
       // rejected 归档汇总签名（<stable>:rejected）是终态：喂回"写入侧唯一入口"必须原样
       // 返回，不能折叠回 stable——否则归档记录与 armed 活卡撞成同一个键（人工拒绝记录被
-      // 活卡吞掉）。带首尾空白时同理：归一口径与查表口径两段各自再归一。
+      // 活卡吞掉）。带首尾空白时同理：归一规则与查表规则两段各自再归一。
       assert.equal(
         stableSignatureFor(CATEGORY_FACTGATE_DENY, STABLE_SIG_FACTGATE_REJECTED),
         STABLE_SIG_FACTGATE_REJECTED,
@@ -3347,7 +3347,7 @@ describe("lesson-store：台账、规则库与度量", () => {
     });
   });
 
-  // ── Part 2：project 键单源 + 一次性归一迁移 ─────────────────────────────
+  // ── Part 2：project 键唯一来源 + 一次性归一迁移 ─────────────────────────────
   // LEGACY 是旧"纯字符串归一"下 `/repo/other/../proj` 的桶键，作为存量值写死即可；
   // CANON 由 `deriveProject(CANON_CWD)` 在模块顶层按当前平台派生（Windows 的规范化结果
   // 带盘符，POSIX 字面量会在那一格漂移）。POSIX 历史键的逐字节锚点在 shared 自己的
@@ -3633,7 +3633,7 @@ describe("lesson-store：台账、规则库与度量", () => {
         decayVerdict(armedCard({ violation: 5, samples: 40 }), policy, t0),
         "undeterminable",
       );
-      // 违规还没攒到门槛时不必急着点出来，等它成熟或被测到再说。
+      // 违规还没攒到阈值时不必急着点出来，等它成熟或被测到再说。
       assert.equal(
         decayVerdict(
           armedCard({ violation: 1, samples: 3 }),
@@ -3718,14 +3718,14 @@ describe("lesson-store：台账、规则库与度量", () => {
   // ── 跨进程共享同一规则库（常驻 web 实例 + CLI 临时会话是常态用法）────────────
   // 每个 dsh 进程各持一个 LessonStore，规则库存设置命名空间 `lesson-loop`（= 条目 id）的
   // provider 对 rules 这个数组键是**整片覆盖**（mergeLayers 不合并数组），于是"看不见
-  // 别人写的卡"与"把别人写的卡抹掉"是同一个缺陷的两面——此前真机复现过。下面这些不
-  // 变式全部落在 RulesRepository 的读面（cards + revision + usable）与写回执上，不再
+  // 别人写的卡"与"把别人写的卡抹掉"是同一个缺陷的两处——此前真机复现过。下面这些不
+  // 变式全部落在 RulesRepository 的读取接口（cards + revision + usable）与写回执上，不再
   // 依赖真文件：两个 store 各持一份端口、同一份 provider 文档 == 两个进程。
   describe("跨进程共享规则库（端口侧不变式）", () => {
     it("另一进程写入的卡，本进程下一次读取要看得见（映射 1）", async () => {
       const cli = makeStore();
       await cli.report(rawRec({ signature: "cmd-a" }) as never);
-      // "另一进程"追加一张：读面因此拿到更高 revision + 含他人新卡
+      // "另一进程"追加一张：读取接口因此拿到更高 revision + 含他人新卡
       const revisionBefore = facet.revision();
       facet.setExternally([...facet.persisted(), cardOf({ id: "peer", signature: "cmd-peer" })]);
       assert.equal(facet.revision() > revisionBefore, true, "外部写入必须推进 revision");
@@ -3775,7 +3775,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.deepEqual(persistedSigsOf(facet), ["cmd-third"]);
     });
 
-    it("读不懂不等于没有：usable:false 时读面为空且任何写都被拒（映射 4）", async () => {
+    it("读不懂不等于没有：usable:false 时读取接口为空且任何写都被拒（映射 4）", async () => {
       const scripted = scriptedRulesRepository({
         reads: [{ usable: false, cards: [], revision: 9 }],
       });
@@ -3803,7 +3803,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(scripted.saves(), 0);
     });
 
-    it("落盘失败不报成功：收尾清算与衰减都如实说「没存住」", async () => {
+    it("写到磁盘失败不报成功：收尾清算与衰减都如实说「没存住」", async () => {
       // armed + violation 4 / suppressed 4：满足降级裁决（复发 4 ≥ 3、证据 8 ≥ 5、比值 0.5），
       // 但端口每次都拒写 —— 库里那一行必须原样不动，返回值与日志都不许假装已生效。
       // 用真 CAS 假件（而不是 scripted 端口）来钉"库里那行原样不动"：真端口每次读取都从
@@ -3851,7 +3851,7 @@ describe("lesson-store：台账、规则库与度量", () => {
       info.mockRestore();
     });
 
-    it("存量坏数据打回注册时不覆写他人数据（映射 4 的空库覆写面）", async () => {
+    it("存量坏数据打回注册时不覆写他人数据（映射 4 的空库覆写入）", async () => {
       const poisoned = "用户手改坏的存量段";
       const provider = makeSettingsProvider({ [SETTINGS_NAMESPACE]: { rules: poisoned } });
       const store = otherProcess(attachRulesRepository(provider));
@@ -3926,7 +3926,7 @@ describe("lesson-store：台账、规则库与度量", () => {
   });
 });
 
-describe("rules 端口的 revision 守卫（端口内闭环）", () => {
+describe("rules 端口的 revision 守卫（守卫留在端口内部）", () => {
   it("不可用读的 -1 哨兵与非整数 revision 一律 rejected，且不触达 CAS 面", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {
       // 断言在下方

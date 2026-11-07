@@ -5,12 +5,12 @@
 export declare function buildClient(): Promise<string>;
 
 /** 本包 client bundle 的 external 清单（官方基座 + 本包 dsh.client.external）。
- *  返回只读视图：调用方只消费清单，不许往结果里塞项（合并与去重是这份清单自己的口径）。 */
+ *  返回只读视图：调用方只消费清单，不许往结果里塞项（合并与去重是这份清单自己的规则）。 */
 export declare function clientExternals(): readonly string[];
 
 /** 从包清单读本包声明的 client external；dsh / dsh.client 的形态错误直接抛错。
  *  @param manifest - 包清单；缺省读本仓 package.json
- *  @returns 声明的说明符（原样、不裁剪不排序） */
+ *  @returns 声明的模块说明符（说明符，原样、不裁剪不排序） */
 export declare function declaredClientExternals(manifest?: unknown): string[];
 
 /** 单文件产物只接受唯一的 entry chunk；多余 chunk / asset 直接构建失败。

@@ -1,4 +1,4 @@
-// 规则读面（Typert Remote）的宿主侧直测：注册、四个方法的成功/拒绝分支，以及客户端
+// 规则读取接口（Typert Remote）的宿主侧直测：注册、四个方法的成功/拒绝分支，以及客户端
 // descriptor 与宿主 `@Remote` 标记的对质。端到端卡片链路在 test/client-data.test.ts。
 import { describe, it, vi } from "vitest";
 import assert from "node:assert/strict";
@@ -37,7 +37,7 @@ function depsOf(outcome: Outcome = "persisted"): LessonRulesDeps {
         sessionId?: string;
         turn?: number;
       }[] = [
-        // 首条 detail 超过读面的 400 字上限：lessons 投影要把它截断；可选字段齐全
+        // 首条 detail 超过读取接口的 400 字上限：lessons 投影要把它截断；可选字段齐全
         // （cwd/sessionId/turn 的投影分支也要走到）。
         { project: "p1", detail: "d".repeat(500), cwd: "/repo", sessionId: "s1", turn: 3 },
         { project: "p2", detail: "短" },
@@ -69,7 +69,7 @@ function serviceOf(deps: LessonRulesDeps): LessonRulesService {
 }
 
 /**
- * 读回执的成功面：断言 `ok: true` 后交出载荷。
+ * 读回执行成功那一支：断言 `ok: true` 后交出载荷。
  *
  * 读方法现在会返回 `{ ok: false, error }`（见 lib/rules-shape.ts 的 ReadRefused），
  * 所以每条成功路径的用例都得先过这道闸——这同时把"该成功却回了失败"变成一条带
@@ -90,7 +90,7 @@ function boom(): never {
   throw new Error("disk on fire");
 }
 
-describe("规则读面（官方 Typert Remote 源模式）", () => {
+describe("规则读取接口（官方 Typert Remote 源模式）", () => {
   it("装进真 Context：四个方法都带 @Remote 标记，客户端 descriptor 逐项对质", () => {
     const service = serviceOf(depsOf());
     const markers = remoteMethods(service)
@@ -98,7 +98,7 @@ describe("规则读面（官方 Typert Remote 源模式）", () => {
       .toSorted();
     assert.deepEqual(markers, ["lessons", "ruleAction", "rules", "stats"]);
     // 每个自有方法都必须带标记：新增方法漏写 markRemote 时 descriptor 与标记两边都不变
-    // （下面那条对质仍绿），卡片却永远读不到新方法。按原型面逐名对账钉住这类漏项。
+    // （下面那条对质仍绿），卡片却永远读不到新方法。按原型逐名对账钉住这类漏项。
     const ownMethods = Object.getOwnPropertyNames(LessonRulesService.prototype)
       .filter(
         (name) =>
@@ -116,7 +116,7 @@ describe("规则读面（官方 Typert Remote 源模式）", () => {
     }
   });
 
-  it("注册口缺席时返回 false（可选读面，不让 apply 下线）", () => {
+  it("注册口缺席时返回 false（可选读取接口，不让 apply 下线）", () => {
     assert.equal(installRulesRemote({} as never, depsOf()), false);
   });
 
@@ -153,7 +153,7 @@ describe("规则读面（官方 Typert Remote 源模式）", () => {
     assert.equal(okLessons(service.lessons({ limit: -1 })).count, 2, "≤0 与缺省同义：默认条数");
     assert.equal(okLessons(service.lessons(null as never)).count, 2);
     assert.equal(okLessons(service.lessons({ limit: Number.NaN })).count, 2);
-    // 读面投影：detail 是门禁输出原文一类的敏感面，下发前截断（400 字 + 省略号）；
+    // 读取接口投影：detail 是门禁输出原文一类的敏感内容，下发前截断（400 字 + 省略号）；
     // 原始 evidence 不外借。
     const view = okLessons(service.lessons({})).lessons[0]!;
     assert.ok(view.detail.endsWith("…") && view.detail.length === 401, "detail 已截断");
@@ -174,7 +174,7 @@ describe("规则读面（官方 Typert Remote 源模式）", () => {
       messagesOf: () => MESSAGES.zh,
     };
     const service = serviceOf(failing);
-    // stats 的返回类型是开放记录，拒读面同样折在这份记录里
+    // stats 的返回类型是开放记录，拒读取接口同样折在这份记录里
     const stats = service.stats();
     assert.deepEqual(
       [stats["ok"], stats["status"], stats["error"]],
@@ -190,7 +190,7 @@ describe("规则读面（官方 Typert Remote 源模式）", () => {
       [lessons.ok, lessons.ok ? 0 : lessons.status, lessons.ok ? "" : lessons.error],
       [false, 500, MESSAGES.zh.errLessonsUnavailable],
     );
-    // 三种拒读各打自己那条日志片段（模板表按方法名区分，日志里能看出是哪一面炸的）
+    // 三种拒读各打自己那条日志片段（模板表按方法名区分，日志里能看出自哪一处炸的）
     assert.match(loggedText(), /\[lesson-loop\] stats request failed:/u);
     assert.match(loggedText(), /\[lesson-loop\] rules request failed:/u);
     assert.match(loggedText(), /\[lesson-loop\] lessons request failed:/u);
@@ -218,7 +218,7 @@ describe("规则读面（官方 Typert Remote 源模式）", () => {
     assert.deepEqual([unchanged.ok, unchanged.ok ? unchanged.id : 0], [true, "r"]);
   });
 
-  it("ruleAction：缺字段/未知动作 → 400，找不到 → 404，落盘失败 → 500", async () => {
+  it("ruleAction：缺字段/未知动作 → 400，找不到 → 404，写到磁盘失败 → 500", async () => {
     const missing = await serviceOf(depsOf()).ruleAction({ id: "", action: "arm" });
     assert.deepEqual([missing.ok, missing.ok ? 0 : missing.status], [false, 400]);
     const unknown = await serviceOf(depsOf()).ruleAction({ id: "r", action: "boom" });

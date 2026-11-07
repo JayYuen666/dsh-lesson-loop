@@ -4,7 +4,7 @@
 // 注册与取值走官方 @deepseek-ai/dsh-client-locale 的**类型化**那两条重载：
 // `ctx.locale.register(ns, dicts)`（两语一次交齐）+ `ctx.locale.bind(ns)`，语言切换由宿主
 // 驱动、无需重载页面（见 client-entry.ts 的 apply）。本包命名空间已 merge 进官方
-// `LocaleNamespaceMap`（下面那条 `declare module`），故键集与 `t` 的函数面都由官方
+// `LocaleNamespaceMap`（下面那条 `declare module`），故键集与 `t` 的函数类型都由官方
 // 表达式交出。
 // 本表存的就是带 `{…}` 占位符的整行模板：官方字典是扁平字符串表，插值由调用点的
 // `t(key, params)` 完成（如 `t("chipCandidates", { count })`）。
@@ -38,7 +38,7 @@ export interface UiMessages {
   readonly revert: string;
   /** 保存失败前缀（后接错误摘要）。 */
   readonly saveFailed: string;
-  /** 保存被规则库拒绝（CAS 冲突/拒写）时的提示：一次原子提交，改动一个字都没落盘。 */
+  /** 保存被规则库拒绝（CAS 冲突/拒写）时的提示：一次原子提交，改动一个字都没写到磁盘。 */
   readonly saveRejected: string;
   /** stats 端点回非 ok 且没带 error 时的兜底。 */
   readonly statsUnavailable: string;
@@ -88,9 +88,9 @@ export interface UiMessages {
   readonly sectionDemoted: string;
   readonly sectionArmed: string;
   readonly sectionRetired: string;
-  /** 已展开时显示的「收起已拒绝/归档」按钮（折叠态显示的是 sectionRetired 标题 + 条数）。 */
+  /** 已展开时显示的「收起已拒绝/归档」按钮（收起态显示的是 sectionRetired 标题 + 条数）。 */
   readonly hideRetired: string;
-  /** 分组懒渲染的「加载更多」（{count} = 本组仍折叠着的条数）。 */
+  /** 分组懒渲染的「加载更多」（{count} = 本组尚未放出的条数）。 */
   readonly loadMore: string;
   /** 分组为空时的占位。 */
   readonly emptyGroup: string;
@@ -99,7 +99,7 @@ export interface UiMessages {
   /** armed 的三计数（{violation} {suppressed} {samples}）。 */
   readonly metaArmed: string;
   /** armed 后从未被遵守过（suppressed === 0），且已挂满 decayDays 或复发已达
-   *  demoteThreshold：机器无从裁定，交人处理（与 lib/decay-policy.ts 的裁决同口径）。 */
+   *  demoteThreshold：机器无从裁定，交人处理（与 lib/decay-policy.ts 的裁决同一种做法）。 */
   readonly metaUndeterminable: string;
   /** rejected 后又出现的计数（{count}）。 */
   readonly metaRevive: string;
@@ -128,7 +128,7 @@ export interface UiMessages {
  * 只能落到官方那条**未类型化**重载（installed
  * `dsh-client-locale/lib/types/client/index.d.ts:226`），返回 `Translate<string>`，而卡片
  * 要的是键集收窄的 `t`，于是本地只好自己声明一个官方给不出的函数形状。
- * 把键收窄的 `t` 投影回官方服务面 `LocaleRuntime['bind']`（那条未类型化重载跟着进目标
+ * 把键收窄的 `t` 投影回官方宿主服务 `LocaleRuntime['bind']`（那条未类型化重载跟着进目标
  * 类型）时，本包程序里实测到的红字：
  *   TS2322 Type '(ns: string) => Translate' is not assignable to type
  *     '{ <N extends Extract<keyof LocaleNamespaceMap, string>>(ns: N): TranslateNS<N>;
@@ -159,7 +159,7 @@ const LOCALE_NS_KEY = "lesson-loop" as const;
 
 /**
  * 本源只以**类型**形态对外流通：`client-entry.ts` 的 `const NS: LocaleNs = "lesson-loop"` 把条目
- * id 钉在本源上（分叉即编译期红），而产物漂移针仍要按字面量形状从 bundle 里抓 `NS`，所以那里
+ * id 钉在本源上（分叉即编译期红），而产物漂移检查仍要按字面量形状从 bundle 里抓 `NS`，所以那里
  * 保留字面量、只加类型标注——值导出不必存在（用例侧同理：要断言运行时那串就写字面量）。
  */
 export type LocaleNs = typeof LOCALE_NS_KEY;
@@ -168,7 +168,7 @@ export type LocaleNs = typeof LOCALE_NS_KEY;
  * 卡片取文案的函数形状：官方 `TranslateNS<N>`（installed `dsh-client-ui-slots/lib/types/
  * index.d.ts:67` `= Translate<LocaleKeysOf<N>>`，而 `Translate<K> = (key: K, params?) =>
  * string`，同文件 :45）——键集就是上面 merge 的 `keyof UiMessages`（外加官方 `common`
- * 命名空间的共享词表：`LocaleKeysOf` 的查找链在本包 miss 之后会 consult 它），函数面完全
+ * 命名空间的共享词表：`LocaleKeysOf` 的查找链在本包 miss 之后会 consult 它），函数类型完全
  * 归官方，本地不再声明。
  */
 export type Translate = OfficialTranslateNS<typeof LOCALE_NS_KEY>;

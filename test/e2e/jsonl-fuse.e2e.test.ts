@@ -19,7 +19,7 @@ const FUSE_SOURCE = path.join(REPO_ROOT, "lib/jsonl-fuse.ts");
 const LEDGER_NAME = "events.jsonl";
 
 /** 子进程 worker：同一根 lib 源码，向指定文件追加 N 行（行尾 \n 由 payload 自带，与
- *  appendJsonl 的调用口径一致——fuse 层只管原样写）。import 的必须是 file:// URL：
+ *  appendJsonl 的调用规则一致——fuse 层只管原样写）。import 的必须是 file:// URL：
  *  Windows 的绝对路径字面量（D:\…）既不是合法 URL，反斜杠还会先被字符串转义吃掉。 */
 const WORKER_SOURCE = `
 import { appendUnderFuse } from "${pathToFileURL(FUSE_SOURCE).href}";

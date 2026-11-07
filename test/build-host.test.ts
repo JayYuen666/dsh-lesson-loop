@@ -41,7 +41,7 @@ describe("buildHost()", () => {
       "@deepseek-ai/schemastery 必须以裸说明符留在产物里",
     );
     // 反向锁：不得退回公共 schemastery——它没有 .volatile()，解析出的仍是普通值，
-    // 设置卡写进去的开关与规则卡因此永远读不到（0.2.1-alpha.2 迁移的根因）。
+    // 设置卡写进去的开关与规则卡因此永远读不到（0.2.1-alpha.2 迁移的真正的原因）。
     assert.ok(
       !/from\s+["']schemastery["']/u.test(out),
       "产物不得再值导入公共 schemastery（volatile 解析只在宿主 fork 里）",
@@ -57,7 +57,7 @@ describe("buildHost()", () => {
     );
     assert.ok(
       out.includes('from "@deepseek-ai/dsh-brand"'),
-      "dsh-brand 必须外部化（口径 A；内联=把官方 branded-string 构造器复制进本包产物）",
+      "dsh-brand 必须外部化（规则 A；内联=把官方 branded-string 构造器复制进本包产物）",
     );
     assert.ok(!/^function brandString\(/mu.test(out), "产物不得内联 brandString 的函数体");
     assert.ok(
@@ -70,7 +70,7 @@ describe("buildHost()", () => {
     );
     assert.ok(
       out.includes('from "@deepseek-ai/dsh-home-paths"'),
-      "dsh-home-paths 必须外部化（缓存目录口径由宿主决定，内联=按构建机的家目录算路径）",
+      "dsh-home-paths 必须外部化（缓存目录规则由宿主决定，内联=按构建机的家目录算路径）",
     );
     assert.ok(
       out.includes('from "zod"'),
@@ -81,7 +81,7 @@ describe("buildHost()", () => {
   it("产物 host.js：不残留 ./x.ts 形态的相对说明符", async () => {
     const out = await buildHost();
     // lib/*.ts 应已被吃进单文件；留着即"发布后 Node 直接拒载"的形态
-    assert.ok(!/["']\.\/[^"']*\.ts["']/u.test(out), "不得有 ./x.ts 说明符残留");
+    assert.ok(!/["']\.\/[^"']*\.ts["']/u.test(out), "不得有 ./x.ts说明符残留");
   });
 });
 
@@ -114,7 +114,7 @@ describe("单文件产物的输出守卫", () => {
     assert.throws(() => singleEntryChunk(output, "entry.ts"), /2 项输出/u);
   });
 
-  it("拒绝 asset：单文件产物没有落盘 asset 的位置", () => {
+  it("拒绝 asset：单文件产物没有写到磁盘 asset 的位置", () => {
     const output = [
       outputItem("chunk", ARTIFACT_FILE, { isEntry: true, code: CHUNK_CODE }),
       outputItem("asset", "x.css"),
@@ -135,19 +135,19 @@ describe("单文件产物的输出守卫", () => {
 });
 
 describe("产物 host.js 的运行期可链接性", () => {
-  it("在装好的宿主依赖面下 import() 成功：每一枚具名导入都真实存在", async () => {
+  it("在装好的宿主依赖下 import() 成功：每一枚具名导入都真实存在", async () => {
     // 类型检查只读 .d.ts，链接才证明**运行时那份模块**真有这些出口：ESM 在 link 阶段就校验
     // 具名导出，宿主线挪动时（如 0.2.1-alpha.2 改掉 webServer.host 的取值域、重排 client.js
     // 的导出）少一枚出口这里立刻红，而不是等装机之后。
     const linked = await import(new URL("../host.js", import.meta.url).href).then(
       (mod: { default?: { apply?: unknown } }) => mod,
-      // 拒绝臂的形参按本仓 lint 必须是 unknown；归一成 Error 才既有 message 可读，
+      // 拒绝分支的形参按本仓 lint 必须是 unknown；归一成 Error 才既有 message 可读，
       // 又让下面的收窄成立。
       (error: unknown) => (error instanceof Error ? error : new Error(String(error))),
     );
     if (linked instanceof Error) {
       // 模块命名空间对象不能模板字符串化（Cannot convert object to primitive value），
-      // 失败面只取 message。
+      // 失败只取 message。
       assert.fail(`host.js 链接失败：${linked.message}`);
     }
     assert.equal(typeof linked.default?.apply, "function", "cordis 入口的 apply 必须在场");

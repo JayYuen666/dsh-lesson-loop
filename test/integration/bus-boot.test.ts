@@ -22,7 +22,7 @@
 //
 // 发布态产物用 buildHost()（build-host.mjs 导出的纯函数）在内存里现建，不读磁盘上那份 gitignored
 // host.js：真装机跑的是 publishConfig.exports 指向的产物（依赖被内联/残留 ./x.ts/默认导出丢失等
-// 构建回归，源码态测试盖不住），这条链路正是「沙箱里没落盘」那类故障最可能在生产形态下暴露的那一面。
+// 构建回归，源码态测试盖不住），这条链路正是「沙箱里没写到磁盘」那类故障在生产形态下最容易暴露的一环。
 
 import { afterEach, afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -64,7 +64,7 @@ const CATEGORY_GATE_FAILURE = "gate-failure";
 /** `gate.command.join(" ")` 的展开式：事件流水里存的原始签名。 */
 const SIGNATURE_GATE_COMMAND = "pnpm check";
 
-// 动态导入 .mjs/.js 对 TS 为 any，先收窄到用到的最小面再取成员（避免 no-unsafe-*）。
+// 动态导入 .mjs/.js 对 TS 为 any，先收窄到用到的最小类型再取成员（避免 no-unsafe-*）。
 const CordisMod = (await import(CORDIS_ENTRY)) as { Context: unknown };
 const LoaderMod = (await import(LOADER_ENTRY)) as { default: unknown };
 
@@ -242,7 +242,7 @@ function persistedRuleCards(provider: SettingsProviderFake): Record<string, unkn
   return Array.isArray(rules) ? (rules as Record<string, unknown>[]) : [];
 }
 
-describe("真实 Loader 装载 lesson-loop host：quality-gate 门禁失败上报的落盘判定", () => {
+describe("真实 Loader 装载 lesson-loop host：quality-gate门禁失败上报的写到磁盘判定", () => {
   let live: TestCtx | undefined;
   let scratch: string;
   let origDshHome: string | undefined;
@@ -321,7 +321,7 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate 门禁失败上�
       // 断言③：反复上报达 promoteThreshold（默认 3）→ 规则卡写进条目段的 rules，回执 ok:true。
       const second = await bus.report(gateFailurePayload(8));
       expect(second.ok).toBe(true);
-      expect(second.ready, "occurrences=2 < 3 → 未达门槛，不催审").not.toBe(true);
+      expect(second.ready, "occurrences=2 < 3 → 未达阈值，不催审").not.toBe(true);
       const third = await bus.report(gateFailurePayload(9));
       expect(third.ok, "第三次上报回执 ok:true").toBe(true);
       expect(third.ready, "occurrences=3 达阈值 → 候选卡 ready").toBe(true);
@@ -341,7 +341,7 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate 门禁失败上�
   );
 
   it(
-    "发布态产物 host.js：同一链路同样落盘（装机真跑的就是这一份）",
+    "发布态产物 host.js：同一链路同样写到磁盘（装机真跑的就是这一份）",
     { timeout: 30_000 },
     async () => {
       const inst = await mount(FIXTURE_HOST_JS);
@@ -391,7 +391,7 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate 门禁失败上�
       expect(existsSync(inst.eventsPath), "关闭态不许创建 events.jsonl").toBe(false);
 
       // 全为 volatile 的 config 变化走 loader 的 `_commitVolatile` 就地提交，不重挂载条目。
-      // 改回重挂载的话这两条会红，而卡片"写完立刻生效"就换成了另一套取值口径。
+      // 改回重挂载的话这两条会红，而卡片"写完立刻生效"就换成了另一套取值规则。
       expect(entryOf(inst.ctx, SWITCH_NS)?.fiber, "volatile-only 不许重挂载条目").toBe(fiberBefore);
       expect(inst.ctx.get("lessonLoop"), "同一 fiber ⇒ 旧句柄就是新句柄").toBe(bus);
       await expect(

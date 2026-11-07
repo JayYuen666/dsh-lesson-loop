@@ -1,19 +1,19 @@
-// rules-namespace：规则库的官方存放面——本条目设置命名空间里的 `rules` 数组字段。
+// rules-namespace：规则库的官方存放位置——本条目设置命名空间里的 `rules` 数组字段。
 //
 // 为什么从"自管 $DSH_HOME/metrics/lesson-loop-rules.json"搬到 settings：
 //   1. dsh 承认的用户数据目录只有 settings 文档与 sessions/storages/cache/logs，
 //      插件自开 `metrics/` 属越界（用户手工编辑、备份、清理都不在官方面上）；
 //   2. settings provider 已自带跨进程写锁（atomic-write 的 .lock 兄弟文件）、
-//      逐 namespace 合并与"外部编辑热加载"，规则库正是需要这三件事的状态面。
+//      逐 namespace 合并与"外部编辑热加载"，规则库正是需要这三件事的状态。
 //
 // 0.2.1-alpha.2 里规则数组与开关**同属一段**（`lesson-loop`），这不是妥协而是唯一形态：宿主
 // 的设置面按 profile 条目建模（一个条目一份 `Config`、一个命名空间 = 条目 id），
 // 插件侧的 `settings.register`/`get`/`installSection` 已整体移除——再开一段就等于再造
 // 一个插件条目。旧那条"分属两段"的理由（provider 用 `schema(mergeLayers(base, section))`
 // 校验，坏存量把 register 打回、连带打死另一段）在 0.2.1-alpha.2 换了一种触发方式，因此也换了
-// 一道闸门，见下面 RulesFieldSchema 的 `.loose()` 与 load() 的双层判定（user 原文 + 解析值）。
+// 一道检查，见下面 RulesFieldSchema 的 `.loose()` 与 load() 的双层判定（user 原文 + 解析值）。
 //
-// 读写口径（LessonStore 的 RulesRepository 实现）：
+// 读写规则（LessonStore 的 RulesRepository 实现）：
 //   读 —— `describe()` 里本条目那一条：`value` 是 cordis 解析后的当前值（volatile 字段
 //         已全部折成普通数据），`user` 是 profile 文档里那一层的原文，`revision` 是它的
 //         单调版本号；三者同一次同步读取，天然成对。
@@ -42,10 +42,10 @@ import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 /**
  * 单字段声明：类型判定**不在这里**发生。
  *
- * 收窄由 lib/lesson-store.ts 的 normalizeRuleCardRow 逐字段负责（既有口径：一条
+ * 收窄由 lib/lesson-store.ts 的 normalizeRuleCardRow 逐字段负责（既有规则：一条
  * 漂移记录不许拖垮整条总线）。schema 若把字段声明成强类型，用户手改一个
  * `occurrences: "3"` 就会让整片规则库读不出来——比旧实现更差的退化，故这里只
- * 声明"有哪些字段"（给配置面与 describe().schema 看），判定留给读取侧。
+ * 声明"有哪些字段"（给配置表与 describe().schema 看），判定留给读取侧。
  */
 const cardField = Schema.any();
 
@@ -102,7 +102,7 @@ export const RulesFieldSchema = Schema.array(Schema.union([RuleCardSchema, cardF
  * index.d.ts:62，cordis `Service` 子类 + private 字段 → 名义比较）的两位成员投影：
  * - `update` **整体**取官方成员（:102 `update(ns: string, patch: object, expectedRevision?:
  *   number): Promise<void>`），签名一个字都不重述。`ns` 官方就是裸 `string`（品牌
- *   `SettingsNamespace` 只出现在 :43 的冲突错误与 types.d.ts:73 的事件载荷上），故本包不为它造品牌。
+ *   `SettingsNamespace` 只出现在 :43 的冲突错误与 types.d.ts:73 的事件载荷上），故本包不为它打 `brand` 标记。
  * - `describe` 只把**入参**绑官方（:96 那个可选的 `SettingsDescribeOptions`，:21-23），
  *   返回域留 `readonly unknown[]`。这不是偷懒：本包对这一行的全部工作就是判"读不读得懂"
  *   （`value`/`user`/`revision` 三位任一不合形状都退成 unusable，绝不拿空库去背书写回），
@@ -119,7 +119,7 @@ export interface SettingsCasSurface {
 
 /** 命名空间描述符的最小投影：value（解析值）+ user（文档原文）+ revision。
  *  revision 是官方承诺的单调版本号，但跨边界交付不打包票：不合形状（非数字/负数/非整数）
- *  记成 null，读面按 corrupt 处理——伪造 0 会拿一个并不成立的 CAS 条件去写，不同 provider
+ *  记成 null，读取接口按 corrupt 处理——伪造 0 会拿一个并不成立的 CAS 条件去写，不同 provider
  *  对 `expectedRevision: 0` 的处理也未必一致，与其猜不如当读不到。 */
 interface RulesDescriptor {
   readonly value: unknown;
@@ -157,7 +157,7 @@ function rulesCorrupted(user: unknown): boolean {
  * user 层判定兜不住的最后一类：provider 半解析、自定义 surface、volatile 投影异常——
  * 文档原文完全正常，解析值却不是记录、或里面没有数组形的 `rules`。这时 `cardsOfValue`
  * 会把空值折成空库，`usable: true` + 空卡会让下一次提交以当前 revision 把空数组整片
- * 写回，替坏数据盖了章。按 {@link SettingsCasSurface} 的口径，三位里任一不合形状都退成
+ * 写回，替坏数据盖了章。按 {@link SettingsCasSurface} 的规则，三位里任一不合形状都退成
  * unusable，不猜。
  */
 function rulesValueCorrupted(value: unknown): boolean {
@@ -180,7 +180,7 @@ function unavailableRulesRepository(): RulesRepository {
   return {
     load: (): RulesRead => UNUSABLE_READ,
     // 端口契约要求 Promise 回执（RulesRepository.save），而这里没有任何要等的东西：
-    // 直接给一个已 fulfil 的 Promise，而不是空转的 async 箭头。
+    // 直接给一个已 fulfil 的 Promise，而不是什么都不做的 async 箭头。
     save: (): Promise<RulesWriteOutcome> => Promise.resolve("rejected"),
   };
 }
@@ -224,7 +224,7 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
   };
   // 缺 id 坏行的台账（每端口实例一份，不随 /stats 轮询刷屏）：**原文**记着最近一次读出时
   // 归一不了的那几行，save 把它们原样带回去。理由是整片覆盖：save 只写出本次读到的
-  // `cards`，被 normalizeRuleCardRow 判掉的行不在里面，落盘那一刻就从用户存量里永久
+  // `cards`，被 normalizeRuleCardRow 判掉的行不在里面，写到磁盘那一刻就从用户存量里永久
   // 消失（无备份、无回退路径）。而丢弃判据来自那个会随版本演进的归一器——新版本收紧
   // 任何必填字段，升级后所有旧卡都会"看起来缺 id"，不搬回去就是让一次升级把整库清空。
   // 只记数不够用：复原地需要那几行本身。
@@ -254,7 +254,7 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
         // 条目被摘掉（热卸载竞态）= 看不见这一段：按"不可用"处理但**不当 corrupt 报**——
         // apply 跑在自己那条 fiber 变 ACTIVE 之前 describe() 里就没有本条目的行（真实宿主
         // 隔离实测），每次正常开机都会经过这一支，报了就是每次开机刷一条。真坏形状
-        // （revision 不是非负整数 / user 层或解析值不是数组形）才报，读面与写面都退
+        // （revision 不是非负整数 / user 层或解析值不是数组形）才报，读取接口与写入都退
         // unusable，绝不退成空库再写回去——那等于替别的进程刚写的规则库背书、或替那段
         // 等人修坏数据盖章。
         if (found === null) {
@@ -284,7 +284,7 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
       }
     },
     async save(cards: readonly RuleCard[], revision: number): Promise<RulesWriteOutcome> {
-      // 端口内闭环：不可用读给出的 -1 哨兵不许出端口。各 provider 对负数 expectedRevision
+      // 守卫留在端口内部：不可用读给出的 -1 哨兵不许出端口。各 provider 对负数 expectedRevision
       // 的处理并不一致（抛错 / 当作无条件写都有），调用方一旦漏检 usable 就等于用一枚
       // 不成立的 CAS 条件覆写别人刚写好的规则库——守卫因此落在端口内，而不是只靠
       // LessonStore.commit 的 trustworthy 判断。
@@ -297,11 +297,11 @@ export function createRulesRepository(surface: SettingsCasSurface | null): Rules
       try {
         // 整段替换 rules 键（mergeLayers 对数组是整体覆盖），故传入的数组必须
         // 来自"写这一刻"的读取——见 LessonStore.commit 的 CAS 纪律。
-        // 证据在落盘前收敛（细节截断 + 只留最近 N 条）：否则 patch 文档随失败次数无界增长。
+        // 证据在写到磁盘前收敛（细节截断 + 只留最近 N 条）：否则 patch 文档随失败次数无界增长。
         // 读不动的存量行原样追加在末尾：它们不是本次改动的一部分，但整片覆盖会把它们
-        // 删掉。补回去而不是拒写——拒写会让一件坏行把整个规则库锁死（记账、衰减、
+        // 删掉。补回去而不是拒写——拒写会让一件坏行把整个规则库锁死（记录下来、衰减、
         // 规则动作全停），代价远大于"这段坏数据继续留着等人修"。坏行的 evidence 仍按
-        // 同一口径收敛（见 capDroppedRowEvidence）：否则「证据是唯一无界字段」这条约束
+        // 同一种做法收敛（见 capDroppedRowEvidence）：否则「证据是唯一无界字段」这条约束
         // 在坏行上失效，每次 CAS 写都会把那份转储重新序列化一遍。
         const payload = [...capEvidence(cards), ...capDroppedRowEvidence(droppedRowsKept)];
         await surface.update(SETTINGS_NAMESPACE, { [RULES_FIELD]: payload }, revision);

@@ -1,5 +1,5 @@
 // test/schema-coverage.ts 的**解析器**自身要有判据：它是九仓共用门禁（复制式分发），
-// 解析漏一个字段等于那个设置项永远不上卡、也永远不会被点名（假绿）；解析截断则相反，
+// 解析漏一个字段等于那个设置项永远不上卡、也永远不会被点名（误判通过）；解析截断则相反，
 // 会把不存在的字段报成"未暴露"。这里直接喂 source 文本，不依赖本仓 host.ts。
 /// <reference types="node" />
 import { describe, it } from "vitest";
@@ -11,7 +11,7 @@ import { pathToFileURL } from "node:url";
 
 import { hostSchemaFields, schemaCoverageProblems } from "./schema-coverage.ts";
 
-describe("host schema 解析器（卡片覆盖门禁的读数面）", () => {
+describe("host schema 解析器（卡片覆盖门禁的读数）", () => {
   it("值的写法不限于 `Schema.`：引用另一枚 schema 常量的字段照样要解析出来", () => {
     const src = `const configSchema = Schema.object({
   enabled: Schema.boolean().default(true).volatile(),
@@ -21,7 +21,7 @@ describe("host schema 解析器（卡片覆盖门禁的读数面）", () => {
     assert.deepEqual(hostSchemaFields(src), ["enabled", "rules", "port"]);
   });
 
-  it("值里的字符串含右括号不会把块截断（截断后其后的字段全部丢失 = 假绿）", () => {
+  it("值里的字符串含右括号不会把块截断（截断后其后的字段全部丢失 = 误判通过）", () => {
     const src = `const configSchema = Schema.object({
   a: Schema.string(),
   b: Schema.string().default("x)y"),
@@ -72,7 +72,7 @@ const configSchema = Schema.object({
   });
 });
 
-/** 探针 host.ts：两个字段，卡片只绑一个时另一个必须被点名。 */
+/** 用于探测的 host.ts 替身：两个字段，卡片只绑一个时另一个必须被点名。 */
 const PROBE_HOST = `export const Config = Schema.object({
   alpha: Schema.boolean().default(true),
   gamma: Schema.boolean().default(true),
@@ -99,7 +99,7 @@ function problemsIn(dir: string): string[] {
 }
 
 describe("卡片绑定扫描（boundFieldsIn 的两种字段写法）", () => {
-  // 这几条走 schemaCoverageProblems 的完整面（自建临时包目录），因为它们钉的正是
+  // 这几条走 schemaCoverageProblems 的完整路径（自建临时包目录），因为它们钉的正是
   // 「源码写法 → 门禁读数」这一段——直接喂 boundFieldsIn 拿不到那个缺口暴露出来时的
   // 症状（假失败：字段明明上了卡却报未暴露）。
   it('field="x" 的 JSX 属性写法也算绑定（.tsx 卡片的主要写法）', () => {

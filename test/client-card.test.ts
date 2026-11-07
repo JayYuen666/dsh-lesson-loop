@@ -1,8 +1,8 @@
 // 卡片文案契约（双语）。
 //
-// 装配面（apply：注册两语字典 / bind / 槽位 payload 带 t / 回收）用宿主假件直验；文案面
+// 装配（apply：注册两语字典 / bind / 槽位 payload 带 t / 回收）用宿主假件直验；文案
 // 分两层：模块级纯函数（ruleMetaLines / saveBarStatus / buildConfigRows …）逐条钉串，
-// 再由「整卡渲染」一节把外壳与五种状态的规则卡各渲染一遍，钉住两语的真实文本面。
+// 再由「整卡渲染」一节把卡片 外壳 与五种状态的规则卡各渲染一遍，钉住两语的真实文本。
 //
 // 为什么不挂 DOM：本包 devDependencies 里没有 jsdom / @testing-library（样板包 ctx-observe
 // 有，本包没引也不该为测试新增依赖）。而卡片全部节点都是 createElement 产物（纯对象），
@@ -34,17 +34,17 @@ import {
 import type { RuleCardView } from "../src/client-entry.ts";
 import { UI_MESSAGES } from "../src/ui-messages.ts";
 import type { LocaleNs, Translate, UiMessages } from "../src/ui-messages.ts";
-// 卡片槽位 key 的单源桩件：bundle 包名直接读 ~/.dsh/profiles/web/package.json。
+// 卡片槽位 key 的唯一来源测试替身：bundle 包名直接读 ~/.dsh/profiles/web/package.json。
 import { profileBundleName } from "./profile-bundle.ts";
 
 // 只桩掉两个钩子（createElement 用真实实现）：见文件头的「为什么不挂 DOM」。
-// 字符串说明符：react 替身桩无法用动态形态表达（@types/react 是 `export =`，
-// 工厂返回类型要求带 `default` 位而类型面上没有），详见 memory-insight-card/test/insight-card.test.ts 同处注释。
+// 字符串形态的模块说明符：react 替身桩无法用动态形态表达（@types/react 是 `export =`，
+// 工厂返回类型要求带 `default` 位而类型声明上没有），详见 memory-insight-card/test/insight-card.test.ts 同处注释。
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   const patched = {
     ...actual,
-    // 常量桩：初始值即渲染值（本测试只读文本面，不驱动状态迁移）。
+    // 常量桩：初始值即渲染值（本测试只读文本，不驱动状态迁移）。
     useState: (initial: unknown): [unknown, (next: unknown) => void] => [
       initial,
       (): undefined => undefined,
@@ -107,8 +107,8 @@ function fillTemplate(text: string, params: Record<string, unknown>): string {
  * `Element implicitly has an 'any' type because expression of type
  *  'LocaleKeysOf<"lesson-loop">' can't be used to index type 'UiMessages'.
  *   Property 'back' does not exist on type 'UiMessages'`
- * ——`back` 属于官方 `common` 词表，说明原先手抄的 `(key: keyof UiMessages, …) => string`
- * 比官方面**窄**：卡面上的 `t` 其实受理那枚并集，只是本包字典不认领其中的 common 键。
+ * ——`back` 属于官方 `common` 词表，说明原先自己抄的那份 `(key: keyof UiMessages, …) => string`
+ * 比官方面**窄**：卡片上的 `t` 其实受理那枚并集，只是本包字典不认领其中的 common 键。
  */
 function localeText(
   dict: Record<string, string>,
@@ -135,7 +135,7 @@ function placeholders(template: string): Set<string> {
 const HAN = /\p{Script=Han}/u;
 
 /**
- * 蒸馏建卡的 `origin` 取值（夹具数据位，不是被测常量）：卡片按它多渲染一行"来自
+ * 蒸馏建卡的 `origin` 取值（夹具位，不是被测常量）：卡片按它多渲染一行"来自
  * /lessons-digest"，zh / en / 整卡渲染三处各给一张这种卡。
  */
 const DIGEST_ORIGIN = "lessons-digest";
@@ -222,7 +222,7 @@ const CONFIG_FIELDS = [
   "maxStatementChars",
 ];
 
-describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置面）", () => {
+describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置表）", () => {
   it("12 个设置字段各有 label/hint，且取自字典（中文与迁移前逐字一致）", () => {
     const rows = configRows(tZh);
     assert.deepEqual(
@@ -232,7 +232,7 @@ describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置
     assert.equal(rows[0]?.label, "启用闭环");
     assert.equal(rows[4]?.label, "候选升格门槛");
     assert.match(rows[0]?.hint ?? "", /\/lessons-digest/u);
-    // 落盘串钉在**真实流水路径**上：host 写的是 cache/lesson-loop/events.jsonl
+    // 写到磁盘串钉在**真实流水路径**上：host 写的是 cache/lesson-loop/events.jsonl
     // （host.ts 的 `lessonsFile: cacheFile("events.jsonl")`），旧串 metrics/lessons.jsonl 那个文件根本不存在。
     assert.match(rows[1]?.hint ?? "", /cache\/lesson-loop\/events\.jsonl/u);
     for (const item of rows) {
@@ -252,7 +252,7 @@ describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置
     assert.match(rows[1]?.hint ?? "", /cache\/lesson-loop\/events\.jsonl/u);
     // 保险丝钉的是**流水文件当前那个名字**：host 写的是 cache/lesson-loop/events.jsonl
     // （host.ts 的 `lessonsFile: cacheFile("events.jsonl")`），旧的
-    // metrics/lessons.jsonl 已不存在，串还写着它就是卡面在承诺一段没人写的数据。
+    // metrics/lessons.jsonl 已不存在，串还写着它就是卡片文案在承诺一段没人写的数据。
     // 精确等号（不是 includes）＝字典一改这里就红，逼着两处一起对齐。
     assert.equal(rows[10]?.label, "events.jsonl disk fuse");
     for (const item of rows) {
@@ -309,7 +309,7 @@ describe("规则评审区文案", () => {
   });
 });
 
-// ── 整卡渲染（两语）：钩子打桩后走 createElement 产物，直读文本面 ──────────────
+// ── 整卡渲染（两语）：钩子打桩后走 createElement 产物，直读文本 ──────────────
 /** 对象守卫（遍历渲染树用；src 里的同名工具未导出）。 */
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -325,7 +325,7 @@ function pickFrom(record: Record<string, unknown>, key: string): unknown {
 }
 
 /**
- * 渲染节点 → 文本面：字符串/数字子节点收下，数组逐个走，**函数组件就地调用**
+ * 渲染节点 → 文本：字符串/数字子节点收下，数组逐个走，**函数组件就地调用**
  * （react 钩子已是常量桩），DOM 元素递归 props.children。
  */
 function textOf(node: unknown): string {
@@ -350,7 +350,7 @@ function textOf(node: unknown): string {
   return textOf(pickFrom(props, "children"));
 }
 
-/** 写入回调的哑目的（本测试不驱动保存）。0.2.1-alpha.2 的 `ConfigForm.mutate` 回**受理位**
+/** 写入回调的哑目的（本测试不驱动保存）。0.2.1-alpha.2 的 `ConfigForm.mutate` 回**受理结果**
  *  （true=宿主接受；installed config-form-types.d.ts:52），卡片消费它：false 时报错并
  *  保留草稿（见 src/client-entry.ts 的 LlcCardProps / save），故假件回 true。 */
 const noWrite = async (): Promise<boolean> => true;
@@ -361,7 +361,7 @@ const noOp = (): void => {
 const useReadyCard = ((selector: (snap: unknown) => unknown): unknown =>
   selector({ status: "ready", writable: true, value: {}, revision: 7 })) as never;
 
-/** 整张设置卡的文本面：三节配置行 + 保存条 + 四个评审分节 + 蒸馏提示。 */
+/** 整张设置卡的文本：三节配置行 + 保存条 + 四个评审分节 + 蒸馏提示。 */
 function cardText(translator: Translate): string {
   return textOf(
     createElement(LlcCard, {
@@ -372,8 +372,8 @@ function cardText(translator: Translate): string {
   );
 }
 
-/** 单条规则卡（含动作按钮）的文本面。 */
-/** 规则读面的最小替身：文本面用例不触发动作，四个方法只为满足组件契约。 */
+/** 单条规则卡（含动作按钮）的文本。 */
+/** 规则读取接口的最小替身：文本用例不触发动作，四个方法只为满足组件契约。 */
 const fakeRulesRemote = {
   stats: async () => ({}),
   rules: async () => ({ ok: true, rules: [] }),
@@ -394,7 +394,7 @@ function ruleText(translator: Translate, row: RuleCardView): string {
   );
 }
 
-/** 卡片外壳真正吃进去的字典键（这些串必须出现在渲染文本里）。 */
+/** 卡片 外壳 真正吃进去的字典键（这些串必须出现在渲染文本里）。 */
 const SHELL_KEYS = [
   "digestHint",
   "sectionCandidates",
@@ -407,7 +407,7 @@ const SHELL_KEYS = [
 ] as const;
 
 describe("整卡渲染（两语，直读 createElement 产物）", () => {
-  it("zh：外壳把标题/11 条配置行/四段评审标题/保存条/蒸馏提示全渲染出来", () => {
+  it("zh：卡片 外壳 把标题/11 条配置行/四段评审标题/保存条/蒸馏提示全渲染出来", () => {
     const text = cardText(tZh);
     for (const key of SHELL_KEYS) {
       assert.ok(text.includes(UI_MESSAGES.zh[key]), `${key} 该出现在中文卡面上`);
@@ -480,7 +480,7 @@ describe("整卡渲染（两语，直读 createElement 产物）", () => {
       for (const label of item.zh) {
         assert.ok(zh.includes(label), `${item.status} 的中文卡缺 ${label}`);
       }
-      // 数据面两语一致：分类 · 项目桶 · 签名计数都在，规则正文一字不改
+      // 数据那一栏两语一致：分类 · 项目桶 · 签名计数都在，规则正文一字不改
       assert.ok(en.includes(row.statement));
       assert.ok(zh.includes(row.statement));
     }
@@ -529,9 +529,9 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
     });
     /** apply 期间注册进官方 locale 的字典（命名空间 + 语言 + 该语字典），供双语断言。
      *  官方 `register` 的类型化重载**一次交齐两语**（installed
-     *  `dsh-client-locale/lib/types/client/index.d.ts:199`），桩件按语言摊平成逐语记录，
-     *  好让下面的断言与旧的「两语各注册一次」逐字同形。字典面直接绑官方
-     *  `LocaleDictOf<本包命名空间>`：本包少一个键、多一个键都先在桩件这里编译失败。 */
+     *  `dsh-client-locale/lib/types/client/index.d.ts:199`），测试替身按语言摊平成逐语记录，
+     *  好让下面的断言与旧的「两语各注册一次」逐字同形。字典内容直接绑官方
+     *  `LocaleDictOf<本包命名空间>`：本包少一个键、多一个键都先在测试替身这里编译失败。 */
     const registered: {
       ns: string;
       localeId: string;
@@ -561,7 +561,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
       subscribe: (): (() => void) => (): undefined => undefined,
       set: async (): Promise<boolean> => true,
       unset: async (): Promise<boolean> => true,
-      // 官方 ConfigForm 的第五位（路径级原子写入）：本卡不走它，但类型面要求在位。
+      // 官方 ConfigForm 的第五位（路径级原子写入）：本卡不走它，但类型声明要求在位。
       mutate: async (): Promise<boolean> => true,
       // 假件**留着** dispose 这根绊线：0.2.1-alpha.2 的消费契约 `ConfigForm`
       // （installed config-form-types.d.ts:33-71）里没有 dispose，卡片一旦去销毁
@@ -571,14 +571,14 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
       },
     };
     /**
-     * 假件按 `apply` 的入参面构造：`effect` / `slots` 在 ClientCtx 里已是**官方**服务投影
+     * 假件按 `apply` 的入参构造：`effect` / `slots` 在 ClientCtx 里已是**官方**服务投影
      * （cordis `Context["effect"]` 与 `Pick<SlotRegistry, "inject" | "register">`），所以
      * 生产侧签名一漂移就红在编译期，而不是跑到一半才崩。两处不得已的显式标注：
      *  - `effect`：官方是**两**个重载（同步 `Disposable<Promise<void>>` 与可 await 的
      *    `AsyncDisposable<Promise<void>>`，后者还是 PromiseLike），单个箭头签名同时满足
      *    不了两边（实测 TS2345：`Type 'SyncEffect<any>' is not assignable to type
      *    '(() => void) | undefined'`，因为官方那一支还允许 `Iterable<Disposable>`），故
-     *    一次性投影到官方面：假件只回收同步 disposer，那个返回面没人消费；
+     *    一次性投影到官方面：假件只回收同步 disposer，那个返回类型没人消费；
      *  - `register`：官方是**双重载**（`inject?: undefined` 与 `inject: (…) => I`），
      *    重载目标推不出上下文参数类型（TS7006），故按 `unknown` 收、在桩内一次性投影回
      *    本卡实际传的那一重载。
@@ -591,7 +591,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
       slots: {
         // 官方 `SlotRegistry.inject(key, callback)`：key 的取值域就是合并后的 `SlotMap`，
         // 本卡的 `plugins.bundle.config` 能出现在这里靠的是 src 侧载入的属主包 merge；
-        // 返回的是一枚 idempotent disposer（旧手抄面写 `void`，把这一步藏掉了）。
+        // 返回的是一枚 idempotent disposer（旧的自己抄的那份类型写成 `void`，把这一步藏掉了）。
         // 参数名不叫 `callback`（那会撞 eslint `callback-return` / `prefer-await-to-callbacks`）。
         inject: (key, install) => {
           slotNames.push(key);
@@ -608,7 +608,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
             key?: string;
             inject: () => Record<string, unknown>;
           };
-          // key 必须是 **bundle 包名**（宿主按包名派发 plugins.bundle.config，真源读
+          // key 必须是 **bundle 包名**（宿主按包名派发 plugins.bundle.config，唯一来源读
           // profile 清单，见 test/profile-bundle.ts）；这里刻意不写 NS —— `key === NS`
           // 是同义反复，NS 改成什么都会跟着绿，正是本缺陷当初漏网的形状。
           assert.equal(desc.key, profileBundleName(), "卡片按 bundle 包名 keyed");

@@ -1,9 +1,9 @@
-// lesson-loop host 半：自进化闭环的总线与规则引擎。
+// lesson-loop host 半：教训闭环的总线与规则引擎。
 //
 // 五段闭环（设计定稿："一切皆插件"，不动 dsh 核心）：
 //   观察 —— danger-guard / quality-gate / session-rescue（以及任何第三方插件）经
 //           ctx.get('lessonLoop') 上报（可选读：总线缺失只丢报告，绝不拖垮报告方）；
-//   沉淀 —— 事件流水落 **官方 cache 目录** dshCachePath('lesson-loop','events.jsonl')
+//   写入 —— 事件流水落 **官方 cache 目录** dshCachePath('lesson-loop','events.jsonl')
 //           （单写者追加）；规则卡库存本条目设置命名空间 `lesson-loop` 的 `rules`
 //           数组字段（provider 写锁 + 逐 namespace 合并 + revision CAS，见 lib/rules-namespace.ts）；
 //   提醒 —— ①常驻 systemPrompt 段（order 1560，闭环存在感）；②agent/created
@@ -15,26 +15,26 @@
 //           人工停用/归档），不再静默归档。
 //
 // 严禁自定义会话事件（持久化读取白名单会拒绝加载，session-rescue 同教训）——
-// 总线只走服务方法 + 官方设置面/cache 落盘。
+// 总线只走服务方法 + 官方的设置存储与缓存目录写入。
 //
 // 运行方式：dsh cordis Loader 直接 import 本 .ts（Node ≥22.18 类型剥离）。
 // 运行时值导入三枚：schemastery（宿主 fork）、@deepseek-ai/dsh-home-paths、@deepseek-ai/dsh-brand
-// （都在 peerDependencies，产物留裸说明符；不进 dependencies——见 test/publish-manifest.test.ts）；
-// @deepseek-ai/cordis 等服务面一律 type-only。
+// （都在 peerDependencies，产物里按包名引用它们；不进 dependencies——见 test/publish-manifest.test.ts）；
+// @deepseek-ai/cordis 等宿主服务一律 type-only。
 
 import { randomUUID } from "node:crypto";
 // 0.2.1-alpha.2 设置面要求宿主 fork：只有 @deepseek-ai/schemastery 的 resolve 会把 volatile
 // 字段包成 Volatile 引用（vendor/schemastery/src/index.ts:521-533），公共
 // schemastery@3.18.0 既没有 `.volatile()`、解析出来的也仍是普通值（设置卡写进去的值读不到）。
 // 本包的 lib/rules-namespace.ts 同步换 fork：规则库那枚数组字段是在那里构造、在这里并入
-// Config 的，用公共包的话它连 `.volatile()` 这个方法都没有，整个规则面会静默失效。
+// Config 的，用公共包的话它连 `.volatile()` 这个方法都没有，整套规则库读写会静默失效。
 import Schema from "@deepseek-ai/schemastery";
 import { dshCachePath } from "@deepseek-ai/dsh-home-paths";
 import type { Context, Events, Fiber, Volatile } from "@deepseek-ai/cordis";
-// 注入消息的 id 位是官方幻影品牌 `MessageId`（installed @deepseek-ai/dsh-llm/lib/types/
+// 注入消息的 id 位是官方的 `MessageId`（带 `brand` 标记的幻影类型，installed @deepseek-ai/dsh-llm/lib/types/
 // brand.d.ts:14），唯一合法构造口是官方 `brandString`（@deepseek-ai/dsh-brand/lib/types/
 // index.d.ts:28，恒等函数）。它也是本文件的 @deepseek-ai/* 值导入之一：落在
-// peerDependencies、产物留裸说明符（只在 devDependencies 会被 rolldown 内联进 host.js；
+// peerDependencies、产物里按包名引用（只在 devDependencies 会被 rolldown 内联进 host.js；
 // 写进 dependencies 则会在消费方 profile 里物化出第二份宿主实例，两者都不行）
 // ——与 danger-guard 的 `brandNumber`、session-rescue 的 `brandString` 同一处、同一理由。
 import { brandString } from "@deepseek-ai/dsh-brand";
@@ -43,7 +43,7 @@ import type { CommandRuntime } from "@deepseek-ai/dsh-commands";
 import type { MessageId } from "@deepseek-ai/dsh-llm";
 import type { Session, SessionEvent, SessionHeader, SessionId } from "@deepseek-ai/dsh-session";
 import type { SettingsForms } from "@deepseek-ai/dsh-settings";
-// 会话事件流的官方读面（见下面 SessionQueryFace 的用法注记）：type-only，运行时由 ctx 注入。
+// 会话事件流的官方读取接口（见下面 SessionQueryFace 的用法注记）：type-only，运行时由 ctx 注入。
 import type { SessionQueryEngine } from "@deepseek-ai/dsh-session-query";
 import type { SystemPrompt } from "@deepseek-ai/dsh-system-prompt";
 import type { TimerService } from "@deepseek-ai/cordis-plugin-timer";
@@ -94,7 +94,7 @@ const noDisposer = (): void => {
   void 0;
 };
 
-/** 人工动作键（总线服务面与规则读面共用的取值域；白名单在 lib/rules-remote.ts）。 */
+/** 人工动作键（总线宿主服务与规则读取接口共用的取值域；白名单在 lib/rules-remote.ts）。 */
 type RuleActionKind = RuleActionName;
 
 /**
@@ -113,20 +113,20 @@ function hasCallableRegister(value: unknown): boolean {
 /**
  * `/lessons-digest` 命令服务投影：官方 `CommandRuntime`（@deepseek-ai/dsh-commands，
  * installed `lib/types/index.d.ts:80` 起是 class，`extends TypertRemoteService` + 四枚
- * private 字段 → 名义比较）的 `register` 方法面（installed `:94`，官方
+ * private 字段 → 名义比较）的 `register` 方法子集（installed `:94`，官方
  * `Context.commands: CommandRuntime` 见同文件 `:65`）。
- * 旧镜像手抄的那份 descriptor 与官方 `CommandDefinition`（installed `:38-55`）有**三处**
+ * 改造前那份 descriptor 是照着官方 `CommandDefinition`（installed `:38-55`）抄出来的，有**三处**
  * 不一致（逐条按官方声明行号核对，本包的实际写法恰好都被官方容纳，故绑定后编译不报错）：
- *   1. `recordInput` 镜像写的是**必填**，官方是 `readonly recordInput?: boolean`
+ *   1. `recordInput` 抄成**必填**，官方是 `readonly recordInput?: boolean`
  *      （`:52`，注记 "Defaults to true"）——本包传 `false`，语义不变；
- *   2. `input` 镜像是 `{ hint: string }`，官方是 `CommandInputDescriptor`
+ *   2. `input` 抄成 `{ hint: string }`，官方是 `CommandInputDescriptor`
  *      （`@deepseek-ai/dsh-commands/types` installed `lib/types/types.d.ts:20-31`），
  *      除 `hint` 外还有本包不用的可选 `attachments` 旗标；
- *   3. 回显形状镜像写的是**非判别**联合 `{ kind: "success" | "error"; text: string }`，
+ *   3. 回显形状抄成**非判别**联合 `{ kind: "success" | "error"; text: string }`，
  *      官方 `CommandResult`（同上 installed `:33-41`）是判别联合，且 success 分支的
  *      `text` 是**可选**（`readonly text?: string`）并多一枚 `sourceEventSeq?: SessionSeq`；
  *      error 分支的 `text` 才是必填。
- * 入参同理：镜像把 handler 的形参写成了 `unknown`，官方是 `CommandInvocation`
+ * 入参同理：handler 的形参抄成了 `unknown`，官方是 `CommandInvocation`
  * （installed `:19-36`：`commandId`/`agent: Agent`/`rawInput: string`/`attachments`/`signal`）。
  * 形参类型现在由官方给出，但本包**读**它仍走 `fieldOf` + `isRecord` 的 unknown 面——载荷跨
  * 进程边界，官方标必填的成员（`agent`、`rawInput`）运行时未必真在。防御分支一条没删。
@@ -140,10 +140,10 @@ function isCommandsService(value: unknown): value is CommandsService {
 /**
  * systemPrompt 服务投影：官方 `SystemPrompt`（@deepseek-ai/dsh-system-prompt，installed
  * `lib/types/index.d.ts:237` 起是 cordis `Service` 子类 + private `layers`/`toolOrder`
- * → 名义比较）的 `section` 方法面（installed `:250`）。载荷即官方 `PromptSection`
+ * → 名义比较）的 `section` 方法子集（installed `:250`）。载荷即官方 `PromptSection`
  * （installed `:47-70`）：`name`/`order` 必填，`text` 允许静态串**或**每次拼装以
- * `AssembleContext`（installed `:37-45`）求值的 provider——旧镜像把 provider 的入参抄成了
- * `unknown`，那是加宽后的假面；官方还多两枚本包不用的可选旗标 `interpolate`/`complete`。
+ * `AssembleContext`（installed `:37-45`）求值的 provider——改造前把 provider 的入参抄成了
+ * `unknown`，那是加宽后的假类型；官方还多两枚本包不用的可选旗标 `interpolate`/`complete`。
  * 返回是官方承诺的 "the exact Cordis effect disposer" `() => void`（installed `:248-250`）。
  */
 type SystemPromptService = Pick<SystemPrompt, "section">;
@@ -158,7 +158,7 @@ function isSystemPromptService(value: unknown): value is SystemPromptService {
 /**
  * timer 服务投影：官方 `TimerService`（@deepseek-ai/cordis-plugin-timer，installed
  * `lib/types/index.d.ts:11` 起是 cordis `Service` 子类 + private `_schedule` → 名义比较）
- * 的 `timeout` 方法面（installed `:18-19`）。官方 `timeout` 是**重载**
+ * 的 `timeout` 方法子集（installed `:18-19`）。官方 `timeout` 是**重载**
  * （`timeout(callback, delay): () => void` / `timeout(delay): Promise<void>`），`Pick<>`
  * 两枚重载都保留，故本包的两参调用拿到的仍是取消函数。本地投影改名 `TimerFace`：官方导出
  * 名 `TimerService` 已被上面的 type import 占用（zvec-grep 同款退避）。
@@ -173,8 +173,8 @@ function isTimerService(value: unknown): value is TimerFace {
 }
 
 /**
- * 会话事件流的官方读面：`ctx.sessionQuery`（installed @deepseek-ai/dsh-session-query/
- * lib/types/index.d.ts:23-27 把它增强进 `Context`）的 `observeSession` 方法面投影
+ * 会话事件流的官方读取接口：`ctx.sessionQuery`（installed @deepseek-ai/dsh-session-query/
+ * lib/types/index.d.ts:23-27 把它增强进 `Context`）的 `observeSession` 方法子集投影
  * （同文件 :47 —— `observeSession(sessionId: SessionId, options?): Promise<SessionObservation>`）。
  * 本包只取这一位：`SessionObservation.events` 就是"该会话此刻的不可变事件切片"
  * （installed lib/types/observation.d.ts:15-19），替代已被官方标 `@deprecated` 的
@@ -214,10 +214,10 @@ function isSessionLike(value: unknown): value is SessionLike {
 
 /**
  * 宿主 ctx 结构契约守卫（apply 把 Context 收窄为 HostCtx，不写断言）。
- * 核验的是 0.2.1-alpha.2 的实际调用面：`effect`/`on` 接线、`inject` + `fiber` 挂页面策略、
+ * 核验的是 0.2.1-alpha.2 的实际调用形态：`effect`/`on` 接线、`inject` + `fiber` 挂页面策略、
  * `settings.describe` 做跨命名空间读与规则库读，以及 `fiber.await()`（装载期迁移必须
  * 等本条目 ACTIVE 才能读到规则库，见 startBootMigrations）。缺任一项一律急停——带着
- * 半截服务面在首个回合才崩，会被折叠成 turn kind:error 直接甩给用户。
+ * 半截宿主服务在首个回合才崩，会退化成一条 kind:error 的 turn 直接甩给用户。
  */
 function isHostCtx(value: unknown): value is HostCtx {
   if (!isRecord(value)) {
@@ -236,7 +236,7 @@ function isHostCtx(value: unknown): value is HostCtx {
 // PLUGIN_NAME / LESSON_SOURCE_KIND 的定义收敛到 lib/prompt.ts（lib/digest.ts 也要用
 // 同一个 kind，而它 import 不到 host——方向是 host → lib）。见该处的注释。
 
-// ── 结构类型（与宿主交互面的运行时形状；避免值导入 @deepseek-ai/*）────────
+// ── 结构类型（与宿主交互的类型的运行时形状；避免值导入 @deepseek-ai/*）────────
 
 /**
  * 主 ctx 上本包要用的 settings 面：`describe()`（跨命名空间读 locale，也是规则库
@@ -254,11 +254,11 @@ export type SettingsProvider = SettingsCasSurface;
  * 规则库那条读写链走的是主 ctx 的 service 实例。
  */
 interface InjectedCtx {
-  /** 只投影页面策略那一位，签名整体取官方成员：手抄成 `owner?: unknown` 比官方
+  /** 只投影页面策略那一位，签名整体取官方成员：自己抄成 `owner?: unknown` 比官方
    *  （`configure(presentation, owner?: Fiber)`，dsh-settings index.d.ts:80-82）更松，
    *  owner 传错东西编译期抓不到。 */
   settings: Pick<SettingsForms, "configure">;
-  /** 服务就绪回调里对三个可选服务只做守卫收窄，签名面各自另有 isXxx 判据。 */
+  /** 服务就绪回调里对三个可选服务只做守卫收窄，函数签名上各自另有 isXxx判据。 */
   commands: unknown;
   systemPrompt: unknown;
   timer: unknown;
@@ -266,9 +266,9 @@ interface InjectedCtx {
 }
 
 /**
- * provider 是否具备规则库需要的 CAS 面（describe + update）；缺位即规则面不可用。
+ * provider 是否具备规则库需要的 CAS 能力（describe + update）；缺位即规则库不可用。
  * ⚠ 不能再探 `register`：0.2.1-alpha.2 已把它连同 get/installSection 一起移除，拿它当硬前置会让
- * 每一条真宿主都判成"没有 CAS 面"，规则库于是结构性失效。
+ * 每一条真宿主都判成"没有 CAS 能力"，规则库于是结构性失效。
  * 导出仅供单测：非记录对象这条分支在 apply 里到不了（更早就用了 svc.settings.describe），
  * 但守卫本身要对它负责，故直验而不是伪造一条走不到的装载路径。
  */
@@ -303,7 +303,7 @@ interface ResolvedSettings {
   maxInjectedRules: number;
 }
 
-/** 取设置快照的取用口：每次现读引用当前值（设置卡改完下一个事件/回合即生效）。 */
+/** 取设置快照的取用入口：每次现读引用当前值（设置卡改完下一个事件/回合即生效）。 */
 type SettingsOf = () => ResolvedSettings;
 
 /** timer 的取消句柄：官方 `TimerService.setTimeout` 的返回（installed
@@ -339,15 +339,15 @@ interface AgentSessionView {
  * agent/created 载荷里的 agent = 官方 `Agent` 的本包读取投影。
  * `Agent` 是 interface（installed @deepseek-ai/dsh-agent/lib/types/types.d.ts:11 只声明
  * `id`，成员由 lib/types/runtime-types.d.ts:138-192 的官方增强交出：`session` :143、
- * `inject` :…、`status` :147…），不带私有字段，但整面远多于本包所需，故按 `Pick` 只取
- * `inject` 一位——**签名不再本地重述**。旧镜像写的是 `inject?: (message: unknown) => void`：
+ * `inject` :…、`status` :147…），不带私有字段，但整体类型远多于本包所需，故按 `Pick` 只取
+ * `inject` 一位——**签名不再本地重述**。改造前写的是 `inject?: (message: unknown) => void`：
  * `unknown` 什么都收，官方给 `UserMessage` 加必填位时本包静默漏填（正是此前迁移在别处
  * 抓到的那类缺陷），现在载荷由官方 `UserMessage` 约束，`id` 走 `brandString<MessageId>`、
  * `source.kind` 走 lib/prompt.ts 里那条 producer 声明。
  * `session` 一位只能投影（见 {@link AgentSessionView} 的理由）：官方 `Agent.session` 是
  * **必选**的 `Session` 类（runtime-types.d.ts:143），跨进程递来的会话是否具备某位只能
  * 运行时判（下面 `if (!isSessionLike(sessionRaw))` 与 header 的 typeof 守卫照旧留着）。
- * `inject` 留可选同样是边界口径而非宿主判决：官方那一位在 `Agent` 面上必选，
+ * `inject` 留可选同样是边界规则而非宿主判决：官方那一位在 `Agent` 面上必选，
  * 但本包拿到的 agent 可能是测试替身或半装配对象（`typeof agent.inject !== "function"`
  * 的守卫在 injectRulesDigest 里）。
  */
@@ -370,25 +370,25 @@ type AgentCreatedPayload = Omit<Parameters<Events["agent/created"]>[0], "agent">
 
 interface HostCtx {
   settings: SettingsProvider;
-  /** 服务读取面取官方 `Context["get"]`（installed @deepseek-ai/cordis/lib/types/reflect.d.ts:14
+  /** 读取服务的类型取官方 `Context["get"]`（installed @deepseek-ai/cordis/lib/types/reflect.d.ts:14
    *  `get<K extends string & keyof this>(name: K, strict?: boolean): undefined | this[K]`）：
    *  本包读的 `commands` / `llm` / `agentDefaultModel` / `systemPrompt` / `sessionQuery` **全部**
    *  是官方声明进 `Context` 的名字（installed @deepseek-ai/dsh-commands/lib/types/index.d.ts:65、
    *  @deepseek-ai/dsh-llm/lib/types/index.d.ts:29-31、
    *  @deepseek-ai/dsh-agent-default-model/lib/types/index.d.ts:6-8、
    *  @deepseek-ai/dsh-system-prompt 同名增强、@deepseek-ai/dsh-session-query 同名增强），
-   *  故走泛型臂拿到 `undefined | 官方服务类`，
-   *  一条都不落进 `get(name: string): any` 兜底臂（:16）。
+   *  故走泛型分支拿到 `undefined | 官方服务类`，
+   *  一条都不落进 `get(name: string): any` 兜底分支（cordis 的 lib/types/reflect.d.ts 里 Context 增强的 get）。
    *  ⚠ 与 danger-guard/host.ts 的 `HostCtx.get` 相反：那一包读的是 `SETTINGS_READER` 与
    *  `lessonLoop`，两者都不在官方 `Context` 上，换官方面只会把 `unknown` 降级成 `any`，
    *  所以它把本地面留着并写明了理由。这里名字全在官方面上，条件成立才换。
    *  返回 `undefined` 是官方语义（"or `undefined` when not (yet) provided"）：精简 profile
    *  确实交不出某些服务，各调用点下面的形状守卫照旧。 */
   get?: Context["get"];
-  /** 服务供给面取官方 `Context["provide"]`（installed reflect.d.ts:41-43，两枚重载）。
+  /** 服务供给的类型取官方 `Context["provide"]`（installed reflect.d.ts:41-43，两枚重载）。
    *  本包 provide 的名字 `lessonLoop` 是本仓 sibling 插件自有的服务名（宿主安装里检索为
-   *  0 命中），故它落在官方 `provide(name: string, value?: any): () => void` 那枚兜底臂上——
-   *  这是**官方给出的**读不到声明名时的口径，disposer 仍由官方签名交出（:43 `() => void`），
+   *  0 命中），故它落在官方 `provide(name: string, value?: any): () => void` 那枚兜底分支上——
+   *  这是**官方给出的**读不到声明名时的规则，disposer 仍由官方签名交出（:43 `() => void`），
    *  本地不再重述。 */
   provide?: Context["provide"];
   /** 挂页面策略用：`configure` 的 owner 必须显式传本插件 fiber（见 apply）。 */
@@ -401,7 +401,7 @@ interface HostCtx {
    *  @deepseek-ai/cordis/lib/types/fiber.d.ts:8）：本地不再重述工厂签名。⚠ 官方返回域
    *  （`SyncEffect`/`Effect`，:49-51）**不收 `undefined`**——见 NOOP_DISPOSER。 */
   effect: Context["effect"];
-  /** 事件接线面：两枚事件名与载荷都由官方事件表交出（`Parameters<Events[…]>[0]`），
+  /** 事件接线的类型：两枚事件名与载荷都由官方事件表交出（`Parameters<Events[…]>[0]`），
    *  本地不重述签名。`session/disposed` 的载荷就此是官方 `Session`（installed
    *  @deepseek-ai/dsh-session/lib/types/index.d.ts:50）；本包只读它的 `id`，那道
    *  `stringIdOf`/`isRecord` 守卫照旧（官方类型说的是宿主的承诺，交付由守卫负责）。
@@ -429,7 +429,7 @@ interface HostCtx {
  */
 export interface Config {
   enabled: Volatile<boolean>;
-  /** 教训落盘与归并开关（关掉后 report 只回执不落盘，管理面照常可用）。 */
+  /** 教训写到磁盘与归并开关（关掉后 report 只回执不写到磁盘，管理界面照常可用）。 */
   reportEnabled: Volatile<boolean>;
   /** 会话开始注入 armed 规则摘要。 */
   injectEnabled: Volatile<boolean>;
@@ -454,7 +454,7 @@ export interface Config {
   /**
    * 规则卡库（人工升格的用户数据）。本包**不从这里读**：读要走 `describe()` 才能同时拿到
    * revision（CAS 条件），见 lib/rules-namespace.ts 的 createRulesRepository；这里列出来是
-   * 为了让 Config 与 schema 保持单源同形——少一个字段就是少一处能被宿主投影的面。
+   * 为了让 Config 与 schema 保持同一个来源——少一个字段，就少一处能被宿主投影的东西。
    * 元素形状不在这里收窄（normalizeRuleCardRow 才是判定处），故投成 unknown[]。
    */
   rules: Volatile<readonly unknown[]>;
@@ -470,13 +470,13 @@ export interface Config {
    *
    * 为什么需要它：armed 只能由人工升格，而"零干净命中"的卡拿不到降级或归档的裁决
    * （见 lib/decay-policy.ts 的不可判定态），条数因此没有任何自动收敛路径——这条上限是
-   * 唯一能兜住"注入面单调增长"的地方。每条规则的正文仍**全文**注入（不截断），
+   * 唯一能约束"注入单调增长"的地方。每条规则的正文仍**全文**注入（不截断），
    * 少的是条数不是内容。同 digestTimeoutMs：是部署旋钮而非用户随时翻的开关，故不标 volatile。
    */
   maxInjectedRules: number;
 }
 
-/** 设置命名空间与 loader 行 config 共用同一 schema（单源，防漂移）。
+/** 设置命名空间与 loader 行 config 共用同一 schema（唯一来源，防漂移）。
  *  值名退避为 configSchema：避免与同名 interface Config 触发 no-redeclare（ctx-observe
  *  同款），外部仍以 `Config` 名导入（export as）——cordis registry 读的就是入口键
  *  `Config`（vendor/cordis/src/registry.ts:104 `Plugin.Base.Config`，装载时
@@ -487,7 +487,7 @@ export interface Config {
  *  `has no volatile fields`（:386）——开关与规则库因此都是"从 schema 反推"的，漏标一项
  *  不会报错，只会让那一项从设置卡上静默消失（test/host.test.ts 拿宿主同一个判据钉住）。 */
 /** 周期衰减的默认武装间隔（真值由 entry config `decayIntervalMs` 交进来，
- *  这里只剩 schema `.default()` 的单一来源）。一天一轮：衰减是统计口径的整理活，
+ *  这里只剩 schema `.default()` 的单一来源）。一天一轮：衰减是统计规则的整理活，
  *  比会话节奏慢得多，跑赢 24h 就够；更密的部署在行 config 上收紧。 */
 const DEFAULT_DECAY_INTERVAL_MS = 24 * 60 * 60_000;
 
@@ -512,16 +512,16 @@ const configSchema = Schema.object({
     .max(1024 * 1024 * 1024)
     .default(0)
     .volatile(),
-  // 规则正文的写入上限：armed 正文整段注入提示词，没有这条闸门时一次写请求就能把它塞满。
+  // 规则正文的写入上限：armed 正文整段注入提示词，没有这条上限时一次写请求就能把它塞满。
   // 默认与 lib/lesson-store.ts 的 DEFAULT_MAX_STATEMENT_CHARS 同源；硬上界防一个离谱的
-  // 配置把闸门变成空门。
+  // 配置把上限抬到形同没有。
   maxStatementChars: Schema.natural()
     .min(1)
     .max(100_000)
     .default(DEFAULT_MAX_STATEMENT_CHARS)
     .volatile(),
   // 0.2.1-alpha.2 只有"一个条目一份 Config"，规则库因此与开关同段（旧的第二段 `lesson-loop-rules`
-  // 无处安放）。`.loose()` / `.default([])` / 读侧"user 层坏形状即不可用"三段闸门各自的
+  // 无处安放）。`.loose()` / `.default([])` / 读侧"user 层坏形状即不可用"三处检查各自的
   // 理由见 lib/rules-namespace.ts 的 RulesFieldSchema——同段最贵的那件事（坏存量打死整条
   // 总线）就是靠它们补回来的。
   rules: RulesFieldSchema,
@@ -537,21 +537,21 @@ const configSchema = Schema.object({
 export { configSchema as Config };
 
 /**
- * 派生数据的落盘位置：官方 cache 目录（`dshCachePath` = `$DSH_HOME/cache`，
+ * 派生数据的写到磁盘位置：官方 cache 目录（`dshCachePath` = `$DSH_HOME/cache`，
  * DSH_HOME 未设时由 home-paths 自己按 `~/.dsh` 解析）。
  *
  * 为什么是 cache：dsh 承认的用户数据目录只有 settings 文档与 sessions/storages/
  * cache/logs，插件自开 `metrics/` 属越界（用户的手工编辑、备份、清理都不在官方面上）。
  * 事件流水正是 cache 定位的"可丢弃派生数据"——丢了能由会话与规则库重建，不该占用
  * 用户唯一那份 settings.yaml。自制 `DSH_HOME → HOME/.dsh → throw` 三态回退一并删掉：
- * 解析规则由官方包单源提供，插件不再第二份实现（也不再有"两个环境变量都没有就炸"
+ * 解析规则由官方包唯一来源提供，插件不再第二份实现（也不再有"两个环境变量都没有就炸"
  * 这种热路径抛错）。
  */
 export function cacheFile(name: string): string {
   // 官方 cache 助手（@deepseek-ai/dsh-home-paths 0.1.x 起导出）：字符串重载即
   // `dshHomePath("cache", <segment>, …)` 的展开式，路径与 rc.3 时代手写的
   // `dshHomePath("cache", PLUGIN_NAME, name)` 逐字节相同（见 lib/index.js 的
-  // dshCachePath 实现），故已落盘的流水不需要迁移。
+  // dshCachePath 实现），故已写到磁盘的流水不需要迁移。
   return dshCachePath(PLUGIN_NAME, name);
 }
 
@@ -560,14 +560,14 @@ export function cacheFile(name: string): string {
  * 字段都是宿主从条目导出的 Config 反推的（`settings.register` 已移除）。
  *
  * 两条降级路径：
- *   - provider 没有 CAS 面（describe/update 缺位）→ 这里当场点破并让规则面读空写拒，
+ *   - provider 没有 CAS 能力（describe/update 缺位）→ 这里当场点破并让规则库读空写拒，
  *     设置卡开关照改照生效；这条判据与装载次序无关，所以留在装载期。
  *   - 那一段读不出可信值（用户把 `rules` 手改成非数组）→ 由端口自己在**第一次真读到那一行
  *     时**报（`lib/rules-namespace.ts` 的 load）。装载期报不了：apply 跑在自己那条 fiber
  *     变 ACTIVE 之前，那一刻 describe() 里没有本条目的行（真实宿主隔离实测），在这一点上
  *     判"坏"是错的、判"还没到"则每次正常开机都多一条噪声。
  *     旧实现靠 try/catch 接住"register 被打回"，现在没有可 catch 的注册：同段之后，坏
- *     `rules` 若走到类型判定就会让整条条目不加载（cordis resolveConfig 抛 → 插件根本不
+ *     `rules` 若走到类型判定就会让整个条目不加载（cordis resolveConfig 抛 → 插件根本不
  *     执行，开关与服务一起没）。所以那一步由 schema 上的 `.loose()` 在解析期吸收，坏形状
  *     只在读写侧点名——不点名就会被当成"库里真的没有卡"。
  */
@@ -584,14 +584,14 @@ function createRulesFacet(settings: unknown): RulesRepository {
 /** 会话台账容量上限（ctx-observe 同款纪律：防长驻进程无界）。 */
 const WATCH_MAX_SESSIONS = 200;
 
-/** 会话台账的一行：收尾清算要用的项目归因 + 两个记账集合。 */
+/** 会话台账的一行：收尾清算要用的项目归因 + 两个记录集合。 */
 interface SessionWatchEntry {
   project: string;
   violated: Set<string>;
   passed: Set<string>;
 }
 
-/** sessionId → 台账行：会话内复发记账，session/disposed 时清算 suppressed。 */
+/** sessionId → 台账行：会话内复发记录，session/disposed 时清算 suppressed。 */
 type SessionWatch = Map<string, SessionWatchEntry>;
 
 /** 已清算过的 durable session：`session/disposed` 按 store 条目发，同一会话 resume 一次
@@ -599,9 +599,9 @@ type SessionWatch = Map<string, SessionWatchEntry>;
 type SettledSessions = Map<string, true>;
 
 /**
- * 消息表的取用口：每次现取，用户在「设置 → 常规」改语言偏好后，下一条回显/注入
+ * 消息表的取用入口：每次现取，用户在「设置 → 常规」改语言偏好后，下一条回显/注入
  * 就是新文案（不重启、也不给本包加一个自己的 locale 设置项）。语言只由设置偏好决定：
- * 旧 HTTP 面那条 Accept-Language 兜底随请求一起消失，Remote 调用没有浏览器请求头可依。
+ * 旧 HTTP 接口那条 Accept-Language 兜底随请求一起消失，Remote 调用没有浏览器请求头可依。
  */
 type MessagesOf = () => LessonLoopMessages;
 
@@ -623,8 +623,9 @@ function isArrayDelivery(value: unknown): boolean {
  *     （它直接读对象上的方法），换成按 sessionId 查询后，这道理所应当是一道守卫。
  *  3. `observeSession` 抛错/拒绝（会话已卸载、存储读不出、取消信号命中）。
  *
- * `brandString<SessionId>` 是官方品牌的唯一合法构造口（幻影品牌无 type-only 构造方式，
- * `as` 又被 typescript/no-unsafe-type-assertion 禁掉），见文件头列出的 dsh-brand 值导入。
+ * `SessionId` 的 `brand` 标记只能由 {@link brandString} 打上（`brandString<SessionId>` 是唯一
+ * 合法构造口：这类类型没有 type-only 的构造方式，`as` 又被 typescript/no-unsafe-type-assertion 禁掉），
+ * 见文件头列出的 dsh-brand 值导入。
  */
 async function digestEvents(svc: HostCtx, session: SessionLike): Promise<readonly SessionEvent[]> {
   const queryRaw = svc.get?.("sessionQuery");
@@ -644,7 +645,7 @@ async function digestEvents(svc: HostCtx, session: SessionLike): Promise<readonl
     });
     // 交付判据只当**布尔**用，不经 `Array.isArray` 收窄：那条守卫会把官方
     // `readonly SessionEvent[]`（installed dsh-session-query/lib/types/observation.d.ts:19）
-    // 塌成 `any[]`，类型面当场作废并让返回值变成 unsafe return。数组性由这个不收窄的
+    // 塌成 `any[]`，类型信息当场作废并让返回值变成 unsafe return。数组性由这个不收窄的
     // 判据挡住，返回的仍是官方形状。
     if (!isArrayDelivery(observation.events)) {
       return [];
@@ -654,7 +655,7 @@ async function digestEvents(svc: HostCtx, session: SessionLike): Promise<readonl
     return [];
   } finally {
     // 冷读的 observation 是一条 pin 住缓存的 lease；不还就会让会话数据一直留在内存里。
-    // 旧宿主的观察面可能没有 Symbol.dispose，释放失败也不改变本次读窗的结论。
+    // 旧宿主的观察接口可能没有 Symbol.dispose，释放失败也不改变本次读窗的结论。
     try {
       observation?.[Symbol.dispose]?.();
     } catch {
@@ -664,7 +665,7 @@ async function digestEvents(svc: HostCtx, session: SessionLike): Promise<readonl
 }
 
 /** 注册 /lessons-digest 命令（人工触发蒸馏；commands 服务可选读——缺失只 warn 一次）。
- *  与 report 同一闸门：插件关闭期间既不烧 LLM 也不写候选卡。命令回显与进模型的蒸馏
+ *  与 report 同一条规则：插件关闭期间既不烧 LLM 也不写候选卡。命令回显与进模型的蒸馏
  *  提示都随语言偏好走；蒸馏出来的规则条目是用户数据，原样透传。 */
 function registerDigestCommand(
   svc: HostCtx,
@@ -721,8 +722,8 @@ function registerDigestCommand(
             typeof rawInput === "string" && rawInput.trim().length > 0 ? rawInput : undefined;
           // 本会话事件流经**官方** `ctx.sessionQuery.observeSession()` 取（见上面
           // SessionQueryFace 的注记）：旧写法是 `session.snapshotEvents()`，而官方把那条同步读
-          // 面标了 `@deprecated` 并禁止新增调用。取不到（服务缺位 / 会话已卸载 / 品牌位读不出 /
-          // 观察抛错）一律退**空背景**——蒸馏照跑，只是少了差评证据；命令绝不能因为读面缺失而炸。
+          // 面标了 `@deprecated` 并禁止新增调用。取不到（服务缺位 / 会话已卸载 / 会话 id 读不出 /
+          // 观察抛错）一律退**空背景**——蒸馏照跑，只是少了差评证据；命令绝不能因为读取接口缺失而炸。
           const events = await digestEvents(svc, session);
           try {
             const result = await runDigest(store, session, llm, selection, {
@@ -737,8 +738,8 @@ function registerDigestCommand(
                 text: fill(messages.digestNoNewRules, { count: result.feedbackCount }),
               };
             }
-            // 没落盘的那批**不能**并进"已蒸馏"：库里没有那些卡，回显成成功会让人去卡片上找
-            // 一张不存在的卡（落盘失败与成功因此是两条回显，见 lib/digest.ts 的 acc）。
+            // 没写到磁盘的那批**不能**并进"已蒸馏"：库里没有那些卡，回显成成功会让人去卡片上找
+            // 一张不存在的卡（写到磁盘失败与成功因此是两条回显，见 lib/digest.ts 的 acc）。
             if (result.dropped.length > 0) {
               return {
                 kind: "error" as const,
@@ -806,7 +807,7 @@ async function runProjectKeyMigration(store: LessonStore): Promise<void> {
 const SESSION_ENDED_FAILURE_LABEL = "sessionEnded failed";
 
 /**
- * 收尾清算的异步兜底：sessionEnded 要 await provider 落盘。
+ * 收尾清算的异步兜底：sessionEnded 要 await provider 写到磁盘。
  * **事件回调**位（agent/disposed、session/disposed）仍是同步契约 → 起链、失败只记日志
  * （单条会话炸了不许拖垮其余、更不许把事件派发带炸；未处理的 rejection 在 Node 默认
  * 配置下会直接退出进程）。**卸载**位不用这个函数：那里交回可 await 的 disposer，见
@@ -826,10 +827,10 @@ async function settleQuietly(promise: Promise<unknown>, label: string): Promise<
  * 为什么需要：headless/CLI 进程只跑一个任务就退出，Cordis 拆树时插件 fiber 先于会话
  * 事件销毁——只挂在 session/disposed 上的收尾清算在这些进程里**永远不执行**，
  * samples/observed 因此恒为 0，armed 规则结构性落入"不可判定"，度量层等于没做。
- * 闸门与容错口径与事件版一致（关闭期间不清算、单条失败不拖垮其余），但**交回可 await 的
- * 异步 disposer**：官方明说异步 disposer 由拆纤 await（cordis fiber.d.ts:38-41），
+ * 开关判断与容错规则与事件版一致（关闭期间不清算、单条失败不拖垮其余），但**交回可 await 的
+ * 异步 disposer**：官方声明异步 disposer 由 cordis 在销毁 fiber 时 await（cordis 的 `Fiber["dispose"]`），
  * 旧的 `void settleQuietly(...)` 是 fire-and-forget —— 在飞的 provider 写会被截断，
- * 违反 defensive-patterns.md:19-21「Dispose must reach quiescence」。
+ * 违反 defensive-patterns.md 里「Dispose must reach quiescence」那一条。
  */
 function settleOpenSessionsOnDispose(args: {
   store: LessonStore;
@@ -942,7 +943,7 @@ function onSessionStart(args: {
     // renderRulesDigest 内逐行定界，帧结构符只可能由本插件产生。
     agent.inject({
       // 载荷就此受官方 `UserMessage` 约束（`Agent["inject"](message: UserMessage)`，
-      // installed @deepseek-ai/dsh-agent/lib/types/runtime-types.d.ts）：`id` 是品牌
+      // installed @deepseek-ai/dsh-agent/lib/types/runtime-types.d.ts）：`id` 是带 `brand` 标记的
       // `MessageId`，只能由官方 `brandString` 送出；`source.kind` 由 lib/prompt.ts 那条
       // producer 声明进 `MessageSourceMap`，`form` 是本包自有的上下文语义位。
       id: brandString<MessageId>(`${PLUGIN_NAME}-${randomUUID()}`),
@@ -987,8 +988,8 @@ interface LessonPassInput {
 }
 
 /**
- * 对外服务面（danger-guard / quality-gate / session-rescue 经 ctx.get 消费）。
- * 名字与成员逐个照旧：这份面是 sibling 插件的调用契约，改一位就等于改它们的运行时。
+ * 对外宿主服务（danger-guard / quality-gate / session-rescue 经 ctx.get 消费）。
+ * 名字与成员逐个照旧：这份类型是 sibling 插件的调用契约，改一位就等于改它们的运行时。
  */
 interface LessonLoopService {
   /** 记一条教训。全同步、容错：总线任何故障不外抛（报告方多在守卫热路径上）。 */
@@ -1017,10 +1018,10 @@ interface ApplyRuntime {
   pruneWatch: () => void;
   /** 登记一次清算，重复会话返回 false（见 createSessionWatch）。 */
   markSettled: (sessionId: string) => boolean;
-  /** 撤销清算标记：清算没落盘时回滚，让 resume 出来的下一边带着全量台账重试
+  /** 撤销清算标记：清算没写到磁盘时回滚，让 resume 出来的下一边带着全量台账重试
    *  （见 onDisposedSession）。 */
   unsettle: (sessionId: string) => void;
-  /** 这条会话是否已清算；两处记账入口共用它决定要不要重建条目。 */
+  /** 这条会话是否已清算；两处记录下来入口共用它决定要不要重建条目。 */
   hasSettled: (sessionId: string) => boolean;
   syncStore: () => ResolvedSettings;
 }
@@ -1074,7 +1075,7 @@ function buildLessonStore(
     lessonsFile: cacheFile("events.jsonl"),
     // 规则库：本条目设置命名空间里的 `rules` 数组（provider 写锁 + revision CAS）。
     rules: createRulesFacet(svc.settings),
-    // 起草规则卡正文用的模板表：给取用口而非当下那份，换语言即刻生效（不重启）。
+    // 起草规则卡正文用的模板表：给取用入口而非当下那份，换语言即刻生效（不重启）。
     messages: localeMessages,
     maxLessonsBytes: boot.maxLessonsBytes,
     maxStatementChars: boot.maxStatementChars,
@@ -1093,7 +1094,7 @@ function buildLessonStore(
  *  ⚠ 必须先 `fiber.await()` 等本条目 settle 再读规则库：真实 `settings.describe()` 只投影
  *  `entry.fiber.state === ACTIVE` 的条目（packages/settings/settings/src/index.ts:305-306），
  *  而 apply 跑在自己那条 fiber 变 ACTIVE **之前**（vendor/cordis/src/fiber.ts 的状态机：`_execute`
- *  结算后才 `_updateState`）。在 apply 里同步读的后果不是报错而是**静默空转**：describe()
+ *  结算后才 `_updateState`）。在 apply 里同步读的后果不是报错而是**静默地什么也没做**：describe()
  *  投不出本条目 → 端口判 unusable（lib/rules-namespace.ts 的 load）→ commit 不写
  *  （lib/lesson-store.ts 的 commit）→ 存量碎片永不归并、project 键永不归一，而日志一声不响。
  *  `fiber.await()` 等的正是这条边界（vendor/cordis/src/fiber.ts:698-710，装载错误会在这
@@ -1113,7 +1114,7 @@ function startBootMigrations(svc: HostCtx, store: LessonStore): void {
 }
 
 /** 会话台账 + 它的容量修剪。
- *  sessionId → {project, violated}：会话内复发记账，session/disposed 时清算 suppressed。
+ *  sessionId → {project, violated}：会话内复发记录下来，session/disposed 时清算 suppressed。
  *  容量纪律同 ctx-observe（超 200 丢最旧，防长驻进程无界）。 */
 function createSessionWatch(): {
   sessionWatch: SessionWatch;
@@ -1148,7 +1149,7 @@ function createSessionWatch(): {
    * 一轮一条），而同一 durable 会话每被 resume 一次就重走一轮。只按 disposed 边数清算，
    * samples 数出来的是"重开过几次"，而它的语义是"这条规则在场几场会话"。
    *
-   * 容量与台账同口径：超上限丢最旧，防长驻进程无界。一个可观测的后果是：被丢出集合的
+   * 容量与台账同一种做法：超上限丢最旧，防长驻进程无界。一个可观测的后果是：被丢出集合的
    * 已清算会话若再次 dispose，会被当成"首个边"重新计一次 exposure——这是有界内存换来的
    * 已知取舍（test/host.test.ts 钉着同一句话），不是无界正确性的缺陷。
    */
@@ -1157,12 +1158,12 @@ function createSessionWatch(): {
     sessionWatch,
     pruneWatch,
     /**
-     * 这条会话是否已经清算过。两处写入口（违规记账与 pass 记账）都要先问它：
-     * 会话已清算时任何一侧单独重建条目，那条目都要留到进程退出才清算，等于把一场
+     * 这条会话是否已经清算过。两个写入处（违规记录下来与 pass 记录下来）都要先问它：
+     * 会话已清算时任何一侧单独重建条目，那个条目都要留到进程退出才清算，等于把一场
      * 已结束的会话再算一次。
      */
     hasSettled: (sessionId: string): boolean => settledSessions.has(sessionId),
-    /** 撤销清算标记（清算没落盘时的回滚，见 onDisposedSession）：下一 dispose 边
+    /** 撤销清算标记（清算没写到磁盘时的回滚，见 onDisposedSession）：下一 dispose 边
      *  重新按"首个边"清算。 */
     unsettle: (sessionId: string): void => {
       settledSessions.delete(sessionId);
@@ -1268,7 +1269,7 @@ async function reportLesson(
         `[lesson-loop] armed rule violated: ${receipt.violationOf.category} / ${receipt.violationOf.signature}（violation=${receipt.violationOf.violation}${rawSignature}）`,
       );
     } else if (receipt.candidate !== undefined && receipt.justReady === true) {
-      // 边沿而不是电平：越过门槛之后的上报不再重复说同一句话。
+      // 边沿而不是电平：越过阈值之后的上报不再重复说同一句话。
       console.info(
         `[lesson-loop] candidate ready for review: ${receipt.candidate.category} / ${receipt.candidate.signature}（occurrences=${receipt.candidate.occurrences}）`,
       );
@@ -1322,7 +1323,7 @@ function recordPass(runtime: ApplyRuntime, input: LessonPassInput): { ok: boolea
   }
 }
 
-/** 管理面快照（/stats 的原样载荷 + 卡片副标题用的计数）。
+/** 管理界面快照（/stats 的原样载荷 + 卡片副标题用的计数）。
  *  `rules` 可由调用方交进来复用：/stats 既要投影规则卡、又要这份计数，一次读取
  *  （provider describe + 逐行归一）在这条轮询路径上不该做两遍。 */
 function statsSnapshot(
@@ -1351,7 +1352,7 @@ function statsSnapshot(
   };
 }
 
-/** 装配对外服务面：六位里四位是 store 的直通，report/pass/stats 各走自己的 helper。 */
+/** 装配对外宿主服务：六位里四位是 store 的直通，report/pass/stats 各走自己的 helper。 */
 function createLessonLoopService(runtime: ApplyRuntime): LessonLoopService {
   const { store } = runtime;
   return {
@@ -1365,7 +1366,7 @@ function createLessonLoopService(runtime: ApplyRuntime): LessonLoopService {
       action: RuleActionKind,
       statement?: string,
     ): Promise<RuleActionResult> {
-      // 规则库落库是异步的（CAS 写），服务面对外契约也是 Promise：等它真的写完再回执。
+      // 规则库落库是异步的（CAS 写），宿主服务对外声明也是 Promise：等它真的写完再回执。
       const outcome = await store.ruleAction(id, action, statement);
       return outcome;
     },
@@ -1411,7 +1412,7 @@ function onAgentCreated(runtime: ApplyRuntime, payloadRaw: AgentCreatedPayload):
 }
 
 /** 会话收尾清算：只对本会话 pass 过且未违规的 armed 规则计 suppressed（pass 信号
- *  驱动）。与上报同受 enabled 闸门：插件关闭期间不清算。
+ *  驱动）。与上报一样受 enabled 约束：插件关闭期间不清算。
  *
  *  按 durable session 身份去重：`session/disposed` 每条 store 条目生命周期各发一次，
  *  同一个会话每被 resume 一次就多一条边；不去重则 samples 数的是"重开过几次"。 */
@@ -1443,7 +1444,7 @@ function onDisposedSession(runtime: ApplyRuntime, sessionRaw: unknown): void {
     }
   };
   // 事件处理器保持同步；落库的等待与失败回滚收进一只自执行的异步体（账本的
-  // prefer-await-to-then 不认 then/catch 链），错误口径同 settleQuietly。
+  // prefer-await-to-then 不认 then/catch 链），错误规则同 settleQuietly。
   void (async (): Promise<void> => {
     try {
       if (watchEntry !== undefined) {
@@ -1548,10 +1549,10 @@ function registerDecayTimer(runtime: ApplyRuntime): void {
       // 在飞的那轮衰减：disposer 要等它落定（见下方 disposer 注释）。
       let inflight: Promise<void> | undefined;
       // 退出位只经这个读口读：直接读 `stopped` 时，类型检查把它收窄成字面量 `false`
-      // （赋值发生在另一个闭包里，tsc 看不见），`if (stopped)` 会被判成恒假的分支；
+      // （赋值发生在另一个闭包里，tsc 看不见），`if (stopped)` 会被判成永远不成立的分支；
       // 经函数返回的 `boolean` 不再收窄，判据才真的是运行期的值。
       const isStopped = (): boolean => stopped;
-      // 排下一轮而不是在起点就排：`runDecay` 要跨 provider 落盘，耗时可能超过间隔。
+      // 排下一轮而不是在起点就排：`runDecay` 要跨 provider 写到磁盘，耗时可能超过间隔。
       // 固定间隔重排会让两轮衰减重叠（两笔整片写互相撞 revision），改成上一轮结算后
       // 再武装。自引用只在**调度那一刻**发生：`arm` 先跑完这一轮，再判退出位并武装下一轮。
       // 这样"上一轮结算后才排下一轮"写在同一个函数里，读的人不必跨两处拼次序。
@@ -1606,7 +1607,7 @@ export function apply(ctx: Context, config: Config): void {
   // 也在这条链上；条目 `rules` 里**已落库**的正文是用户数据，永不因语言切换被改写。
   // 跨命名空间读在 0.2.1-alpha.2 只有 describe() 一条路（未装 client-locale / 那条没有 volatile
   // 字段 → 宿主不投影它 → undefined → 中文默认）。返回值域按 `readonly unknown[]` 收，
-  // 故字段一律经 `fieldOf` 从 unknown 读——与规则库那条链同一口径：「读到了东西」不等于
+  // 故字段一律经 `fieldOf` 从 unknown 读——与规则库那条链同一种做法：「读到了东西」不等于
   // 「读得懂」，读不懂就退中文默认，绝不按声明猜。
   //
   // 偏好读一次即缓存：describe() 对每个活跃条目都要 schema.toJSON() + JSON.stringify 算
@@ -1644,7 +1645,7 @@ export function apply(ctx: Context, config: Config): void {
     if (hasCachedPreference) {
       return messagesFor(MESSAGES, resolveLocalePreference(cachedPreference));
     }
-    // 偏好未注册 → 中文默认。卡片改走 Remote 之后没有浏览器请求头可依，旧 HTTP 面那条
+    // 偏好未注册 → 中文默认。卡片改走 Remote 之后没有浏览器请求头可依，旧 HTTP 接口那条
     // Accept-Language 协商不再有调用点。
     return messagesFor(MESSAGES, DEFAULT_LOCALE);
   };
@@ -1653,7 +1654,7 @@ export function apply(ctx: Context, config: Config): void {
 
   startBootMigrations(svc, store);
 
-  // sessionId → 台账：会话内复发记账，session/disposed 时清算 suppressed。
+  // sessionId → 台账：会话内复发记录，session/disposed 时清算 suppressed。
   const { sessionWatch, pruneWatch, markSettled, unsettle, hasSettled } = createSessionWatch();
 
   // settings → store 的阈值同步（pull：每次 report/decay 前执行）。
@@ -1673,7 +1674,7 @@ export function apply(ctx: Context, config: Config): void {
     syncStore,
   };
 
-  /** 对外服务面（danger-guard / quality-gate / session-rescue 经 ctx.get 消费）。 */
+  /** 对外宿主服务（danger-guard / quality-gate / session-rescue 经 ctx.get 消费）。 */
   const service = createLessonLoopService(runtime);
 
   provideLessonLoopService(svc, service);
@@ -1698,9 +1699,9 @@ export function apply(ctx: Context, config: Config): void {
   // （timer 可选读；缺失退化为主管人工）。
   registerDecayTimer(runtime);
 
-  // 设置卡的规则读面（官方 Typert Remote）：构造即注册到本插件 fiber 上，四个方法由
-  // 官方网关暴露给本 profile 的客户端。它不依赖任何可选宿主服务（store 与快照取用口都在
-  // 这里），故无条件上线——旧 HTTP 面那个等 webServer 到位的子 fiber 不再存在。
+  // 设置卡的规则读取接口（官方 Typert Remote）：构造即注册到本插件 fiber 上，四个方法由
+  // 官方网关暴露给本 profile 的客户端。它不依赖任何可选宿主服务（store 与快照取用入口都在
+  // 这里），故无条件上线——旧 HTTP 接口那个等 webServer 到位的子 fiber 不再存在。
   installRulesRemote(ctx, {
     store,
     stats: (rules) => statsSnapshot(runtime, rules),

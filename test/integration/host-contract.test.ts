@@ -1,4 +1,4 @@
-// test/integration/host-contract.test.ts —— 真实 cordis 装载面上的服务契约（不经手写 mock）。
+// test/integration/host-contract.test.ts —— 真实 cordis 装载情况上的服务契约（不经手写 mock）。
 //
 // 这里补的是 host.test.ts 那套 mock ctx 结构上盖不住的五件事：
 //   1. 服务经官方 reflect 交出（`ctx.get`），而不是只被 `ctx.provide` 调用过；
@@ -42,7 +42,7 @@ const ST = { PENDING: 0, ACTIVE: 2, FAILED: 3 } as const;
 /** 排干一轮 fiber 生命周期：`_reload()` 首行就是一个微任务。 */
 const settle = (): Promise<void> => sleep(0);
 
-/** webServer 探针：只记注册了哪些路径——本包不再有路由，所以这一面是用来证「一条都没注册」的。 */
+/** webServer 替身的注册记录：只记注册了哪些路径——本包不再有路由，所以它用来证「一条都没注册」。 */
 interface RouteProbe {
   registered: string[];
 }
@@ -73,10 +73,10 @@ interface BusView {
 }
 
 /**
- * 造一枚 webServer 替身：形状按官方 `register(route) => () => void` 的交付面，
- * 但把注册与撤销都记进探针。
+ * 造一枚 webServer 替身：形状按官方 `register(route) => () => void` 的交付类型，
+ * 但把注册与撤销都记进这份记录。
  *
- * @returns 提供面与探针
+ * @returns 提供的接口与这份记录
  */
 function makeWebServer(): { service: Record<string, unknown>; probe: RouteProbe } {
   const probe: RouteProbe = { registered: [] };
@@ -88,7 +88,7 @@ function makeWebServer(): { service: Record<string, unknown>; probe: RouteProbe 
       register(route: { path: string }) {
         probe.registered.push(route.path);
         return () => {
-          // 本包不注册路由，探针没有要回收的东西
+          // 本包不注册路由，没有注册要回收
         };
       },
     },
@@ -100,7 +100,7 @@ function makeWebServer(): { service: Record<string, unknown>; probe: RouteProbe 
  *
  * @param options - 条目行的初始 config；sibling 加一枚不依赖本包的条目；consumer 加一枚
  *                  声明 `inject: ["lessonLoop"]` 的条目；noSettings 时不提供 settings
- * @returns ctx、探针与那份 settings 假件
+ * @returns ctx、注册记录与那份 settings 假件
  */
 async function mount(
   options: {
@@ -179,7 +179,7 @@ async function disposeFiber(entry: TestEntry | undefined): Promise<void> {
   }
 }
 
-describe("真实 cordis 装载面：lesson-loop 的服务契约", () => {
+describe("真实 cordis 装载情况：lesson-loop 的服务契约", () => {
   let scratch: string;
   let origDshHome: string | undefined;
   let live: TestCtx | undefined;
@@ -238,7 +238,7 @@ describe("真实 cordis 装载面：lesson-loop 的服务契约", () => {
   });
 
   it(
-    "装载 ACTIVE：服务经官方 reflect 交出，规则读面的四个方法可用",
+    "装载 ACTIVE：服务经官方 reflect 交出，规则读取接口的四个方法可用",
     { timeout: 30_000 },
     async () => {
       const inst = await mount();
@@ -254,12 +254,12 @@ describe("真实 cordis 装载面：lesson-loop 的服务契约", () => {
   );
 
   it(
-    "跨条目：兄弟插件声明 inject ['lessonLoop'] 时依赖图解析得动，上报也落盘",
+    "跨条目：兄弟插件声明 inject ['lessonLoop'] 时依赖图解析得动，上报也写到磁盘",
     { timeout: 30_000 },
     async () => {
       const inst = await mount({ consumer: true });
       live = inst.ctx;
-      // consumer 那条条目只有在本包真把 lessonLoop provide 进依赖图后才会 ACTIVE——
+      // consumer 那个条目只有在本包真把 lessonLoop provide 进依赖图后才会 ACTIVE——
       // 这正是 danger-guard / quality-gate / session-rescue 三包上报路径的装载前提。
       expect(
         stateOf(entryOf(inst.ctx, CONSUMER_ID)),
@@ -336,7 +336,7 @@ describe("真实 cordis 装载面：lesson-loop 的服务契约", () => {
   );
 
   it(
-    "条目 config 是规则库读写的真源：promoteThreshold=1 时一次上报即出候选卡",
+    "条目 config 是规则库读写的唯一来源：promoteThreshold=1 时一次上报即出候选卡",
     { timeout: 30_000 },
     async () => {
       const inst = await mount({ config: { promoteThreshold: 1 } });
@@ -354,7 +354,7 @@ describe("真实 cordis 装载面：lesson-loop 的服务契约", () => {
       // 卡写进的是这份装载里 provide 出去的那枚 settings 假件：真实注入子 fiber 走的官方
       // scoped 解析，mock ctx 那份 describe/update 盖不到。
       const cards = inst.provider.peek(SETTINGS_NAMESPACE)?.[RULES_FIELD];
-      expect(Array.isArray(cards) ? cards.length : 0, "达门槛即入库").toBe(1);
+      expect(Array.isArray(cards) ? cards.length : 0, "达阈值即入库").toBe(1);
     },
   );
 });

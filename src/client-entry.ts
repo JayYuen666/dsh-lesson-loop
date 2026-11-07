@@ -1,7 +1,7 @@
 // lesson-loop client 半：自进化环设置卡（配置开关 + 规则评审台）。
 // 参照 ctx-observe / session-rescue 的卡片模式：keyed plugins.bundle.config 槽，
 // React 由模块系统提供（rolldown external），只用 createElement。
-// 数据面：官方 Typert Remote（宿主侧 lib/rules-remote.ts，客户端读取器见
+// 数据那一栏：官方 Typert Remote（宿主侧 lib/rules-remote.ts，客户端读取器见
 // src/rules-reader.ts）——全量规则 + 计数读 `stats()`，人工动作走 `ruleAction()`。
 // 来源校验与鉴权由官方网关承担，卡片不再持有 CSRF 令牌。
 //
@@ -29,10 +29,10 @@ import type {
 // （installed `dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts:111-120`，
 // 文件头明写「A registrant merges this contract with `import type` and registers through
 // `ctx.slots`; it never imports this package at runtime」）。本包原先没把那份 merge 载入
-// program：槽位名只是 `ClientCtx.slots` 手抄签名里的一枚 `string`，拼错 key 编译期不红，
+// program：槽位名只是照抄来的 `ClientCtx.slots` 签名里的一枚 `string`，拼错 key 编译期不红，
 // 而宿主按 bundle 包名逐字相等匹配（证据链见下面 BUNDLE_PKG），症状是**整张卡不渲染**。
 // 这里取 `ConfigPageForm` 是**一举两得**：既是把官方 merge 载入 program 的入口（TS 顺着
-// `./client` 的再导出走到 slot-contract.ts），也是本卡渲染视模型两个状态位的真源
+// `./client` 的再导出走到 slot-contract.ts），也是本卡渲染视模型两个状态位的唯一来源
 // （见下面 CardSnapshot）。lint 的 `require-module-specifiers` 禁空 import specifier，
 // 正合本意——载入官方契约就该同时*用上*它。
 import type { ConfigPageForm } from "@deepseek-ai/dsh-client-ui-plugin-manager/client";
@@ -63,7 +63,7 @@ const NS: LocaleNs = "lesson-loop";
 
 // ⚠ 两个**不同**的标识，别混用（混用过的形状：卡片打不开 / 保存写进别的条目）：
 //  - `NS` = loader 条目 id = settings 命名空间 = `configForms.get(NS)` 的入参，
-//    真源是本包 cordis.patch.yml 的裸 `- id:`（宿主读 `entry.options.id`）。
+//    唯一来源是本包 cordis.patch.yml 的裸 `- id:`（宿主读 `entry.options.id`）。
 //  - 下面这个常量 = 本包在 profile 里那条 bundle 的**包名**，只当槽位 key 用。
 // `plugins.bundle.config` 是按 bundle 包名 keyed 的槽位：宿主把注册项的 key 与
 // bundle 包名精确相等匹配后才渲染（installed
@@ -75,13 +75,13 @@ const NS: LocaleNs = "lesson-loop";
 // （"keyed by the bundle's package name"），首方先例
 // dsh-experimental-client-ui-voice-input/lib/client.js:5659-5661。
 // 写成裸条目 id（`lesson-loop`）时 ledger 里没有这个键 → 插件页永不出卡。
-// 包名真源：`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`；
-// test/profile-bundle.ts 把真源读进测试，test/build-client.test.ts 的漂移针据此钉。
+// 包名唯一来源：`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`；
+// test/profile-bundle.ts 把唯一来源读进测试，test/build-client.test.ts 的产物漂移检查据此钉。
 const BUNDLE_PKG = RULES_BUNDLE_PACKAGE;
 
 /** 分组懒渲染的每页条数：每组默认只画前 N 条，余下由「加载更多」按页放出。
  *  规则库不设条数上限，而一次渲染上千张卡会让设置页展开时明显卡顿；不做完整虚拟化
- *  （折叠面板不是长列表，滚动容器/测量/回收那套复杂度换不来对应的收益），
+ *  （分组只有展开与收起两种状态，不是长列表，滚动容器/测量/回收那套复杂度换不来对应的收益），
  *  "每组一页 + 手动加载"已把首屏成本按住。 */
 const RULES_PAGE_SIZE = 20;
 
@@ -135,7 +135,7 @@ function numField(value: unknown, fallback: number): number {
  * 新增或改名字段会让下游按 string/number 用的字段拿到 undefined。
  * 只有 id 是硬要求（动作按钮按 id 回填），其余补默认。
  * status 漂移**不当 archived**：兜成 `unknown` 并保留原文（statusText），分组时与候选同列
- * （默认展开、看得见），只是不给动作按钮——旧口径把它塞进默认折叠的"已拒绝/归档"里，
+ * （默认展开、看得见），只是不给动作按钮——旧规则把它塞进默认收起的"已拒绝/归档"里，
  * 宿主将来新增一个合法状态时用户会完全看不到这张卡，还会以为规则被归档了。
  */
 function normalizeRuleCardView(value: unknown): RuleCardView | null {
@@ -188,14 +188,14 @@ function rulesField(value: unknown): RuleCardView[] | undefined {
   return result;
 }
 
-/** 规则评审读面的载荷投影：逐字段守卫，坏形状成员缺省。 */
+/** 规则评审读取接口的载荷投影：逐字段守卫，坏形状成员缺省。 */
 function parseStatsValue(parsed: unknown): StatsPayload {
   if (!isRecord(parsed)) {
     return {};
   }
   const { ok, rules, lessonsCount, error } = parsed;
   const ruleViews = rulesField(rules);
-  // 与规则字段同一容忍度（数字或非空数字串）：口径一致，才不会出现"规则行的计数读得进、
+  // 与规则字段同一容忍度（数字或非空数字串）：规则一致，才不会出现"规则行的计数读得进、
   // 副标题的总数读不进"这种一半渲染一半空白的形状。
   const lessons = numericOf(lessonsCount);
   return {
@@ -252,7 +252,7 @@ export interface RuleCardView {
   /** 暴露度：armed 后在场且未违规的会话数（非正确性度量，不进复发率分母）。 */
   samples: number;
   /** 派生态：armed 后从未被遵守过（suppressed === 0），且已挂满 decayDays 或复发已达
-   *  demoteThreshold——机器无从裁定，等人停用/归档。与 lib/decay-policy.ts 的裁决同口径。 */
+   *  demoteThreshold——机器无从裁定，等人停用/归档。与 lib/decay-policy.ts 的裁决同一种做法。 */
   undeterminable: boolean;
   /** rejected 后同签名再次出现的次数（后续新增字段）。 */
   recurrences?: number;
@@ -267,12 +267,12 @@ interface StatsPayload {
 }
 
 /**
- * 0.2.1-alpha.2 的客户端配置面：一个条目（= profile 条目 id，本包 `lesson-loop`）的共享表单。
+ * 0.2.1-alpha.2 的客户端配置表：一个条目（= profile 条目 id，本包 `lesson-loop`）的共享表单。
  * 契约源：installed
  * `dsh-client-ui-settings/lib/types/client/config-form-types.d.ts` 的 `ConfigForm<T>`
  * （`getSnapshot:35` / `subscribe:41` / `set:62` / `unset:70`；`mutate:52` 本卡不用），
- * 快照三面 `status:11` / `value:13` / `writable:28` 见同文件 `ConfigFormSnapshot:6-29`——
- * 与旧 `settingsScope` 的读面同名，故卡片侧的降级逻辑（cardStore 的逐字段守卫、
+ * 快照三处 `status:11` / `value:13` / `writable:28` 见同文件 `ConfigFormSnapshot:6-29`——
+ * 与旧 `settingsScope` 的读取接口同名，故卡片侧的降级逻辑（cardStore 的逐字段守卫、
  * status/writable 双条件）原样可用。
  * ⚠ 旧 `ctx.settingsScope.bind({ namespace })` 连同 `settingsScope` 服务已被宿主移除
  * （installed 全树零命中），入口换成 `ctx.configForms.get(entryId)`（installed
@@ -317,7 +317,7 @@ export interface CardSnapshot extends Pick<ConfigPageForm["state"], "status" | "
 /**
  * 拉一次 stats 并落成卡片载荷。
  *
- * `reader` 缺席 = 当前部署没有远程面：抛一句可显示的话，由 reloadStats 落成本地化兜底；
+ * `reader` 缺席 = 当前部署没有远程通道：抛一句可显示的话，由 reloadStats 落成本地化兜底；
  * 载荷本身仍走 parseStatsValue 的逐字段守卫（宿主是另一个产物，形状漂移在卡片侧兜）。
  */
 async function fetchStats(reader: RulesReader | undefined): Promise<StatsPayload> {
@@ -390,7 +390,7 @@ export function ruleMetaLines(t: Translate, rule: RuleCardView): string[] {
 export interface RuleItemProps {
   t: Translate;
   rule: RuleCardView;
-  /** 宿主规则读面；`undefined` = 当前部署没有远程面（动作会落成可见错误）。 */
+  /** 宿主规则读取接口；`undefined` = 当前部署没有远程通道（动作会落成可见错误）。 */
   rulesRemote: RulesReader | undefined;
   busy: boolean;
   onDone: (ok: boolean, message?: string) => void;
@@ -565,7 +565,7 @@ function RuleItem(props: RuleItemProps): ReactNode {
     } catch (error) {
       inflight.current = false;
       props.setBusy(false);
-      // 网关/传输失败与 stats 面同一口径：本地化兜底文案给人，原文只进 console——
+      // 网关/传输失败与 stats 面同一种做法：本地化兜底文案给人，原文只进 console——
       // 底层错误原文（gateway/internal 一类）不该当成用户文案上屏。
       console.error("[lesson-loop] rule action failed:", error);
       props.onDone(false, t("actionFailed"));
@@ -618,18 +618,18 @@ export interface LlcCardProps {
   /**
    * 原子提交：直通 0.2.1-alpha.2 的 `ConfigForm.mutate`（installed
    * `dsh-client-ui-settings/lib/types/client/config-form-types.d.ts:52`）——**一次**
-   * 带上全部字段改动与读到的 revision，由宿主一次校验、一次 CAS、一次落盘。
+   * 带上全部字段改动与读到的 revision，由宿主一次校验、一次 CAS、一次写到磁盘。
    *
    * 为什么不是逐字段 `set`/`unset`（0.1.6 的写法，也是本卡此前的实现）：那是一串彼此
-   * 独立的 CAS 写，① 中途失败会留下"改了一半"的库（前面几个字段已落盘、后面没有），
-   * ② 被拒的那几个字段既没有错误条、草稿又被清空，用户以为全保存成功了。受理位
+   * 独立的 CAS 写，① 中途失败会留下"改了一半"的库（前面几个字段已写到磁盘、后面没有），
+   * ② 被拒的那几个字段既没有错误条、草稿又被清空，用户以为全保存成功了。受理结果
    * （`true` = 宿主接受）因此必须消费：false 时保留草稿并出错误条。
    *
    * 传输失败才 reject；宿主拒绝/跳过写入回 `false`（同官方契约）。
    */
   mutate: EntryForm["mutate"];
-  /** 宿主规则读面（官方 Remote 的消费侧，见 src/rules-reader.ts）。
-   *  `undefined` = 当前部署没有远程面：卡片照常渲染，数据面显示读不到。 */
+  /** 宿主规则读取接口（官方 Remote 的消费侧，见 src/rules-reader.ts）。
+   *  `undefined` = 当前部署没有远程通道：卡片照常渲染，数据那一栏显示读不到。 */
   rulesRemote?: RulesReader;
 }
 
@@ -729,7 +729,7 @@ function buildLoopSection(inputs: ConfigInputs): ReactNode {
   );
 }
 
-/** 晋升与衰减小节：升/降级门槛、证据样本、复发率、复活门槛、观察窗口。 */
+/** 晋升与衰减小节：升/降级阈值、证据样本、复发率、复活阈值、观察窗口。 */
 function buildPromotionSection(inputs: ConfigInputs): ReactNode {
   return createElement(
     Section,
@@ -820,7 +820,7 @@ export function sectionHeadingText(t: Translate, title: string, count: number): 
   return t("sectionHeading", { title, count });
 }
 
-/** 「已拒绝/归档」按钮：折叠态显示分组标题 + 条数，展开态显示"收起"。 */
+/** 「已拒绝/归档」按钮：收起态显示分组标题 + 条数，展开态显示"收起"。 */
 export function retiredToggleText(t: Translate, showAll: boolean, count: number): string {
   return showAll ? t("hideRetired") : sectionHeadingText(t, t("sectionRetired"), count);
 }
@@ -833,7 +833,7 @@ interface RuleGroups {
   retired: RuleCardView[];
 }
 
-/** 分组键（= 上面的四组）：懒渲染的"已展开条数"按它逐组记账。 */
+/** 分组键（= 上面的四组）：懒渲染的"已展开条数"按它逐组记录下来。 */
 type GroupKey = keyof RuleGroups;
 
 /** 每组各记一份初始页：组间互不影响（展开候选不该顺带把 armed 也全画出来）。 */
@@ -857,7 +857,7 @@ interface CardView {
   dirty: boolean;
   /** 本次待保存的字段条数（保存条上的「已修改 N 项」）。 */
   dirtyCount: number;
-  /** 宿主规则读面；未到达时是 undefined（与拆出前 csrf 空串同一兜底位）。 */
+  /** 宿主规则读取接口；未到达时是 undefined（与拆出前 csrf 空串同一兜底位）。 */
   rulesRemote: RulesReader | undefined;
   ruleBusy: boolean;
   showAll: boolean;
@@ -954,7 +954,7 @@ function renderRuleSection(
   return createElement("div", null, heading, body);
 }
 
-/** 「已拒绝/归档」区块：折叠态只有一条按钮，展开态才出分节。 */
+/** 「已拒绝/归档」区块：收起态只有一条按钮，展开态才出分节。 */
 function renderRetiredBlock(view: CardView): ReactNode {
   const { t, showAll } = view;
   const { retired } = view.groups;
@@ -1052,7 +1052,7 @@ function settleStats(result: StatsPayload, sink: StatsSink): void {
 }
 
 /** 拉取统计并落进 sink。模块层函数：effect 与 save/onDone 共用，组件里不为此引入任何 React hook。
- *  网关/传输失败（远程面缺席、命名空间没挂上、调用被拒）一律落本地化兜底文案——把
+ *  网关/传输失败（远程通道缺席、命名空间没挂上、调用被拒）一律落本地化兜底文案——把
  *  `gateway/internal: …` 这类内部错误原文贴到用户面前，既不是本卡该说的话，也指不到
  *  真实原因。原文只进 console 供排查。 */
 async function reloadStats(reader: RulesReader | undefined, sink: StatsSink): Promise<void> {
@@ -1196,33 +1196,33 @@ function LlcCard(props: LlcCardProps): ReactNode {
 }
 
 /**
- * 本卡用到的 ctx 面：三位里两位直接投影官方服务面，不再手抄签名。
+ * 本卡用到的三项 ctx 能力：三位里两位直接取官方宿主服务的类型，不再自己抄签名。
  *
  * - `effect`：cordis 官方效应面（installed `@deepseek-ai/cordis/lib/types/fiber.d.ts:8`
- *   的 `interface Context extends Pick<Fiber, 'effect'>`，:157/:159 两个重载）。原先手抄的
+ *   的 `interface Context extends Pick<Fiber, 'effect'>`，:157/:159 两个重载）。原先自己抄的
  *   `(factory, label?) => void` 把「效应 disposer 可以 await」这条真实契约藏掉了。
- * - `slots`：官方 `SlotRegistry`（renderer 把它增强进 cordis `Context`）的**方法面投影**。
+ * - `slots`：官方 `SlotRegistry`（renderer 把它增强进 cordis `Context`）的**方法子集投影**。
  *   取 `Pick` 而不是 `Context["slots"]` 整个类型：`SlotRegistry` 是带 private 字段的 cordis
  *   `Service` 类（installed `dsh-client-ui-renderer/lib/types/client/registry.d.ts:46`），
- *   TS 对它做名义比较，测试桩件无法满足。`register` 逐字复用 `SlotCore['register']`
+ *   TS 对它做名义比较，测试替身无法满足。`register` 逐字复用 `SlotCore['register']`
  *   （`registry.d.ts:85`，两个重载），`inject` 是 `registry.d.ts:111` 的「按槽位声明
  *   生命周期装 effect」那一位（disposer 随 collapse 重跑工厂的语义就写在 :100）。合并进
  *   `SlotMap` 的槽位键在这里是**编译期受检**的：`inject`/`register` 的 key 参数域就是
  *   `keyof SlotMap & string`，而 `plugins.bundle.config` 那一枚由文件头那条 `import type`
  *   从属主包载入。
- *   ⚠ 与手抄版的差异全在类型面，本卡行为不变，但值得记下：
- *    ① 官方 `inject` 回一枚 idempotent disposer（手抄版是 `void`）；
- *    ② 官方工厂的返回面是 `SlotInjectionEffect`（`registry.d.ts:44`，那个联合没从 dts
+ *   ⚠ 与照抄的那一份的差异全在类型声明上，本卡行为不变，但值得记下：
+ *    ① 官方 `inject` 回一枚 idempotent disposer（照抄的那一份是 `void`）；
+ *    ② 官方工厂的返回类型是 `SlotInjectionEffect`（`registry.d.ts:44`，那个联合没从 dts
  *      导出：`(() => void) | Iterable<() => void, void, void>`），**没有** `undefined`
- *      那一支——手抄版允许「工厂什么都不回收」，从今天起编译期就红；本卡交回的正是一枚
+ *      那一支——照抄的那一份允许「工厂什么都不回收」，从今天起编译期就红；本卡交回的正是一枚
  *      `unregister`，形状不变；
- *    ③ `register` 的第二实参在官方是**受检的组件面**（`SlotCore['register']` 把组件 props
+ *    ③ `register` 的第二实参在官方是**受检的组件类型**（`SlotCore['register']` 把组件 props
  *      对上 owner + inject + 标准席位合成出的 `ComposedProps`，dts 明写 "checked at this
- *      call site"），手抄版是 `view: unknown` = 什么都不查。
+ *      call site"），照抄的那一份是 `view: unknown` = 什么都不查。
  * - `configForms`：只投影用到的 `get`。官方 `ConfigForms.get` 是泛型
  *   （`<T>(entryId) => ConfigForm<T>`，installed `config-form.d.ts:137`），且
- *   `ConfigForms` 同样是 Service 类 → 既不能整类型用，也不能把 `Pick` 交给桩件；这里把
- *   `T` 钉在本卡唯一取的那张表单上，返回面仍是官方 `ConfigForm`。
+ *   `ConfigForms` 同样是 Service 类 → 既不能整类型用，也不能把 `Pick` 交给测试替身；这里把
+ *   `T` 钉在本卡唯一取的那张表单上，返回类型仍是官方 `ConfigForm`。
  * - `locale`：官方 `@deepseek-ai/dsh-client-locale` 的 client 面（`LocaleRuntime`，
  *   installed `lib/types/client/index.d.ts`）在本卡实际用到的那两条**类型化**重载上的
  *   投影，取在本包命名空间 `typeof NS` 上（`NS` 已 merge 进 `LocaleNamespaceMap`，见
@@ -1241,7 +1241,7 @@ function LlcCard(props: LlcCardProps): ReactNode {
 export interface ClientCtx {
   effect: Context["effect"];
   /** 显式读一个**可选**客户端服务（`ctx.get`，不受 cordis 的 inject 门禁约束）。本卡只用它
-   *  取远程面：没装远程面的部署里卡片仍要照常渲染，把 `remote` 写进 inject 会让整条入口
+   *  取远程通道：没装远程通道的部署里卡片仍要照常渲染，把 `remote` 写进 inject 会让整条入口
    *  不激活（见 src/rules-reader.ts 的文件头）。 */
   get?: (name: string, strict?: boolean) => unknown;
   slots: Pick<SlotRegistry, "inject" | "register">;
@@ -1253,8 +1253,8 @@ export interface ClientCtx {
    *  （同文件 :111-113 明写「letting a shared form write through the caller's context
    *  would make every caller declare `remote.settings`」，故此处不必声明）。 */
   configForms: {
-    /** 只用 get 这一位，按方法面投影：官方 `ConfigForms` 是带 private 字段的 Service
-     *  类，TS 名义比较下测试桩件无法满足。返回类型绑官方 `ConfigForm<...>`，快照字段
+    /** 只用 get 这一位，按方法子集投影：官方 `ConfigForms` 是带 private 字段的 Service
+     *  类，TS 名义比较下测试替身无法满足。返回类型绑官方 `ConfigForm<...>`，快照字段
      *  改名/换类型即在本地编译失败。 */
     get: (entryId: string) => ConfigForm<Record<string, unknown>>;
     /** 卡片声明跟着"宿主是否 served 本命名空间"走的那一位（官方 `ConfigForms.whileServed`，
@@ -1306,7 +1306,7 @@ const inject = ["slots", "configForms", "locale"];
 
 /** 本 ctx 是否已经装过卡片：`apply` 幂等（同一条 loader 条目被重复 apply 时，第二次直接
  *  返回）。用 per-ctx 的 WeakSet 而不是 shared/lib/card-apply 的 `claimApply`——那一枚把
- *  旗标放在 globalThis 上，而卡片可能在同一页面里被多个 ctx 装载（测试夹具、多 profile
+ *  旗标放在 globalThis 上，而卡片可能在同一页面里被多个 ctx 装载（夹具、多 profile
  *  预览），单旗会互相阻挡；WeakSet 不阻止 GC，disposer 里删掉即可再次声明。
  *  要防的形状：重复 apply 会让 `locale.register` 抛 "already has locale"（官方
  *  `LocaleRuntime.register` 对重复 (ns, locale) 直接 throw），整条 client fiber 变 FAILED、
@@ -1349,13 +1349,13 @@ function apply(ctx: ClientCtx): void {
   // 数与回收范围都不变，只是一枚效应承载（旧写法要自己拼两个 disposer）。
   ctx.effect(() => ctx.locale.register(NS, UI_MESSAGES), "lesson-loop-card: locale dictionaries");
   const t = ctx.locale.bind(NS);
-  // 远程读面在 apply 期造一次：`$mount` 幂等（随卡片卸载自动撤），反复拉取只挂一次；
-  // 没有远程面的部署交 undefined，卡片照常渲染、数据面显示读不到。
+  // 远程读取接口在 apply 期造一次：`$mount` 幂等（随卡片卸载自动撤），反复拉取只挂一次；
+  // 没有远程通道的部署交 undefined，卡片照常渲染、数据那一栏显示读不到。
   const rulesRemote = createRulesReader(ctx);
   // 卡片只在宿主**真的 served 本命名空间**时才声明（官方 `ConfigForms.whileServed`，
   // installed config-form.d.ts:138-151）：本卡编辑的就是 `NS` 这一段，宿主没投影它
   // （本包没装 / 该条目没启用）时页面不该出现这张全只读、stats 也拉不到的空卡。
-  // 首方口径同一句：ui-settings-agent-loop 的 `configForms.whileServed([NS], …)`。
+  // 首方规则同一句：ui-settings-agent-loop 的 `configForms.whileServed([NS], …)`。
   ctx.effect(
     () =>
       ctx.configForms.whileServed([NS], () =>
@@ -1369,9 +1369,9 @@ function apply(ctx: ClientCtx): void {
               inject: () => ({
                 t,
                 hooks: { card: store },
-                // 原子写口（直通共享表单的 mutate；受理位由卡片消费，见 LlcCardProps）。
+                // 原子写口（直通共享表单的 mutate；受理结果由卡片消费，见 LlcCardProps）。
                 mutate: (ops, revision) => scope.mutate(ops, revision),
-                // 规则读面（remote 的消费侧）：缺省不交这一位 = 当前部署没有远程面。
+                // 规则读取接口（remote 的消费侧）：缺省不交这一位 = 当前部署没有远程通道。
                 ...(rulesRemote === undefined ? {} : { rulesRemote }),
               }),
             },
@@ -1383,7 +1383,7 @@ function apply(ctx: ClientCtx): void {
           // （config-form-types.d.ts:33-71）里根本没有 dispose。slot collapse 会调用本 disposer
           // 并在再次声明时**重跑工厂**（installed dsh-client-ui-renderer/lib/types/client/
           // registry.d.ts:100 "Collapse disposes the effect and a later declaration runs it
-          // again"）——表单共享且长活，所以重跑后写入依然落盘；旧 `settingsScope` 那种「离开
+          // again"）——表单共享且长活，所以重跑后写入依然写到磁盘；旧 `settingsScope` 那种「离开
           // 插件页一次之后 scope 永久 disposed、每次保存被静默丢弃」的坑（0.1.6 的 fiber 级
           // dispose）随该服务一起消失。
           return unregister;

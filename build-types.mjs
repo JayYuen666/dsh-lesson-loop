@@ -2,7 +2,7 @@
 // @ts-check
 /// <reference types="node" />
 // 构建 types/：先让 tsc 出声明，再把声明里的相对说明符从源码后缀改写成产物后缀。
-// 编排（两阶段草稿→替换、说明符正典化、清单口径）统一住在 @jayyuen66/dsh-plugin-shared/
+// 编排（两阶段编译→换上、说明符规范化、清单规则）统一实现在 @jayyuen66/dsh-plugin-shared/
 // lib/build-types，一处可改；本文件只定位本仓依赖图里的 tsc 入口并转交目录约定。
 // 为什么需要后处理与两阶段——见 shared 同名切面的文件头。
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -12,17 +12,17 @@ import { buildDeclarations, runTool } from "@jayyuen66/dsh-plugin-shared/lib/bui
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { invokedDirectly } from "@jayyuen66/dsh-plugin-shared/lib/build-artifacts";
 
-// 声明门禁按同一口径列 types/；runCommand 保留旧名（诊断透传的行为锁在
+// 声明门禁按同一条规则列 types/；runCommand 保留旧名（诊断透传的行为锁在
 // test/build-types.test.ts，签名 (file, args) 不带 cwd）。canonicalizeDeclarationSpecifiers
-// 不是本文件的消费面（build-types.d.mts 也刻意不声明它），不再转手。
+// 不是本文件的消费方（build-types.d.mts 也刻意不声明它），不再转手。
 export { listDeclarations } from "@jayyuen66/dsh-plugin-shared/lib/build-types";
 
 const root = import.meta.dirname;
 const require = createRequire(import.meta.url);
 
 /**
- * 从一份包清单解析 tsc 入口。读取、解析与入口校验的失败都带上清单路径：裸 SyntaxError
- * 只报 "Unexpected token"，读的人不知道坏的是哪份文件。
+ * 从一份包清单解析 tsc 入口。读取、解析与入口校验的失败都带上清单路径：SyntaxError 只报
+ * "Unexpected token"，读的人不知道坏的是哪份文件。
  * @param {string} pkgPath - 包清单绝对路径
  * @returns {string} tsc 入口绝对路径
  */
@@ -70,7 +70,7 @@ function tscEntry() {
   try {
     pkgPath = require.resolve("typescript/package.json");
   } catch (error) {
-    // 裸 MODULE_NOT_FOUND 只提 "typescript/package.json" 子路径，读不出"缺的是
+    // MODULE_NOT_FOUND 原文只提 "typescript/package.json" 子路径，读不出"缺的是
     // devDependency typescript"这层成因——包装一次，把修复路径写进消息。
     throw new Error(
       `解析不到 typescript 的 package.json（请确认已安装 devDependency typescript）：${String(error)}`,

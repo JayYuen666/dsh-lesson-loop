@@ -1,4 +1,4 @@
-// build-client 冒烟：rolldown 打包产物含 ModuleLoader 外壳与卡片注册。
+// build-client 冒烟：rolldown 打包产物含 ModuleLoader 外壳 与卡片注册。
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -62,12 +62,12 @@ describe("buildClient", () => {
     assert.match(out, /lessonLoopRules/u);
   });
 
-  // external 清单 = 官方 client bundle 的**隐式基座**（外壳预置的冻结模块表）。真源两份：
+  // external 清单 = 官方 client bundle 的**隐式基座**（宿主 外壳 预置的冻结模块表）。唯一来源两份：
   // @deepseek-ai/dsh-client-web 的 `src/platform.ts`（`PLATFORM_MODULES` 十一枚 +
   // `PRELOADED_CLIENT_EXTERNALS` 空表），与官方 client 构建器
   // `packages/client/tsdown.client.ts` 的 `clientExternals()`——算的是「基座 ∪ 本包
   // dsh.client.external」，注释明写 "The shell baseline is implicit for every dynamic bundle"。
-  // 这枚针是**抄写核对**：官方基座加一枚，或本包开始声明 external 时，这里先红，逼人回去看真源。
+  // 这枚针是**抄写核对**：官方基座加一枚，或本包开始声明 external 时，这里先红，逼人回去看唯一来源。
   it("external = 官方 PLATFORM_MODULES 基座 + 共享客户端行", () => {
     assert.deepEqual(clientExternals(), [
       "react",
@@ -89,16 +89,16 @@ describe("buildClient", () => {
     // 上一条钉的是"清单内容"，这一条钉"清单唯一"：两者是不同的事。rolldown 对重复
     // external 是幂等的（同一枚写两次不改变产物），所以内容针与产物针都抓不到重复——
     // 而清单一旦声明了基座里已有的模块（最典型是 react），重复就会静默出现。这里
-    // 独立断言一遍，让"清单唯一"是本文件自己的口径而不是构建器的副作用。
+    // 独立断言一遍，让"清单唯一"是本文件自己的规则而不是构建器的副作用。
     const externals = clientExternals();
     assert.deepEqual(
       externals,
       [...new Set(externals)],
-      "external 清单必须按名字唯一：重复项会让这份清单读起来比实际契约长",
+      "external 清单必须按名字唯一：重复项会让这份清单读起来比实际外置的依赖多",
     );
   });
 
-  it("本包 manifest 声明共享客户端行（官方口径：主包 external 并进基座）", () => {
+  it("本包 manifest 声明共享客户端行（官方规则：主包 external 并进基座）", () => {
     const manifest = JSON.parse(
       readFileSync(new URL("../package.json", import.meta.url), "utf8"),
     ) as { dsh?: { client?: { external?: unknown } } };
@@ -115,27 +115,27 @@ describe("buildClient", () => {
   });
 });
 
-// 卡片字段覆盖门禁（复制式 helper，同 client-freshness.ts 的分发口径）：helper 只交回
+// 卡片字段覆盖门禁（复制式 helper，同 client-freshness.ts 的分发规则）：helper 只交回
 // **问题清单**、不登记用例（vitest/require-hook 不收 hook 外的 setup，隔层断言
 // vitest/expect-expect 也看不见），故断言写在本文件的用例体内。
-// 本包 11 项 volatile 设置字段全部有卡面控件（buildLoopSection/buildPromotionSection/
+// 本包 11 项 volatile 设置字段全部有卡片控件（buildLoopSection/buildPromotionSection/
 // buildCapacitySection 里共享 ToggleField/NumberField 的 field props 写字面量），非 volatile
 // 部署值与规则库对象声明豁免；helper 会反向校验豁免项确实未绑定，所以豁免表不能用来藏
 // 本该上卡的东西。
 //
-// `rules` 是**整片规则库对象**而非一个可填的行式值：它的读面走 Typert remote 的
-// `lessonLoopRules` 命名空间，写面是 lib/rules-namespace.ts 里以计算键
+// `rules` 是**整片规则库对象**而非一个可填的行式值：它的读取接口走 Typert remote 的
+// `lessonLoopRules` 命名空间，写入是 lib/rules-namespace.ts 里以计算键
 // `{ [RULES_FIELD]: … }` 调 surface.update，界面上由规则卡（renderRuleSection）按
 // 状态分组呈现。它没有、也不该有一个设置字段控件，故在此显式豁免。
 describe("卡片字段覆盖 host schema（test/schema-coverage.ts）", () => {
-  it("除三项部署值外，host 设置字段全部绑定到卡面控件", () => {
+  it("除三项部署值外，host 设置字段全部绑定到卡片控件", () => {
     assert.deepEqual(
       schemaCoverageProblems(import.meta.url, {
         allowUnbound: [
           {
             field: "rules",
             reason:
-              "整片规则库对象（不是行式设置值）：读面走 Typert remote 的 lessonLoopRules 命名空间，写面是 lib/rules-namespace.ts 的计算键写入，界面由规则卡按状态分组渲染，没有也不该有设置字段控件",
+              "整片规则库对象（不是行式设置值）：读取接口走 Typert remote 的 lessonLoopRules 命名空间，写面是 lib/rules-namespace.ts 的计算键写入，界面由规则卡按状态分组渲染，没有也不该有设置字段控件",
           },
           {
             field: "digestTimeoutMs",
@@ -188,7 +188,7 @@ describe("单文件产物的输出守卫", () => {
     assert.throws(() => singleEntryChunk(output, "entry.ts"), /2 项输出/u);
   });
 
-  it("拒绝 asset：单文件产物没有落盘 asset 的位置", () => {
+  it("拒绝 asset：单文件产物没有写到磁盘 asset 的位置", () => {
     const output = [
       outputItem("chunk", ARTIFACT_FILE, { isEntry: true, code: CHUNK_CODE }),
       outputItem("asset", "x.css"),

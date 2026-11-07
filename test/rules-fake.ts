@@ -14,18 +14,18 @@
 //
 // 为什么不用真 provider：真的一路要文件、watcher、写锁，而本包要验的是"两个进程
 // 交替写同一段设置时不互相抹卡"这条纪律——把它做成 revision 可推进的内存假件，
-// 反而是能稳定复现丢卡场景的最小面。
+// 反而是能稳定复现丢卡场景的最小类型。
 //
 // 本文件另附两个 LessonStore 用的规则库端口构造器（持久化边界已从"自管 JSON 文件"
 // 换成 RulesRepository，测试侧的装配因此也走这里）：
 //   * attachRulesRepository —— 生产同款端口装配（0.2.1-alpha.2 无注册步骤，就一句 createRulesRepository）；
-//   * scriptedRulesRepository —— 手工排布读面与写回执，并逐次记账（断言"根本没
+//   * scriptedRulesRepository —— 手工排布读取接口与写回执，并逐次记录下来（断言"根本没
 //     调用过 save"这类不变式时不需要真 provider）。
 
 import plugin from "../host.ts";
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type { SettingsDescriptor, SettingsNamespace } from "@deepseek-ai/dsh-settings";
-// 段名 / 字段名 / 值→卡投影取 lib/rules-layout.ts（存放面坐标），端口构造取
+// 段名 / 字段名 / 值→卡投影取 lib/rules-layout.ts（存放位置坐标），端口构造取
 // lib/rules-namespace.ts（CAS 实现）：与生产侧同一处分法，假件不另立第二套坐标。
 import { RULES_FIELD, SETTINGS_NAMESPACE, cardsOfValue } from "../lib/rules-layout.ts";
 import { createRulesRepository } from "../lib/rules-namespace.ts";
@@ -120,7 +120,7 @@ function mergeLayers(under: unknown, over: unknown): unknown {
  * 摊平 volatile 引用（packages/settings/settings/src/schema.ts:10-17 plainConfig 同语义）：
  * 宿主 describe() 交给插件的 value 就是这样一份普通数据，引用本身不出这扇门。
  * 引用形态判定收窄到官方 `Volatile` 的**形状**：自有字符串键只有 `get` 一枚
- * （vendor/cosmokit/src/volatile.ts:9-11 的读面；写面挂在 symbol 键上，Object.keys
+ * （vendor/cosmokit/src/volatile.ts:9-11 的读取接口；写入挂在 symbol 键上，Object.keys
  * 看不见）。仅凭「带 get 方法」判引用会把恰好有 get 字段的普通配置对象误摊平。
  * 递归路径记进 WeakSet（回退式）：坏夹具里的自引用在路径上再次遇到时原样交回，
  * 不以栈溢出的形态炸；共享的非环引用在每次出现处各自摊平。
@@ -129,7 +129,7 @@ function plainConfig(value: unknown, active: WeakSet<object> = new WeakSet<objec
   const candidate = value as { get?: () => unknown };
   if (isPlain(value)) {
     const keys = Object.keys(value);
-    // 引用形态：自有字符串键只有 `get` 一枚、且它真是函数（官方 Volatile 的读面形状）。
+    // 引用形态：自有字符串键只有 `get` 一枚、且它真是函数（官方 Volatile 的读取接口形状）。
     if (keys.length === 1 && keys[0] === "get" && typeof candidate.get === "function") {
       if (active.has(value)) {
         return value;
@@ -239,7 +239,7 @@ export function makeSettingsProvider(
 
   /**
    * 落一层新段内容，**保持对象身份**：host.test 的 `ctx.value` 拿的就是这一层原文，
-   * 整对象换掉会让"装载后翻开关"那几条断言悄悄翻在一份没人再看的对象上（假绿）。
+   * 整对象换掉会让"装载后翻开关"那几条断言悄悄翻在一份没人再看的对象上（误判通过）。
    */
   const storeSection = (ns: string, next: Record<string, unknown>): void => {
     const held = document[ns];
@@ -272,7 +272,7 @@ export function makeSettingsProvider(
       throw new Error(`provider refused the "${ns}" write`);
     }
     const current = sectionOf(document, ns);
-    // 官方口径：CAS 判定发生在写队列前缘、比较"此刻"的 revision，且改动一律基于
+    // 官方规则：CAS 判定发生在写队列前缘、比较"此刻"的 revision，且改动一律基于
     // 此刻的段（不是调用方手里那份快照）。
     const revision = revisions.get(ns) ?? 0;
     if (expectedRevision !== undefined && expectedRevision !== revision) {
@@ -293,7 +293,7 @@ export function makeSettingsProvider(
       // 0.2.1-alpha.2 的 describe() 只投影"条目存在且至少一个 volatile 字段"的那些行；本假件
       // 只服务本包条目，故恒给这一条（跨命名空间读 locale 因此落空 = 未装 client-locale）。
       // 行形状就此是官方 `SettingsDescriptor`（installed dsh-settings/lib/types/index.d.ts:8-19，
-      // 必填 ns/autoGenerate/schema/value/revision/applies）：`ns` 是品牌
+      // 必填 ns/autoGenerate/schema/value/revision/applies）：`ns` 是带 `brand` 标记的
       // `SettingsNamespace`（types.d.ts:5），构造口只有官方 `brandString`（恒等函数），
       // 假件也不走 `as` 绕行。
       const ns = brandString<SettingsNamespace>(SETTINGS_NAMESPACE);
@@ -305,8 +305,8 @@ export function makeSettingsProvider(
           autoGenerate: false,
           schema: null,
           value: resolveSection(sectionOf(document, ns)),
-          // user/value 两侧都交深拷贝：读面隔离（写侧快照、读侧克隆）——调用方随手
-          // 改读回来的对象不许污染假件状态（真 provider 的读面同样不外借内部结构）。
+          // user/value 两侧都交深拷贝：读取接口隔离（写侧快照、读侧克隆）——调用方随手
+          // 改读回来的对象不许污染假件状态（真 provider 的读取接口同样不外借内部结构）。
           user: isPlain(raw) ? detach(raw) : raw,
           revision: revisions.get(ns) ?? 0,
           applies: "live" as const,
@@ -315,7 +315,7 @@ export function makeSettingsProvider(
     },
     update: (ns, patch, expectedRevision) => write(ns, patch, expectedRevision),
     externalSet(ns, section) {
-      // 与 write 同口径：先解析后落段。真宿主里"另一进程写了校验不过的内容"表现为
+      // 与 write 同一种做法：先解析后落段。真宿主里"另一进程写了校验不过的内容"表现为
       // 该条目装载失败（本进程的 describe 不投影它），而不是把坏内容读成合法值——
       // 假件在注入点就炸，别让 describe()/resolvedOf() 之后才炸、难与"真的写坏了"区分。
       const merged = { ...sectionOf(document, ns), ...detach(section) };
@@ -331,8 +331,8 @@ export function makeSettingsProvider(
     },
     /**
      * 文档原文那一层（未写过的段 = undefined）。刻意交**活引用**：开关翻动测试靠它
-     * 原地改条目段（host.test 的 ctx.value 就来自这里），这与"读面隔离"是两回事——
-     * 隔离的对象是 describe()/rawRules() 那两个**断言用**读面（见各自实现）。
+     * 原地改条目段（host.test 的 ctx.value 就来自这里），这与"读取接口隔离"是两回事——
+     * 隔离的对象是 describe()/rawRules() 那两个**断言用**读取接口（见各自实现）。
      */
     peek(ns) {
       const raw = document[ns];
@@ -356,9 +356,9 @@ export function makeSettingsProvider(
 // ── LessonStore 的规则库端口装配 ────────────────────────────────────────
 
 /**
- * 生产同款的端口装配（镜像 host.ts 的 createRulesFacet）。0.2.1-alpha.2 里这里没有注册步骤可
+ * 生产同款的端口装配（与 host.ts 的 createRulesFacet 同一套）。0.2.1-alpha.2 里这里没有注册步骤可
  * 被打回：坏存量由条目 Config 的 `.loose()` 在解析期吸收，端口在 load() 里报 usable:false
- * ——"读不懂不等于没有"这条纪律因此换了个落点，而不再换了有无。
+ * ——"读不懂不等于没有"这条纪律因此换的是位置，不再是有无。
  */
 export function attachRulesRepository(provider: SettingsProviderFake): RulesRepository {
   return createRulesRepository(provider);
@@ -381,7 +381,7 @@ export interface RulesFacet {
 }
 
 /**
- * 建一个空/存量规则库面。
+ * 建一个空/存量规则库。
  * @param initialRows 存量行（等价旧写的 `rules.json` 内容）：装载时即解析出来。
  */
 export function makeRulesFacet(initialRows: readonly unknown[] = []): RulesFacet {
@@ -399,27 +399,27 @@ export function makeRulesFacet(initialRows: readonly unknown[] = []): RulesFacet
     rawRules: () => {
       const section = provider.peek(SETTINGS_NAMESPACE);
       const rows = section?.[RULES_FIELD];
-      // 深拷贝交出：读面隔离——调用方 push/splice 不许污染假件内部状态。
+      // 深拷贝交出：读取接口隔离——调用方 push/splice 不许污染假件内部状态。
       // 非数组的原文原样交回（不折成空数组）："坏存量没被覆写"与"被写成空库"两种
-      // 情形的断言面必须不同，拿它做断言的用例才不会假绿。
+      // 情形的断言内容必须不同，拿它做断言的用例才不会漏报。
       return detach(rows) as readonly unknown[];
     },
   };
 }
 
-/** 一次 save 的记账：写入的数组与作 CAS 条件的 revision。 */
+/** 一次 save 的记录下来：写入的数组与作 CAS 条件的 revision。 */
 export interface SavedBatch {
   readonly cards: readonly RuleCard[];
   readonly revision: number;
 }
 
-/** 缺省读面：可用空库（写走 revision 0）。 */
+/** 缺省读取接口：可用空库（写走 revision 0）。 */
 const OPEN_READ: RulesRead = { revision: 0, cards: [], usable: true };
 
-/** 手工端口装配项：读面与写回执都可逐次排布。 */
+/** 手工端口装配项：读取接口与写回执都可逐次排布。 */
 export interface ScriptedRepositoryInput {
   /**
-   * 读面队列：第 n 次 load 返回第 n 项，用尽后重复最后一项（partial 缺省的字段
+   * 读取接口队列：第 n 次 load 返回第 n 项，用尽后重复最后一项（partial 缺省的字段
    * 按"可用空库"补齐）。
    */
   readonly reads?: readonly Partial<RulesRead>[];
@@ -438,7 +438,7 @@ export interface ScriptedRepository {
   batches: () => readonly SavedBatch[];
 }
 
-/** 排好的读面（partial 补默认值），避免测试重复写 usable: true。
+/** 排好的读取接口（partial 补默认值），避免测试重复写 usable: true。
  *  卡数组深拷贝：RulesRead 的契约是"每次 load 交出新对象，调用方可就地改写"——
  *  排布的 reads 数组是调用方的排布，被 plan 就地改脏后同一条排布第二次 load 会
  *  读到被上一轮改过的卡，用例就自相污染了。 */
@@ -458,7 +458,7 @@ function pick<Item>(queue: readonly Item[], cursor: number): Item | undefined {
 }
 
 /**
- * 建手工端口（不经 provider）：用于"读不懂""写不进"这类端口级回执与调用记账。
+ * 建手工端口（不经 provider）：用于"读不懂""写不进"这类端口级回执与调用记录下来。
  */
 export function scriptedRulesRepository(input: ScriptedRepositoryInput = {}): ScriptedRepository {
   const reads = input.reads ?? [];
@@ -473,7 +473,7 @@ export function scriptedRulesRepository(input: ScriptedRepositoryInput = {}): Sc
         return readOf(taken);
       },
       async save(cards: readonly RuleCard[], revision: number): Promise<RulesWriteOutcome> {
-        // 深拷贝入账：调用方（commit 的工作数组）在 save 返回后还会继续被改——记账面
+        // 深拷贝入账：调用方（commit 的工作数组）在 save 返回后还会继续被改——记录下来
         // 留活引用会让已断言过的批次随调用方的后续操作悄悄变样。
         writes.push({ cards: detach(cards), revision });
         return pick(outcomes, writes.length - 1) ?? "persisted";

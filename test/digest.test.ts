@@ -1,4 +1,4 @@
-// digest 蒸馏管线测试：差评收集 / 提示词构建与定界 / 容错解析 / runDigest 全链（假 llm）。
+// digest 蒸馏流水线测试：差评收集 / 提示词构建与定界 / 容错解析 / runDigest 全链（假 llm）。
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
 import type { SessionId, SessionSeq } from "@deepseek-ai/dsh-session";
 import type { MessageId } from "@deepseek-ai/dsh-llm";
@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { digestCreatedLine, runDigest } from "../lib/digest.ts";
 import type { DigestRunOptions, SessionEvent, LlmService, SessionLike } from "../lib/digest.ts";
-// 差评收集与帧文本面各自成模块（lib/negative-feedback.ts / lib/digest-prompt.ts），用例按
+// 差评收集与帧文本各自成模块（lib/negative-feedback.ts / lib/digest-prompt.ts），用例按
 // 这层边界直接取用——被测的就是这两个模块，runDigest 只是它们的另一个生产消费者。
 import { collectNegativeFeedback } from "../lib/negative-feedback.ts";
 import {
@@ -67,7 +67,7 @@ function contractSkeleton(line: string, messages: LessonLoopMessages): string {
 }
 
 let scratch: string;
-/** 规则库面：每条测试一份（旧写法是每测试一个临时 rules.json，同测试内共享）。 */
+/** 规则库：每条测试一份（旧写法是每测试一个临时 rules.json，同测试内共享）。 */
 let facet: RulesFacet;
 
 /** 本文件里三处 LessonStore 装配共用的台账文件名。 */
@@ -106,7 +106,7 @@ function fakeLlm(
 }
 
 /** 官方 `MessageFeedbackPut` 的完整形状：`version`/`createdAt`/`updatedAt` 都是必选
- *  （宿主每条差评都带），测试夹具不再抄半份。品牌 id 在这里按目标类型逐点断言。 */
+ *  （宿主每条差评都带），夹具不再抄半份。带 `brand` 标记的 id 在这里按目标类型逐点断言。 */
 function negativePut(messageId: string, note: string, seq = 0): SessionEvent {
   return {
     type: EVENT_MESSAGE_PUT,
@@ -130,7 +130,7 @@ function negativePut(messageId: string, note: string, seq = 0): SessionEvent {
  * 会话替身：只给归因读那两位（`id` / `header.cwd`）。
  * ⚠ 它**不再**带 `snapshotEvents`——事件流改由 `DigestRunOptions.events` 注入（host 侧走
  * 官方 `ctx.sessionQuery.observeSession()`，理由见 lib/digest.ts 的 SessionLike 注记）。
- * `id` 是官方品牌 `SessionId`：本文件其余品牌位同样按 `as` 造（tests 才允许，生产代码禁）。
+ * `id` 是官方的 `SessionId`（带 `brand` 标记）：本文件其余带 `brand` 标记的位同样按 `as` 造（tests 才允许，生产代码禁）。
  */
 function fakeSession(cwd = "/repo/proj"): SessionLike {
   return { id: "s1" as SessionId, header: { cwd } };
@@ -139,7 +139,7 @@ function fakeSession(cwd = "/repo/proj"): SessionLike {
 /**
  * 挂到 signal 被 abort 为止：用来模拟"流卡在模型侧迟迟不收尾"，
  * 这样只有蒸馏超时真的中止了请求信号，drainStreamToText 才走得完。
- * 借 node:events 的 once（promise/avoid-new：不手搓 Promise）。
+ * 用 node:events 的 once（promise/avoid-new：不自己写 Promise 构造）。
  */
 /** 无 id 的 message-put 夹具（同一载荷换 rating：清槽用例的两侧）。 */
 const messageFeedbackPut = (rating: string): Record<string, unknown> => ({
@@ -179,7 +179,7 @@ function makeEffortProbeLlm(captures: { effort?: unknown; present?: boolean }): 
   };
 }
 
-describe("digest 蒸馏管线", () => {
+describe("digest 蒸馏流水线", () => {
   beforeEach(() => {
     scratch = mkdtempSync(path.join(tmpdir(), "lesson-digest-"));
     facet = makeRulesFacet();
@@ -266,7 +266,7 @@ describe("digest 蒸馏管线", () => {
       });
     });
 
-    it("按 messageId 折叠到当前态：改评分即撤销、改备注取最新（put 是 create-or-edit）", () => {
+    it("按 messageId 归并到当前态：改评分即撤销、改备注取最新（put 是 create-or-edit）", () => {
       const events = [
         {
           type: EVENT_MESSAGE_PUT,
@@ -364,7 +364,7 @@ describe("digest 蒸馏管线", () => {
       assert.deepEqual(out[0], { messageId: "m1", note: "真差评", kind: "message" });
     });
 
-    it("无 messageId 的差评按内容指纹折叠：同一载荷重复回放只算一条", () => {
+    it("无 messageId 的差评按指纹归并：同一载荷重复回放只算一条", () => {
       const drift = {
         type: EVENT_MESSAGE_PUT,
         data: { item: { rating: "negative", note: "无 id 差评" } },
@@ -473,7 +473,7 @@ describe("digest 蒸馏管线", () => {
       });
       const bg = lessonsBackground(store, PROJECT_FIXTURE, tZh);
       assert.ok(bg.includes("同毫秒的更新文本"), "同 ts 并列时后出现者算最新");
-      assert.ok(!bg.includes("先写下的旧文本"), "旧的那条被同键折叠掉");
+      assert.ok(!bg.includes("先写下的旧文本"), "旧的那条被同键去重掉");
       // 去重键含类别：不同类别（各自折叠到自己的稳定键）不互相吞
       const digest = makeStore();
       await digest.report({
@@ -552,7 +552,7 @@ describe("digest 蒸馏管线", () => {
     it("差评 → 候选规则入库；无差评时输出 []", async () => {
       const store = makeStore();
       const llm = fakeLlm(
-        '[{"category":"unfinished-turn","signature":"todo","statement":"收口任务清单"}]',
+        '[{"category":"unfinished-turn","signature":"todo","statement":"统一处理任务清单"}]',
       );
       const events: readonly SessionEvent[] = [negativePut("m1", "又留了半截任务")];
       const result = await runDigest(
@@ -646,7 +646,7 @@ describe("digest 蒸馏管线", () => {
     it("输出契约行：键名与取值域是数据（两语逐字节同一条），只有 <> 里的说明随语言走", () => {
       const zhLine = digestSystemPrompt(MESSAGES.zh).split("\n")[2] ?? "";
       const enLine = digestSystemPrompt(MESSAGES.en).split("\n")[2] ?? "";
-      // 取值域就是规则库的归类键面：翻一次就等于改一次存储契约，故必须原样。
+      // 取值域就是规则库的归类键：翻一次就等于改一次存储契约，故必须原样。
       const domain =
         '"category":"<factgate-deny|dangerous-bash|secret-path|gate-failure|transient-failure|max-tokens|unfinished-turn|feedback-digest>"';
       for (const [name, line] of [
@@ -712,7 +712,7 @@ describe("digest 蒸馏管线", () => {
   });
 
   describe("会话事件流交付（宿主形状漂移）", () => {
-    // 迁移前这两档由 `session.snapshotEvents` 的读面承担；事件现在由调用方（host 的
+    // 迁移前这两档由 `session.snapshotEvents` 的读取接口承担；事件现在由调用方（host 的
     // ctx.sessionQuery.observeSession）取好注入，故本用例钉的是**注入交付**这一头：
     // 空表与非数组一律退空背景，蒸馏照常完成（host 侧那三条降级路径的用例在
     // test/host.test.ts 的 digestEvents 一节，覆盖没有移动）。
@@ -925,7 +925,7 @@ describe("digest 蒸馏管线", () => {
       const noisy: LlmService = {
         async *stream() {
           // 非 text 块不进正文：官方 `reasoning-delta` 也带 text，正是"只看 kind"那条判据的
-          // 有效反例（旧的 `type:"tool-call"` 手抄块在官方联合里根本不存在）。
+          // 有效反例（旧的 `type:"tool-call"` 那一段自己抄的声明在官方联合里根本不存在）。
           yield { type: "reasoning-delta", index: 0, text: "ignored" };
           // 契约外交付（text 不是字符串）：`as never` 只为把这档位喂进守卫，生产码禁。
           yield { type: CHUNK_TEXT_DELTA, index: 1, text: 42 } as never;
@@ -1194,9 +1194,9 @@ describe("digest 蒸馏管线", () => {
     });
 
     it("timeoutMs 配成 0 / 负数 / NaN / 超 2^31-1 → 当场拒（配置漂移不许等流才炸）", async () => {
-      // 口径分两层：configSchema 的 min(1000) 管配置面；runDigest 的守卫只管"能不能拿去
+      // 规则分两层：configSchema 的 min(1000) 管配置表；runDigest 的守卫只管"能不能拿去
       // setTimeout"（有限正数且不溢出 2^31-1）。单测用 30ms 驱动超时分支，所以这里必须
-      // 允许 < 1000 的正数——文案也只断言守卫自己的口径。
+      // 允许 < 1000 的正数——文案也只断言守卫自己的规则。
       await Promise.all(
         (
           [
@@ -1216,7 +1216,7 @@ describe("digest 蒸馏管线", () => {
           ),
         ),
       );
-      // 反向一侧：30ms 被受理（既有超时用例依赖这一档），证明守卫没有把 1000 下限写进来。
+      // 反向用例：30ms 被受理（既有超时用例依赖这一档），证明守卫没有把 1000 下限写进来。
       const accepted = await runDigest(makeStore(), fakeSession(), fakeLlm("[]"), selection, {
         ...runZh,
         timeoutMs: 30,

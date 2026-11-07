@@ -1,6 +1,6 @@
 // lesson-jsonl 读侧的窗口用例：existsSync 之后 readFileSync 之前文件被删（ENOENT）。
 // 同步临界区在单进程里造不出真实窗口，只有这一条用假 fs 拦截（同 jsonl-fuse.test.ts 的
-// 口径：拦截只对被瞄准的那个文件生效，其余路径穿透到真实实现）。
+// 规则：拦截只对被瞄准的那个文件生效，其余路径穿透到真实实现）。
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -66,7 +66,7 @@ describe("readJsonl 读侧窗口", () => {
 });
 
 // 新增分支的补测：statSync 的非 ENOENT 读失败（与 ENOENT 分开）与"读成功即清去重闩"。
-describe("readJsonl 的读失败口径（补测）", () => {
+describe("readJsonl 的读失败规则（补测）", () => {
   it("statSync 非 ENOENT（路径是目录）→ warn 一次 + 空表；恢复后再犯同样的错要能再报", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dsh-lesson-jsonl-"));
     try {

@@ -1,6 +1,6 @@
-// client 半的**数据面**契约测试：stats 拉取、rule-action 提交、原子保存、输入纠偏、
+// client 半的**数据那一栏**契约测试：stats 拉取、rule-action 提交、原子保存、输入纠偏、
 // 未知状态可见性。client-card.test.ts 把 react 两个钩子换成常量桩，只读
-// 文本面，onClick/onChange 从不触发，状态迁移（open/touched/busy/error）一条都没跑过。
+// 文本，onClick/onChange 从不触发，状态迁移（open/touched/busy/error）一条都没跑过。
 //
 // 这里换一个**有状态**的最小钩子运行时（仍是 vi.mock("react")，createElement 用真实现）：
 // useState 按 hook 次序存槽、setter 触发同组件重渲，useEffect 按 deps 变化重跑。于是
@@ -143,7 +143,7 @@ function propsOf(node: unknown): NodeProps | undefined {
 
 /** 断言取到的项非空并交出它。
  *  TS 的 noUncheckedIndexedAccess 给数组下标 `T | undefined`，而 lint 的类型模型当它是 `T`
- *  ——把判空收进这枚泛型守卫，两边都不用改口径。 */
+ *  ——把判空收进这枚泛型守卫，两边都不用改规则。 */
 function expectItem<Item>(value: Item | undefined, message: string): Item {
   if (value === undefined) {
     throw new Error(message);
@@ -171,7 +171,7 @@ function expand(node: unknown): unknown {
   return { type, props: { ...props, children: expand(props?.children) } };
 }
 
-/** 渲染树的文本面（树已展开成宿主元素，只吃字符串与数字子节点）。 */
+/** 渲染树的文本（树已展开成宿主元素，只吃字符串与数字子节点）。 */
 function textOf(node: unknown): string {
   if (node === null || node === undefined || typeof node === "boolean") {
     return "";
@@ -309,7 +309,7 @@ function statsBody(over: Props = {}): Props {
   };
 }
 
-/** Response 替身：只给卡片真正用到的 json()（读不出一屏对象时让它抛错，演服务侧回了非 JSON 的那一臂）。 */
+/** Response 替身：只给卡片真正用到的 json()（读不出一屏对象时让它抛错，演服务侧回了非 JSON 的那一条分支）。 */
 interface JsonResponse {
   ok: boolean;
   status: number;
@@ -324,11 +324,11 @@ function jsonResponse(body: unknown, status = 200): JsonResponse {
   };
 }
 
-/** 夹具自己的分支标签（不是路由）：数据面两个方法各一枚。 */
+/**夹具自己的分支标签（不是路由）：数据那一栏两个方法各一枚。 */
 const STATS_CALL = "stats";
 const ACTION_CALL = "rule-action";
 
-/** 一次夹具调用的记账（标签 + 适配器自己的 init 形状）。生产代码走 `RulesReader`，不经 fetch；
+/** 一次夹具调用的记录下来（标签 + 适配器自己的 init 形状）。生产代码走 `RulesReader`，不经 fetch；
  *  这里的标签只是本文件内的分支判据，不是任何路由。 */
 interface FetchCall {
   url: string;
@@ -351,7 +351,7 @@ function fetchStubOf(reply: (url: string) => Promise<unknown>): {
 /** 卡片固定输入：useCard 读一张可控快照（revision 是 save 的 CAS 栅栏）。 */
 /**
  * 测试适配器：把既有的 fetch 替身接到 `RulesReader` 的四枚方法上。URL 与 init 都是夹具内部的
- * 记账形状——生产代码调的是读面方法，不经 fetch，所以断言不拿这些字符串当被验对象。
+ * 记录下来形状——生产代码调的是读取接口方法，不经 fetch，所以断言不拿这些字符串当被验对象。
  */
 function readerFromFetch(): RulesReader {
   return {
@@ -391,13 +391,13 @@ const READY: CardSnapshot = {
   revision: 7,
 };
 
-/** 保存的受理位记录（模块级：不随用例重建）。 */
+/** 保存的受理结果记录（模块级：不随用例重建）。 */
 interface MutateCall {
   ops: readonly unknown[];
   revision: number | undefined;
 }
 
-describe("client 数据面：stats 拉取与回包呈现", () => {
+describe("client 数据那一栏：stats 拉取与回包呈现", () => {
   beforeEach(resetHooks);
 
   afterEach(() => {
@@ -423,7 +423,7 @@ describe("client 数据面：stats 拉取与回包呈现", () => {
     assert.ok(text.includes("proj-6b906b9c"), "项目桶随规则行渲染");
   });
 
-  it("读面抛错（例如命名空间没挂上）→ 本地化兜底，不把内部错误原文贴给用户", async () => {
+  it("读取接口抛错（例如命名空间没挂上）→ 本地化兜底，不把内部错误原文贴给用户", async () => {
     const parseError = new Error("gateway/internal: namespace not mounted");
     vi.stubGlobal(
       "fetch",
@@ -500,14 +500,14 @@ describe("client 数据面：stats 拉取与回包呈现", () => {
   });
 });
 
-describe("client 数据面：数值字段的同一容忍度", () => {
+describe("client 数据那一栏：数值字段的同一容忍度", () => {
   beforeEach(resetHooks);
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("非空数字字符串读得进：lessonsCount 与规则行的 occurrences 同一口径", async () => {
+  it("非空数字字符串读得进：lessonsCount 与规则行的 occurrences 同一种做法", async () => {
     vi.stubGlobal(
       "fetch",
       fetchStubOf(async () =>
@@ -540,7 +540,7 @@ describe("client 数据面：数值字段的同一容忍度", () => {
   });
 });
 
-describe("client 数据面：rule-action 提交（入参与回执）", () => {
+describe("client 数据那一栏：rule-action 提交（入参与回执）", () => {
   beforeEach(resetHooks);
 
   afterEach(() => {
@@ -581,14 +581,14 @@ describe("client 数据面：rule-action 提交（入参与回执）", () => {
   });
 });
 
-describe("client 数据面：保存是一次原子提交", () => {
+describe("client 数据那一栏：保存是一次原子提交", () => {
   beforeEach(resetHooks);
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("两个字段改动合成一次 mutate（ops 按改动顺序、带读到的 revision）；受理位为 true 时清草稿", async () => {
+  it("两个字段改动合成一次 mutate（ops 按改动顺序、带读到的 revision）；受理结果为 true 时清草稿", async () => {
     vi.stubGlobal("fetch", fetchStubOf(async () => jsonResponse(statsBody())).fetch);
     const calls: MutateCall[] = [];
     const card = mount(
@@ -624,7 +624,7 @@ describe("client 数据面：保存是一次原子提交", () => {
     );
   });
 
-  it("受理位为 false → 报错且**草稿保留**（旧实现无条件清草稿，用户以为已保存）", async () => {
+  it("受理结果为 false → 报错且**草稿保留**（旧实现无条件清草稿，用户以为已保存）", async () => {
     vi.stubGlobal("fetch", fetchStubOf(async () => jsonResponse(statsBody())).fetch);
     const card = mount(
       LlcCard as never,
@@ -641,14 +641,14 @@ describe("client 数据面：保存是一次原子提交", () => {
     assert.equal(
       text.includes(UI_MESSAGES.zh.statusClean),
       false,
-      "草稿没落盘，状态条不许回到干净态",
+      "草稿没写到磁盘，状态条不许回到干净态",
     );
     assert.equal(controlOf(card.tree(), "save").disabled, false, "仍可重试");
   });
 
   it("保存在途时配置行一起冻结（否则在途改动落不进本次提交，却会被受理后的清草稿抹掉）", async () => {
     vi.stubGlobal("fetch", fetchStubOf(async () => jsonResponse(statsBody())).fetch);
-    // 闸门借 node:events 的 once 挂在 signal 上（promise/avoid-new：不手搓 Promise）。
+    // 这里的 gate 用 node:events 的 once 挂在 signal 上（promise/avoid-new：不自己写 Promise 构造）。
     const gate = new AbortController();
     const card = mount(
       LlcCard as never,
@@ -676,7 +676,7 @@ describe("client 数据面：保存是一次原子提交", () => {
 
   it("受理后只清本次提交的键：在途窗口里改的新草稿不许被抹成「已保存」", async () => {
     vi.stubGlobal("fetch", fetchStubOf(async () => jsonResponse(statsBody())).fetch);
-    // 闸门借 node:events 的 once 挂在 signal 上（promise/avoid-new：不手搓 Promise）。
+    // 这里的 gate 用 node:events 的 once 挂在 signal 上（promise/avoid-new：不自己写 Promise 构造）。
     const gate = new AbortController();
     const card = mount(
       LlcCard as never,
@@ -716,12 +716,12 @@ describe("client 数据面：保存是一次原子提交", () => {
   });
 });
 
-describe("client 数据面：数字输入与未知状态", () => {
+describe("client 数据那一栏：数字输入与未知状态", () => {
   beforeEach(resetHooks);
 
   it("未知状态：与候选同组可见、原文显形、不给动作按钮", async () => {
-    // 走**线上形态**（status 串不在白名单里）：验的正是 normalizeRuleCardView 的兜底口径，
-    // 而不是手搓一个本地 `unknown` 值自证。
+    // 走**线上形态**（status 串不在白名单里）：验的正是 normalizeRuleCardView 的兜底规则，
+    // 而不是自己造一个本地 `unknown` 值来自证。
     vi.stubGlobal(
       "fetch",
       fetchStubOf(async () =>
@@ -741,7 +741,7 @@ describe("client 数据面：数字输入与未知状态", () => {
     );
     assert.equal(text.includes(UI_MESSAGES.zh.btnDemote), false, "未知状态不给动作按钮");
     assert.equal(text.includes(UI_MESSAGES.zh.btnArmConfirm), false);
-    // 候选组默认展开：未知状态的卡因此看得见（旧实现归归档组，默认折叠 = 用户看不到）。
+    // 候选组默认展开：未知状态的卡因此看得见（旧实现归归档组，默认收起 = 用户看不到）。
     const headings = allProps(card.tree())
       .filter((props) => props.className === "llc-section")
       .map((props) => textOf(props.children));
@@ -752,7 +752,7 @@ describe("client 数据面：数字输入与未知状态", () => {
   });
 });
 
-describe("client 数据面：分组懒渲染（每组一页 + 加载更多）", () => {
+describe("client 数据那一栏：分组懒渲染（每组一页 + 加载更多）", () => {
   beforeEach(resetHooks);
 
   afterEach(() => {
@@ -780,7 +780,7 @@ describe("client 数据面：分组懒渲染（每组一页 + 加载更多）", 
       .map((props) => textOf(props.children));
     assert.ok(
       headings.some((line) => line.includes("25")),
-      "分节标题的计数照全量：懒渲染只改渲染，不改数据口径",
+      "分节标题的计数照全量：懒渲染只改渲染，不改数据规则",
     );
     const [more] = moreButtonsOf(card.tree(), 5);
     const moreButton = expectItem(more, "剩余条数写在「加载更多」按钮上");

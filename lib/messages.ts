@@ -9,13 +9,13 @@
 // 键集一致由 tsc 保证：zh / en 两份都标注同一个 Messages 类型，少键多键都在编译期红。
 //
 // **已落库的规则卡正文不在本表里**：设置段 `lesson-loop` 的 `rules` 里那些 `statement`
-// （人工改写过的、蒸馏出来的、旧版本起草出来的）是一份用户数据，落盘后还要注入回模型，
+// （人工改写过的、蒸馏出来的、旧版本起草出来的）是一份用户数据，写到磁盘后还要注入回模型，
 // 跟着界面语言切换会把已生效规则改写成另一种语言——本表从不碰它们。
 // 但**起草新卡的那批模板是本包自己产出的文案**：`lib/statement-draft.ts` 的 draftStatement
 // 在运行时按分类起草 `statement` 正文（lesson-store 只 import 后调用），正文随即回注给模型，
 // 故与常驻段/注入帧同属「注入给模型的文案」，必须双语（收在本表的 statement* 段）。用户的
 // locale 是 en 时，新起草的规则卡正文没有理由是中文。模板里的 signature 与 category 取值域
-// 仍是**数据**（同 digest-prompt.ts 的处理：键名与枚举面留在原文件，只把说明文字进字典）。
+// 仍是**数据**（同 digest-prompt.ts 的处理：键名与枚举值留在原文件，只把说明文字进字典）。
 // console.* 的日志文案也不在此列——那是给排障的人看的，不随界面语言切换。
 import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
 
@@ -86,7 +86,7 @@ export interface LessonLoopMessages {
   /**
    * 输出契约行里两处 `<>` 占位的**说明文字**（模型读的人话）。
    * 键名与 category 取值域那一串枚举是**数据**，留在 lib/digest-prompt.ts 里不翻译——
-   * 它是 `lesson-loop` 段里 rules 的归类键面，跟着界面语言改一次就等于改一次存储契约。
+   * 它是 `lesson-loop` 段里 rules 的归类键，跟着界面语言改一次就等于改一次存储契约。
    * ⚠ 硬约束：这两段会被 fill 原样嵌进一段 JSON 骨架（`"signature":"<…>"`），译文里
    * 出现英文双引号、反斜杠或花括号都会把输出契约行的 JSON 形状改坏——改文案时不得
    * 引入 JSON 元字符，test/digest.test.ts 有断言钉着。
@@ -123,13 +123,13 @@ export interface LessonLoopMessages {
   readonly digestCreated: string;
   /** 回执里的单条候选规则行（{index} {category} {statement}）。 */
   readonly digestCreatedLine: string;
-  /** 部分候选没写进规则库（{count} 已落盘条数、{failed} 未落盘条数）——库里的卡并不存在，
+  /** 部分候选没写进规则库（{count} 已写到磁盘条数、{failed} 未写到磁盘条数）——库里的卡并不存在，
    *  必须与"已蒸馏"分开讲，否则让人去卡片上找一张不存在的卡。 */
   readonly digestPartialFailure: string;
   /** 蒸馏抛错回显（{reason} = 错误摘要）。 */
   readonly digestFailed: string;
 
-  // ── 蒸馏管线自身的失败原因（经命令回显给人看）─────────────────────────
+  // ── 蒸馏流水线自身的失败原因（经命令回显给人看）────────────────────────
   readonly errNoModelSelection: string;
   readonly errMissingFinishChunk: string;
   /** 非 stop 收尾（{kind} 结束原因、{failure} 失败摘要前缀）。 */
@@ -154,7 +154,7 @@ export interface LessonLoopMessages {
   /** 落库失败（拒写 / CAS 冲突耗尽）——库里还是旧状态，必须与"已生效"分开讲。 */
   readonly errRulePersistFailed: string;
   readonly errRuleActionFailed: string;
-  /** 读面兜底：统计 / 规则列表 / 事件流水读失败时下发的话（成功码 `ok:true` 时用不到）。 */
+  /** 读取接口兜底：统计 / 规则列表 / 事件流水读失败时下发的话（成功码 `ok:true` 时用不到）。 */
   readonly errStatsUnavailable: string;
   readonly errRulesUnavailable: string;
   readonly errLessonsUnavailable: string;
@@ -165,7 +165,7 @@ export interface LessonLoopMessages {
  * （少传一个参数是编程错误，不该让文案里凭空多出空白；官方 client locale 同语义）。
  * 值**原样插入、不做任何转义或换行归一**：本表里带 `{signature}` 的 statement* 模板
  * （signature 是命令/路径原文）与 digestRuleLine / ruleSummary 的产物都会注入 systemPrompt、
- * 常驻段或落盘后回注模型——注入模型的调用点必须自行对不可信值做 fence/换行定界
+ * 常驻段或写到磁盘后回注模型——注入模型的调用点必须自行对不可信值做 fence/换行定界
  * （lib/prompt.ts 的 fenceUntrusted；规则卡正文的定界发生在渲染那一刻，见 draftStatement
  * 与 renderRulesDigest 的注释）。占位符名只认 `params` 的自有属性，原型链上的同名成员
  * （`{constructor}` / `{toString}` 一类）不取。

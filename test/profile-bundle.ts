@@ -1,4 +1,4 @@
-// test/profile-bundle.ts —— 卡片槽位 key 的漂移针（多包共用，复制式分发，同 client-freshness.ts）。
+// test/profile-bundle.ts —— 卡片槽位 key 的产物漂移检查（多包共用，复制式分发，同 client-freshness.ts）。
 //
 // 背景（这一条就是当初查出来的真缺陷）：`plugins.bundle.config` 是**按 bundle 包名**
 // keyed 的槽位，宿主派发时拿注册项的 key 与该 bundle 的包名做精确相等匹配：
@@ -15,12 +15,12 @@
 // key 写成 loader 的裸条目 id（cordis.patch.yml 的 `- id:`）时，宿主拿包名找不到这个
 // 键，`configured` 也是 false → 插件页上永不出卡（本文件存在的理由）。
 //
-// 两个标识**各管各的**，本模块把两侧真源都读出来，防止「一改全改」把另一边带坏：
-//   - 槽位 key = bundle 包名，真源是本包自己的 package.json（宿主派发 entryKey 用的就是
+// 两个标识**各管各的**，本模块把两侧唯一来源都读出来，防止「一改全改」把另一边带坏：
+//   - 槽位 key = bundle 包名，唯一来源是本包自己的 package.json（宿主派发 entryKey 用的就是
 //     被装 bundle 的包名，与装法无关）；profile 只在这台开发机上存在，装了才顺手钉一道
-//     「清单里确有这一条」的机器侧漂移针；
+//     「清单里确有这一条」的机器侧产物漂移检查；
 //   - configForms.get(entryId) 的入参（= 0.2.1-alpha.2 隐式 settings 命名空间）= 裸条目 id，
-//     真源本包 cordis.patch.yml（installed dsh-client-ui-settings/lib/client.js:1294-1298
+//     唯一来源本包 cordis.patch.yml（installed dsh-client-ui-settings/lib/client.js:1294-1298
 //     把 entryId 原样当命名空间用）。
 // 所以这里**不写任何包名/条目 id 字面量**：测试里抄一份常量，正是本缺陷当初漏网的原因。
 
@@ -33,13 +33,13 @@ import { pathToFileURL } from "node:url";
 /** 本包根目录：helper 与 client-freshness.ts 同放 test/，据此定位包内文件。 */
 const PKG_DIR = path.resolve(import.meta.dirname, "..");
 
-/** unknown → Record 的窄化判据。刻意手抄：test/ 不引运行时依赖，真源见
+/** unknown → Record 的窄化判据。刻意自己抄一份：test/ 不引运行时依赖，唯一来源见
  *  shared/lib/record.ts（本包 client 半那份已回删，别再往这里加判据）。 */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** 读一份 JSON 文件并投影为 Record（形状不对即抛，不静默兜成空对象）。 */
+/** 读一份 JSON 文件并投影为 Record（形状不对即抛，不会静默兜成空对象）。 */
 function readJson(file: string): Record<string, unknown> {
   assert.ok(existsSync(file), `读不到 ${file}`);
   const text = readFileSync(file, "utf8");
@@ -60,7 +60,7 @@ function profileManifestPath(): string {
 
 /**
  * bundle 清单的形状守卫（导出供本文件的守卫用例直接喂夹具）：数组里每一项都必须是
- * 字符串——静默滤掉非字符串项会把「清单损坏」伪装成「没装这个包」，让漂移针报出
+ * 字符串——静默滤掉非字符串项会把「清单损坏」伪装成「没装这个包」，让产物漂移检查报出
  * 误导性的「不在 bundles 里」（或反过来掩盖损坏）。
  */
 export function assertBundleListOf(listed: unknown, label: string): string[] {
@@ -75,8 +75,8 @@ export function assertBundleListOf(listed: unknown, label: string): string[] {
   return bundles;
 }
 
-/** 本包 npm scope 前缀（`@jayyuen66/`）：真源是本包 package.json 的 name，不写字面量——
- *  fork/换 scope 后清单里全部条目都不以旧前缀开头，硬编码会让漂移针静默失效。 */
+/** 本包 npm scope 前缀（`@jayyuen66/`）：唯一来源是本包 package.json 的 name，不写字面量——
+ *  fork/换 scope 后清单里全部条目都不以旧前缀开头，硬编码会让产物漂移检查静默失效。 */
 function ownScopePrefix(): string {
   const { name } = readJson(path.join(PKG_DIR, PKG_MANIFEST_FILE));
   const raw = typeof name === "string" ? name : "";
@@ -92,8 +92,8 @@ function profileBundleListOrNull(): string[] | null {
   }
   const manifest = readJson(file);
   // 键**缺失**才按"没装/陌生 profile"回 null；键在而形状坏（bundles 写成对象/字符串、
-  // dsh 整段不是记录）当场抛——静默兜成空值会让机器侧漂移针在清单损坏时直接跳过，
-  // 把"清单坏了"洗成"没装 profile"的假绿。
+  // dsh 整段不是记录）当场抛——静默兜成空值会让机器侧产物漂移检查在清单损坏时直接跳过，
+  // 把"清单坏了"洗成"没装 profile"的误判通过。
   if (!("dsh" in manifest)) {
     return null;
   }
@@ -106,7 +106,7 @@ function profileBundleListOrNull(): string[] | null {
   assert.ok(isRecord(profileSection), `${file} 的 dsh.profile 不是对象`);
   const listed = profileSection["bundles"] ?? [];
   const bundles = assertBundleListOf(listed, `${file} 的 dsh.profile.bundles`);
-  // 同名 profile 未必属于本工作面：`--from-default-profile web` 也会造一个只装官方基座的
+  // 同名 profile 未必属于本工作区：`--from-default-profile web` 也会造一个只装官方基座的
   // web profile。清单里一个 @jayyuen66 包都没有时按「没装 profile」处理——机器侧针只钉
   // 在真装着本族插件的 profile 上，把陌生 profile 报成「本包不在清单」是把环境当成了漂移。
   const scope = ownScopePrefix();
@@ -120,7 +120,7 @@ function profileBundleListOrNull(): string[] | null {
  * 本包在 profile 里那条 bundle 的包名 —— `plugins.bundle.config` 的 key 必须是它。
  * 取的是本包自己的 `package.json.name`：宿主派发的 `entryKey` 就是**被装的那个 bundle**
  * 的包名，所以对任何装法（registry / link / 本机 profile）它都是那个值。
- * profile 只存在在这台开发机上，装了才加一道机器侧针（清单里确有这一条）。
+ * profile 只存在在这台开发机上，装了才加一道机器侧检查（清单里确有这一条）。
  */
 export function profileBundleName(): string {
   const { name: own } = readJson(path.join(PKG_DIR, PKG_MANIFEST_FILE));
@@ -184,10 +184,10 @@ function escapeRegExp(text: string): string {
 }
 
 /**
- * 产物里 `const <name> = "<字面量>"` 的值；取不到即抛（漂移针不许静默放过）。
+ * 产物里 `const <name> = "<字面量>"` 的值；取不到即抛（产物漂移检查不许静默放过）。
  * 空白与引号形态放宽（构建器换单引号/无空格不应让针误红），标识符先转义。
  * 字面量后面必须紧跟分隔符：`const X = "a" + "b"` 是拼接，不是一条可读的常量——
- * 不设这道判据会静默只取 `a`，漂移针拿一个假值去比对。导出供本文件的守卫用例
+ * 不设这道判据会静默只取 `a`，产物漂移检查拿一个假值去比对。导出供本文件的守卫用例
  * 直接喂夹具（真实产物那条路经 bundleSlotKeyFacts）。
  */
 export function constLiteral(text: string, name: string, depth = 0): string {
@@ -304,7 +304,7 @@ function fieldValueAfter(text: string, at: number): RawFieldValue | undefined {
 
 /** 注册对象**顶层**字段的原始值（字面量正文或标识符）；嵌套对象里的同名字段不算。
  *  只认花括号深度为 1 的位置：`inject: () => ({ key: … })` 里的 key 在深度 2，
- *  把它当成注册项的 key 会让漂移针拿一个内层值去比对。注释与字符串里的 `key:` 同样跳过。 */
+ *  把它当成注册项的 key 会让产物漂移检查拿一个内层值去比对。注释与字符串里的 `key:` 同样跳过。 */
 function topLevelField(objectText: string, field: string): RawFieldValue | undefined {
   let depth = 0;
   let index = 0;
@@ -341,7 +341,7 @@ export function registeredSlotKey(text: string): string {
   assert.notEqual(markerMatch, null, "产物里没有 plugins.bundle.config 的注册");
   const marker = markerMatch?.index ?? 0;
   // 窗口取**整个注册对象**：从最近的 register( 之后第一个 `{` 起按深度找配对的 `}`。
-  // 用第一个 `})` 会被 `inject: () => ({ … })` 抢先收口，key 一旦排到 inject 之后
+  // 用第一个 `})` 会被 `inject: () => ({ … })` 抢先统一处理，key 一旦排到 inject 之后
   // 就读不到（或读到内层无关的 key）。
   const callAt = text.lastIndexOf("register(", marker);
   assert.notEqual(callAt, -1, "产物里 plugins.bundle.config 的注册不在 register(…) 调用里");
@@ -360,7 +360,7 @@ export function registeredSlotKey(text: string): string {
 
 /** 实参 → 条目 id：字符串字面量直接取，标识符去产物里查 const 声明。
  *  字面量值限定不含引号（`.*` 是贪婪的：`get("a" + "b")` 会被拼成一个假值）；既非
- *  字面量也非标识符的实参响亮失败，漂移针不许拿拼接出来的假 id 去比对。 */
+ *  字面量也非标识符的实参响亮失败，产物漂移检查不许拿拼接出来的假 id 去比对。 */
 function entryIdOfArgument(text: string, arg: string): string {
   const inline = /^(?<q>["'])(?<value>[^"']*)\k<q>$/u.exec(arg)?.groups?.["value"];
   if (inline !== undefined) {
@@ -404,7 +404,7 @@ export function configFormsEntryId(text: string): string {
   return ids[0]!;
 }
 
-/** 漂移针要比的四个值：两个真源 + 产物里实际写出的两处。 */
+/** 产物漂移检查要比的四个值：两个唯一来源 + 产物里实际写出的两处。 */
 export interface BundleSlotKeyFacts {
   /** profile 的 bundle 包名（= 宿主派发 entryKey，槽位 key 必须是它）。 */
   bundle: string;
@@ -417,13 +417,13 @@ export interface BundleSlotKeyFacts {
 }
 
 /**
- * 把「当期构建（buildClient()，纯函数）的产物」与「两个真源」读成一组可断言的值——
+ * 把「当期构建（buildClient()，纯函数）的产物」与「两个唯一来源」读成一组可断言的值——
  * 本模块只读不判，判据（下面三条）留在用例正文里，这样断言与被测代码同处一个测试。
  *   1. `plugins.bundle.config` 的 key === profile `dsh.profile.bundles` 中本包那条包名；
  *   2. `configForms.get()` 的入参 === cordis.patch.yml 的裸条目 id
- *      （**没有**被顺手一起改成包名 —— 那会把 client 半的写入面再次弄坏）；
+ *      （**没有**被顺手一起改成包名 —— 那会把 client 半的写入路径再次弄坏）；
  *   3. 两个标识不同值（相等就说明本包恰好条目 id == 包名，那这一层的混用钉不住，直接红）。
- * 读盘/取字面量失败仍然当场抛（漂移针不许静默放过，见 constLiteral 与两个取值的 assert）。
+ * 读盘/取字面量失败仍然当场抛（产物漂移检查不许静默放过，见 constLiteral 与两个取值的 assert）。
  */
 export async function bundleSlotKeyFacts(): Promise<BundleSlotKeyFacts> {
   // ESM 动态导入必须吃 URL：Windows 上裸盘符路径（`C:\…`）会被当成 URL scheme 直接抛

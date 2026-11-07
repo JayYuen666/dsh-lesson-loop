@@ -1,7 +1,7 @@
 // rules-layout：规则库在**设置文档里的坐标**——命名空间名、`rules` 字段名，以及把解析值
 // 折成规则卡数组的那一步投影。
 //
-// 为什么从 lib/rules-namespace.ts 拆出来：坐标与投影是"库住在哪儿、读回来长什么样"，
+// 为什么从 lib/rules-namespace.ts 拆出来：坐标与投影是"库存在哪儿、读回来长什么样"，
 // 端口实现是"怎么读（describe 取 value/user/revision）、怎么写（update 带 revision 的 CAS）"。
 // 三枚坐标在 rules-namespace.ts 内部全都在用（load 拿它读卡、save 拿它写字段、describe 拿它
 // 挑本条目那一行），export 面却只有测试与假件在取 ⇒ `fallow --production` 判成「只被测试
@@ -36,7 +36,7 @@ export const RULES_FIELD = "rules";
  *  行数不够用：`droppedRows` 交出**原样**那几行，让写侧能把它们原封不动写回去。
  *  缺 id 的判据来自 normalizeRuleCardRow 这个会随版本演进的归一器——收紧任何必填字段
  *  都会让升级前的旧卡"看起来缺 id"，只报数不复原等于让升级本身抹掉用户的规则库。
- *  corrupted 把"rules 键在但不是数组"与"合法的空库"在类型面上分开：直接把投影交给
+ *  corrupted 把"rules 键在但不是数组"与"合法的空库"在类型上分开：直接把投影交给
  *  save 的调用方，不能把读不懂当成空库整片写回。注意它**只**表达"键在、形状不对"：
  *  value 根本不是记录（或整个命名空间读不到）时 raw 为 undefined，这里给 false，
  *  那种"整份文档读不懂"由调用方另判（lib/lesson-store.ts 的 rulesValueCorrupted），
@@ -44,7 +44,7 @@ export const RULES_FIELD = "rules";
 export interface CardsProjection {
   readonly cards: RuleCard[];
   /** 未能归一的那几行原文（顺序同文件；`length` 就是丢弃条数——此前另有一个
-   *  `dropped: number` 字段与它恒等，没有任何消费方，删掉以免两个口径将来漂移）。
+   *  `dropped: number` 字段与它恒等，没有任何消费方，删掉以免两个规则将来漂移）。
    *  写侧原样带回去，否则整片覆盖会把它们从用户存量里删掉。 */
   readonly droppedRows: readonly unknown[];
   /** true = rules 键存在但形状读不懂；空库（键缺席/空数组）为 false。 */
@@ -74,7 +74,7 @@ export const MAX_EVIDENCE_DETAIL_CHARS = 400;
 export const MAX_EVIDENCE_ENTRIES = 5;
 
 /** 按码点截断：detail 可能含代理对（emoji 等），按 UTF-16 码元切会把截断点落在
- *  代理对中间，落盘成孤立代理项（非法 Unicode，读回即显示为替换符）。
+ *  代理对中间，写到磁盘成孤立代理项（非法 Unicode，读回即显示为替换符）。
  *  for..of 按码点迭代（每格 1-2 码元），上限按码点数计。 */
 function truncateByCodePoints(text: string, max: number): string {
   let end = 0;
@@ -137,9 +137,9 @@ export function capDroppedRowEvidence(rows: readonly unknown[]): unknown[] {
 /**
  * 持久化前的证据收敛：detail 截断 + 只留最近 N 条。
  *
- * 为什么在写这一侧：规则库整份落在 profile 的 patch 文档里，`evidence` 是其中唯一会无界
+ * 为什么要放在写入这一步：规则库整份落在 profile 的 patch 文档里，`evidence` 是其中唯一会无界
  * 增长的部分（实测：长 patch 里绝大部分是 gate 失败与 lint 的逐字转储）。读侧
- * 照旧全量解析、不做二次改写——收敛只发生在落盘那一刻。
+ * 照旧全量解析、不做二次改写——收敛只发生在写到磁盘那一刻。
  * @param cards 本次要写的规则卡
  * @returns 证据已收敛的新数组（不改入参）
  */
@@ -158,7 +158,7 @@ export function capEvidence(cards: readonly RuleCard[]): RuleCard[] {
       const cappedRow: RuleEvidence = {
         ts: row.ts,
         source: row.source,
-        // 截没截以截断结果为准，不用两种长度口径各判一次：判据按 UTF-16 码元、
+        // 截没截以截断结果为准，不用两种长度规则各判一次：判据按 UTF-16 码元、
         // 截断按码点，含代理对的文本会出现"没截断却补了省略号"的假截断。
         detail: cappedText === row.detail ? row.detail : `${cappedText}…`,
       };

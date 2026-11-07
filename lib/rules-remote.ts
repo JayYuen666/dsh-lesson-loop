@@ -1,4 +1,4 @@
-// lib/rules-remote.ts —— 设置卡「规则评审」的**宿主读面**（官方 Typert Remote）。
+// lib/rules-remote.ts —— 设置卡「规则评审」的**宿主读取接口**（官方 Typert Remote）。
 //
 // 为什么是 Remote：卡片跑在浏览器里，而规则库、事件流水与人工动作都在宿主进程。设置面
 // 没有「宿主执行动作」的口子（`ctx.settings` 只有 configure/describe/update/replace/
@@ -10,12 +10,12 @@
 // `create()` 产物。本服务四个方法都是「一元、JSON 出参」，手写客户端 descriptor 比引入
 // 一条构建期代码生成链（外加生成物随包发布）便宜得多。
 //
-// ⚠ 值导入面：`TypertRemoteService` 是个**类**（要 `extends`），没有 type-only 的造法，
+// ⚠ 值导入：`TypertRemoteService` 是个**类**（要 `extends`），没有 type-only 的造法，
 // 因此它落 `peerDependencies`（`dependencies` 是禁区，由 test/publish-manifest.test.ts
 // 钉着），产物里保持**裸说明符**（build-host.mjs 的外部化名单读 dependencies ∪
 // peerDependencies）。
 //
-// 安全边界不再靠 HTTP 面那两道锁（CSRF 令牌 + 信任闸门）：这条读面只经官方网关暴露给
+// 安全边界不再靠 HTTP 接口那两道校验（CSRF 令牌 + 来源信任检查）：这条读取接口只经官方网关暴露给
 // **本 profile 的客户端**，网关自己承担来源校验与鉴权。方法体里的入参白名单（六个动作）
 // 与「id 不在库里就回 404」原样保留——它们护的是动作本身，与传输方式无关。
 
@@ -100,27 +100,27 @@ export type RulesStore = Pick<
   "rules" | "recentLessons" | "ruleAction" | "isUndeterminable"
 >;
 
-/** events 流水读面的条数口径：缺省/≤0 取默认条数，显式请求封顶——事件流水只追加不
+/** events 流水读取接口的条数规则：缺省/≤0 取默认条数，显式请求封顶——事件流水只追加不
  *  修剪，"缺省 = 全量"会让一次调用把整份流水（含每条工具输出全文）序列化过网关，
- *  载荷随使用时长线性增长；而这枚读面挂在公开命名空间上，第三方客户端按默认参数
+ *  载荷随使用时长线性增长；而这枚读取接口挂在公开命名空间上，第三方客户端按默认参数
  *  调用就该拿到有界的载荷。存储侧的零截断承诺不受影响（ lesson-jsonl 层不截断）。 */
 const LESSONS_DEFAULT_LIMIT = 50;
 const LESSONS_MAX_LIMIT = 500;
 /** 单条流水 detail 的下发上限（字符）：detail 是门禁输出/拒绝理由原文，可能含路径、
- *  命令串等敏感面，下发前定长截断；与规则卡证据的 detail 上限同量级。 */
+ *  命令串等敏感内容，下发前定长截断；与规则卡证据的 detail 上限同量级。 */
 const MAX_LESSON_DETAIL_CHARS = 400;
 
-/** 规则评审读面的全部依赖。 */
+/** 规则评审读取接口的全部依赖。 */
 export interface LessonRulesDeps {
   store: RulesStore;
-  /** 管理面快照；`stats()` 把刚读到的规则卡交回来复用（同一次轮询不读两遍规则库）。 */
+  /** 管理界面快照；`stats()` 把刚读到的规则卡交回来复用（同一次轮询不读两遍规则库）。 */
   stats: (rules: RuleCard[]) => Record<string, unknown>;
   /** 现取一份文案（语言随官方 locale 偏好，改语言不必重载插件）。 */
   messagesOf: () => LessonLoopMessages;
 }
 
 /**
- * 规则卡的读面投影：去证据 + 派生的「不可判定」态。
+ * 规则卡的读取接口投影：去证据 + 派生的「不可判定」态。
  *
  * 为什么不把 evidence 发出去：证据是全文（一条教训的 detail 可含整段工具输出），而卡片
  * 只渲染状态与计数——原样序列化等于每次轮询把整份证据库传给浏览器再丢掉。
@@ -133,7 +133,7 @@ function ruleViewOf(store: RulesStore, rule: RuleCard): RuleView {
 
 /**
  * 编译期钉子：RuleView 逐枚重述只防"改名/删字段"，而 ruleViewOf 用 rest 摊开——TS 对
- * spread 属性**不做**多余属性检查，RuleCard 将来新增的任何字段（体积大或含敏感面的
+ * spread 属性**不做**多余属性检查，RuleCard 将来新增的任何字段（体积大或含敏感内容的
  * 尤其危险）会被 `...rest` 静默带上网线。断言"除刻意剔除的 evidence 外，RuleCard 的
  * 键集 ⊆ RuleView 的键集"；失败时本类型是 never，下一行的赋值当场编译红——新增字段
  * 必须先在 rules-shape.ts 的 RuleView 里显式表态（投影或显式排除）。
@@ -153,7 +153,7 @@ function projectOf(request: unknown): string | undefined {
 
 /**
  * lessons 的 limit 归一：≤ 0 / 非数 / 缺省一律取默认条数，显式请求封顶在
- * {@link LESSONS_MAX_LIMIT}。旧 HTTP 面的 `Number(...)` 那套字符串解析随 query 一起消失；
+ * {@link LESSONS_MAX_LIMIT}。旧 HTTP 接口的 `Number(...)` 那套字符串解析随 query 一起消失；
  * 这里只认数字，因为 descriptor 的 strict codec 已经在客户端把非数字挡在网线之前。
  */
 function limitOf(request: unknown): number {
@@ -167,7 +167,7 @@ function limitOf(request: unknown): number {
 }
 
 /**
- * 流水记录的**读面投影**：detail 定长截断、不外借原始 evidence（它带着工具输出原文，
+ * 流水记录的**读取接口投影**：detail 定长截断、不外借原始 evidence（它带着工具输出原文，
  * 与规则卡的 evidence 同一条剔除理由）。投影逐字段写而不是展开——`LessonRecord`
  * 将来新增的敏感字段不会因为 `...rest` 静默上网线。
  */
@@ -203,8 +203,8 @@ function lessonViewOf(record: {
  *
  * ⚠ 服务在**构造时**注册（cordis `Service` 的契约：`ctx.reflect.provide`，随所属 fiber
  * 卸载自动撤），所以调用方拿实例没有任何用处——装入口 `installRulesRemote` 说明了这一点。
- * 读面不依赖任何可选宿主服务：store 与快照取用口都由 apply 交进来，故它跟着 apply 无条件
- * 上线（旧 HTTP 面要等 webServer 到位的那个 inject 子 fiber 一并删除）。
+ * 读取接口不依赖任何可选宿主服务：store 与快照取用入口都由 apply 交进来，故它跟着 apply 无条件
+ * 上线（旧 HTTP 接口要等 webServer 到位的那个 inject 子 fiber 一并删除）。
  */
 export class LessonRulesService extends TypertRemoteService {
   private readonly deps: LessonRulesDeps;
@@ -250,8 +250,8 @@ export class LessonRulesService extends TypertRemoteService {
     }
   }
 
-  /** 事件流水只读投影（detail 截断、不外借原始 evidence），零写面；条数有默认值与
-   *  上限（见 limitOf），detail 是门禁输出/命令串一类的敏感面，不设界等于把整份流水
+  /** 事件流水只读投影（detail 截断、不外借原始 evidence），零写入；条数有默认值与
+   *  上限（见 limitOf），detail 是门禁输出/命令串一类的敏感内容，不设界等于把整份流水
    *  一次性序列化给浏览器。 */
   public lessons(request: LessonsRequest): LessonsReply {
     try {
@@ -267,7 +267,7 @@ export class LessonRulesService extends TypertRemoteService {
    * 人工动作：入参白名单 → 落库并按结果定语义码。
    *
    * 失败一律折成 `{ ok: false, status }` 而不是抛：网关的异常分支只交出
-   * `gateway/internal` 那句英文，卡片会把它原样贴给用户；这里保留旧 HTTP 面那批
+   * `gateway/internal` 那句英文，卡片会把它原样贴给用户；这里保留旧 HTTP 接口那批
    * 已翻译的回显。`persist-failed` 必须报 500 —— 这一次改动没进规则库，库里还是旧状态，
    * 回 200 等于假装升格已生效。
    */
@@ -315,12 +315,12 @@ export class LessonRulesService extends TypertRemoteService {
 
 /**
  * 标准装饰器的**程序化调用**：`@Remote` 的全部作用就是往类原型写一枚描述符，而标准装饰器
- * 语法需要一条 tsc 降级管线（本仓的测试/构建解析器都不降级它）。这里直接按 TC39 的
+ * 语法需要一条 tsc 降级流水线（本仓的测试/构建解析器都不降级它）。这里直接按 TC39 的
  * `ClassMethodDecoratorContext` 形状调同一个 decorator 函数，把标记落到真正的原型上。
  */
 function markRemote(prototype: LessonRulesService, methodName: string): void {
   // 官方 `Remote` 的运行时只读 name/private/static 与 addInitializer（TC39 的 access/metadata
-  // 它一概不读），故这里只给这四位；`Reflect.apply` 让装饰器工厂保持未类型化的调用面。
+  // 它一概不读），故这里只给这四位；`Reflect.apply` 让装饰器工厂保持未类型化的调用签名。
   const context = {
     kind: "method",
     name: methodName,
@@ -342,7 +342,7 @@ markRemote(LessonRulesService.prototype, "lessons");
 markRemote(LessonRulesService.prototype, "ruleAction");
 
 /**
- * 把读面装到这个上下文上（构造即注册，见类文档；host 侧唯一该调的口）。
+ * 把读取接口装到这个上下文上（构造即注册，见类文档；host 侧唯一该调的口）。
  *
  * 为什么是一枚函数而不是让调用方直接 `new`：这枚 `new` 的**全部意义在构造期的注册副作用**
  * 上——实例由 cordis 的 fiber 持有（`Service` 基类把 `reflect.provide` 的 disposer 挂给
@@ -350,10 +350,10 @@ markRemote(LessonRulesService.prototype, "ruleAction");
  *
  * 注册口先探一次（`ctx.reflect.provide`）：替身/畸形上下文未必给，少了它只该少掉卡片
  * 这一栏，绝不该让 apply 当场炸掉。本服务没有自己的收尾资源——卸载由 Service 基类登记的
- * 反射面 disposer 负责，不另挂 effect。
+ * 反射这一步的 disposer 负责，不另挂 effect。
  *
  * @param ctx - 宿主上下文
- * @param deps - 规则读面的全部依赖（见 LessonRulesDeps）
+ * @param deps - 规则读取接口的全部依赖（见 LessonRulesDeps）
  * @returns 装上了没有（调用方不需要它——返回它只是让这条路可断言）
  */
 export function installRulesRemote(ctx: Context, deps: LessonRulesDeps): boolean {

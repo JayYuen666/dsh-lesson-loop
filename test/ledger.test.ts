@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { audit } from "./setup-logs.ts";
 import type { LogRecord } from "./setup-logs.ts";
 
-/** 与 spyLevel 同口径把一枚实参折成一行。 */
+/** 与 spyLevel 同一种做法把一枚实参折成一行。 */
 function flatten(arg: unknown): string {
   return String(arg).replaceAll(/\s+/gu, " ");
 }

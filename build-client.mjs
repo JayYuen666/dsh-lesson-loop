@@ -2,11 +2,11 @@
 // @ts-check
 /// <reference types="node" />
 // 构建 client.js：rolldown 把 src/client-entry.ts 打包为 CJS（外置清单精确匹配），再包进
-// window.__ModuleLoader__.load({ id, factory }) UMD 外壳。id 取 package.json 的 name，
+// window.__ModuleLoader__.load({ id, factory }) 的 UMD 外壳。id 取 package.json 的 name，
 // 与 dsh.client 模块表键一致。
-// 编排（外置判据、store 路径折叠、外壳拼装）统一住在 @jayyuen66/dsh-plugin-shared/
-// lib/build-client；本文件只声明入口、生成头，以及本仓的外置清单口径（官方基座 + 本包
-// `dsh.client.external` 声明）。运行：node build-client.mjs（或 npm run build:client）。
+// 编排（外置判据、store 路径折叠（collapseStorePaths）、外壳 拼装）统一实现在
+// @jayyuen66/dsh-plugin-shared/lib/build-client；本文件只声明入口、生成头，以及本仓的外置清单规则
+// （官方基座 + 本包 `dsh.client.external` 声明）。运行：node build-client.mjs（或 npm run build:client）。
 // buildClient() 与 clientExternals() 供测试导入。
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -18,12 +18,12 @@ import {
   writeArtifact,
 } from "@jayyuen66/dsh-plugin-shared/lib/build-artifacts";
 
-// 再导出：测试按「脚本自己导出它用的工具」这一口径导入（见 test/build-client.test.ts）。
+// 再导出：测试按「脚本自己导出它用的工具」这一规则导入（见 test/build-client.test.ts）。
 export { singleEntryChunk } from "@jayyuen66/dsh-plugin-shared/lib/build-artifacts";
 
 const root = import.meta.dirname;
 
-// 顶层读取带文件名上下文：裸 ENOENT/裸 SyntaxError 不告诉读者是哪份文件；解析结果
+// 顶层读取带文件名上下文：报错只写 ENOENT 或 SyntaxError 不告诉读者是哪份文件；解析结果
 // 不是对象（顶层是数组/字符串）会静默退化成"只有基座的 external 清单"，一并拦下。
 const pkgPath = path.join(root, "package.json");
 /** @type {unknown} */
@@ -38,14 +38,14 @@ if (typeof pkgJson !== "object" || pkgJson === null || Array.isArray(pkgJson)) {
 }
 
 /**
- * 官方 client bundle 的**隐式 external 基座**：外壳预置的冻结模块表（`PLATFORM_MODULES`）
- * 加 parser 预载行（`PRELOADED_CLIENT_EXTERNALS`，当前为空）。两份真源都在
+ * 官方 client bundle 的**隐式 external 基座**：宿主 外壳 预置的冻结模块表（`PLATFORM_MODULES`）
+ * 加 parser 预载行（`PRELOADED_CLIENT_EXTERNALS`，当前为空）。两份唯一来源都在
  * @deepseek-ai/dsh-client-web 的 `src/platform.ts`，而官方 client 构建器
  * `packages/client/tsdown.client.ts` 的 `clientExternals()` 算的就是「基座 ∪ 本包
  * dsh.client.external」——同文件注释明写 "The shell baseline is implicit for every
  * dynamic bundle"。基座里每一枚都必须 external：内联一份 react / cordis / UI 库的副本
  * 就是同一个模块两份身份（宿主只认模块表那一条），基座里漏一枚就是少一份外部化。
- * test/build-client.test.ts 把清单逐条钉住，改这里之前先看官方那两份真源动没动。
+ * test/build-client.test.ts 把清单逐条钉住，改这里之前先看官方那两份唯一来源动没动。
  * @type {readonly string[]}
  */
 const CLIENT_BASELINE = [
@@ -76,7 +76,7 @@ function shapeOf(value) {
 }
 
 /** 本包 `dsh.client.external` 声明的基座之外请求（缺省 = 只有基座，本包当前如此）。
- *  官方口径是"精确串匹配、不归一"（tsdown.client.ts 的 requestedExternals 注释），
+ *  官方规则是"精确串匹配、不归一"（tsdown.client.ts 的 requestedExternals 注释），
  *  故这里原样收：不裁剪、不排序、不合并重复。
  * @param {unknown} [manifest] - 包清单；缺省读本仓 package.json
  * @returns {string[]} 声明的说明符 */
@@ -119,12 +119,12 @@ export function declaredClientExternals(manifest = pkgJson) {
 
 /**
  * 本包 client bundle 的 external 清单（构建与测试同源）：官方基座 + 本包声明。
- * @returns {string[]} 需要保持外部的模块说明符。
+ * @returns {string[]} 需要保持外部的说明符。
  */
 export function clientExternals() {
   // 合并处去重：声明段与基座重叠（最典型是顺手补一条 "react-dom"）时，清单里同一说明符
   // 只该出现一次。实测 rolldown 对重复 external 幂等（同一份源码加不加重复项产物逐字节
-  // 相同），所以这条不是修构建错误，而是让"清单里每枚说明符唯一"成为本文件自己的口径，
+  // 相同），所以这条不是修构建错误，而是让"清单里每枚说明符唯一"成为本文件自己的规则，
   // 不让下游行为去依赖打包器实现细节。声明段本身仍原样收（不裁剪、不排序）。
   return [...new Set([...CLIENT_BASELINE, ...declaredClientExternals()])];
 }

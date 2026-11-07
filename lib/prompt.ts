@@ -15,14 +15,14 @@ import type { RuleCard } from "./lesson-store.ts";
 import { fill } from "./messages.ts";
 import type { LessonLoopMessages } from "./messages.ts";
 
-/** systemPrompt 常驻段（order 1560：zvec-grep routing 1550 之后，紧贴工具规则面）。 */
+/** systemPrompt 常驻段（order 1560：zvec-grep routing 1550 之后，紧挨工具规则那条）。 */
 export const SECTION_NAME = "lesson-loop";
 export const SECTION_ORDER = 1560;
 
 /**
  * 本插件的身份串——**全包唯一定义**：host.ts 从这里导入（服务名 / 开关命名空间
  * `lesson-loop` / cache 子目录 / 注入消息 id 前缀都用它），不再自带第二份。
- * 上方 SECTION_NAME 是同一插件的另一面（systemPrompt 段的命名），值相同但语义
+ * 上方 SECTION_NAME 是同一插件的另一处（systemPrompt 段的命名），值相同但语义
  * 独立，两条各有测试钉住（test/prompt.test.ts、test/host.test.ts）。
  * client 半的 `src/client-entry.ts` 另有一份 `NS`：那是独立打包的另一半，吃不到 host lib。
  */
@@ -59,7 +59,7 @@ interface LessonMessageSource {
  * @deepseek-ai/dsh-agent-instructions/lib/types/state.d.ts:25-29 把 `'agent-instructions'`
  * merge 进同一张表）。本包不声明，官方 `Agent["inject"](message: UserMessage)` 的载荷类型
  * 就收不下本包的注入（实测 TS2322：`Type '"plugin:lesson-loop"' is not assignable to type
- * '"model" | "model-selection" | "system-prompt" | "tool" | "user"'`），而手抄一份
+ * '"model" | "model-selection" | "system-prompt" | "tool" | "user"'`），而照抄一份
  * "inject 收 unknown" 的镜像正是本仓要消灭的东西。
  * 契约：这里写死的键必须始终等于 `plugin:${PLUGIN_NAME}`。TS 的 `declare module` 不收计算键，
  * 类型层面钉不住，故由 test/prompt.test.ts 的断言在跑测时钉（`assert.equal(LESSON_SOURCE_KIND,
@@ -88,7 +88,7 @@ export function renderSectionText(messages: LessonLoopMessages): string {
  */
 const QUOTE_MARK = "│ ";
 
-/** 行终止符：Markdown 与多数渲染器把裸 CR (U+000D)、LS (U+2028)、PS (U+2029) 也当换行，
+/** 行终止符：Markdown 与多数渲染器把孤立 CR (U+000D)、LS (U+2028)、PS (U+2029) 也当换行，
  *  只按 `\n` 切行会让它们之间的内容拿不到引用标记（定界在那里断掉）。NEL (U+0085)、
  *  VT (U+000B)、FF (U+000C) 虽不在 CommonMark 的换行集合里，但 ICU/Java 系渲染端把
  *  它们当换行——本函数的设计前提是"渲染器可能把别的字符也当换行"，归一成本极低，
@@ -109,7 +109,7 @@ function defuseLead(line: string): string {
  * 原文字符一个不丢）。逐行加引用标记 + 改写行首结构符，双向保证嵌入内容
  * 伪造不出新的编号条目、分节标题或分隔线。
  *
- * 切行按 LINE_TERMINATOR 认全部行终止符，不能只认 `\n`：渲染器把裸 CR / LS / PS
+ * 切行按 LINE_TERMINATOR 认全部行终止符，不能只认 `\n`：渲染器把孤立 CR / LS / PS
  * 也当换行时，只按 `\n` 切会让 `\r` 之后的 `2. …` 留在同一"行"内、拿不到引用标记，
  * 渲染出来就是一条真的编号规则。归一成 `\n` 是定界的一部分，不是丢字。
  */
@@ -144,10 +144,10 @@ function armedMetric(messages: LessonLoopMessages, rule: RuleCard): string {
  *
  * 单独成函数是因为"注入了几条"这件事有两个消费者：帧本身与调用点的日志。让日志按
  * 帧的行数去减，就等于把"帧尾那行说明不算规则"这条约定编进算术里——一处漏改就是一条
- * 虚报的计数。选取口径只此一份，两边都对得上。
+ * 虚报的计数。选取规则只此一份，两边都对得上。
  */
 /** `armedAt` 的有效性归一：排序与日期渲染共用同一套判据（缺值/非有限一律无效）。
- *  两个导出面的调用方都可能传入内存里手工构造、`armedAt: NaN` 的卡；两处口径分家会
+ *  两个导出名单的调用方都可能传入内存里手工构造、`armedAt: NaN` 的卡；两处规则分家会
  *  出现"帧里日期是 ?、顺序却按 0 排在中间"这种无信号的错序。 */
 function armedTimeOf(rule: RuleCard): number | undefined {
   let result: number | undefined;

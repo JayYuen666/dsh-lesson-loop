@@ -6,7 +6,7 @@
 // 永不成立。合成效果是：任何一处 TS 类型错都只报 `Command failed: <argv>`，行号与错误码全看不到。
 // 这个坏法不会让任何门变红——构建确实失败了，只是没人读得出为什么。
 //
-// 诊断标记必须住在**子进程读的文件**里，不能写在命令行参数上：命令行会被 Node 拼进
+// 诊断标记必须落在**子进程读的文件**里，不能写在命令行参数上：命令行会被 Node 拼进
 // `Command failed: <argv>`，那样即使诊断被吞，消息里也照样含标记，断言就成了自证。
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
@@ -20,7 +20,7 @@ function isRecord(raw: unknown): raw is Record<string, unknown> {
   return raw !== null && typeof raw === "object" && !Array.isArray(raw);
 }
 
-/** 本包解析到的 tsc 入口（与 build-types.mjs 的 tscEntry 同源，但不导出那一面）。 */
+/** 本包解析到的 tsc 入口（与 build-types.mjs 的 tscEntry 同源，但不取它那份导出）。 */
 function tscEntryOf(): string {
   const require = createRequire(import.meta.url);
   const pkgPath = require.resolve("typescript/package.json");

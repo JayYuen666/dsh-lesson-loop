@@ -1,4 +1,4 @@
-// digest-prompt：蒸馏帧的**文本面**——背景条目、system 提示、用户帧拼装，以及模型产出的容错解析。
+// digest-prompt：蒸馏帧的**文本**——背景条目、system 提示、用户帧拼装，以及模型产出的容错解析。
 //
 // 为什么从 lib/digest.ts 拆出来：digest.ts 剩下的部分是"跑一次蒸馏"（取差评 → 发流 → 建卡），
 // 本模块只回答"送进模型的那段文字长什么样、模型吐回来的怎么读"。四枚导出都被 runDigest
@@ -17,8 +17,8 @@ import { z } from "zod";
 
 /** 背景去重的**事件扫描窗**（条数）：先取更宽的窗口再按 category+signature 去重——
  *  只扫 limit 条事件时，热点签名（每拒绝一次就写一条的 dangerous-bash 一类）能把
- *  窗口吃满，去重后只剩一行，其它更早但互不相同的教训全被挤掉；背景的多样性反而
- *  被热点吃掉。扫描窗按解析缓存的承受力取，去重排序后的**行数**仍由 limit 收口。 */
+ *  窗口吃满，去重后只剩一行，其它更早但互不相同的教训全被挤掉；背景因此只剩热点签名的
+ *  内容。扫描窗按解析缓存的承受力取，去重排序后的**行数**仍由 limit 封顶。 */
 const DEDUP_SCAN_EVENTS = 400;
 
 /** 近期教训去重压背景：键 = 类别 + 签名（签名可空——存量行只校验了 typeof string，
@@ -67,7 +67,7 @@ export function lessonsBackground(
 }
 
 /** category 的取值域（输出契约行与解析侧白名单共用同一份，杜绝两侧各自硬编码后漂移）。
- *  export 出来的唯一消费者是 test/digest.test.ts 的逐类探针：它拿这张清单去撞
+ *  export 出来的唯一消费者是 test/digest.test.ts 的逐类探测用例：它拿这张清单去撞
  *  lib/statement-draft.ts 的 CATEGORY_STATEMENTS，新增分类却漏登记模板会当场红
  *  （漏登记会落到通用兜底，把稳定签名原文当具体路径嵌进正文）。 */
 export const DIGEST_CATEGORIES: readonly string[] = [

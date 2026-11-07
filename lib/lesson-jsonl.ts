@@ -1,16 +1,16 @@
-// lesson-jsonl：教训**事件流水**的落盘面（cache 里那一条 JSONL 的追加与读取）。
+// lesson-jsonl：教训**事件流水**的写到磁配置内容（cache 里那一条 JSONL 的追加与读取）。
 //
-// 为什么从 lib/lesson-store.ts 拆出来：流水与规则库是两块存放面、两套失败纪律——流水是
+// 为什么从 lib/lesson-store.ts 拆出来：流水与规则库是两块存放位置、两套失败纪律——流水是
 // dsh 定位的"可丢弃派生数据"（单写者追加，任何一步失败只日志，绝不让守卫热路径抛穿），
-// 规则库是设置命名空间里的 CAS 写（失败要回 PERSIST_FAILED 回执）。两件事住在一个文件里时，
-// 落盘这层的出口只因"同文件另有一半人用"而挂着 export，`fallow --production` 因此把它们
+// 规则库是设置命名空间里的 CAS 写（失败要回 PERSIST_FAILED 回执）。两件事写在一个文件里时，
+// 写到磁盘这层的返回路径只因"同文件另有一半人用"而挂着 export，`fallow --production` 因此把它们
 // 判成「只被测试养着的导出」；拆开之后每枚都有真实生产消费者（lesson-store 的 report /
 // recentLessons / lessonsCount），测试也按这层边界直接取用。
 //
 // 内容零截断是这层的承诺：`maxBytes` 只是磁盘保险丝（0 = 不设上限），裁尾那一步在
 // lib/jsonl-fuse.ts，判据本体在 shared/lib/jsonl.ts，与 ctx-observe 同源。
 //
-// 写入不再是裸 append：走 jsonl-fuse 的 `appendUnderFuse`——「先裁后写」在同一把跨进程
+// 写入不再是不加锁的 append：走 jsonl-fuse 的 `appendUnderFuse`——「先裁后写」在同一把跨进程
 // 锁里（裁剪的读改写与别的进程的追加曾互相覆盖，见该文件头），本层只负责行边界与失败日志。
 
 import { mkdirSync, readFileSync, statSync } from "node:fs";
@@ -40,7 +40,7 @@ function existsDir(dir: string): boolean {
 
 /** JSONL 追加（容错：路径/建目录/裁剪/追加任一失败只日志不抛——热路径不许炸宿主）。
  *
- *  落盘那一笔交给 `appendUnderFuse`：同一个临界区里先裁后写（跨进程串行，见 jsonl-fuse.ts）。
+ *  写到磁盘那一笔交给 `appendUnderFuse`：同一个临界区里先裁后写（跨进程串行，见 jsonl-fuse.ts）。
  *
  *  每条记录**前**补一个换行：文件尾已是换行时它落成一个空行（读侧按 trim 忽略），是半行
  *  （崩溃、ENOSPC 半写、外部编辑留下的残行）时正好把残行封口——新记录因此永远自成一行，
@@ -202,7 +202,7 @@ export function readJsonl(file: string): readonly Readonly<Record<string, unknow
   lastReadError.delete(file);
   const { rows, bad } = parseLedger(text);
   // 两个判据各求值一次（写成一条 && 表达式时，"没有坏行"的那次读会让第二个判据整条
-  // 短路掉，覆盖门禁 100% 的分支口径下会留一个永远不执行的操作数）。
+  // 短路掉，覆盖门禁100% 的分支规则下会留一个永远不执行的操作数）。
   const previousBad = lastBadCount.get(file);
   if (bad > 0 && previousBad !== bad) {
     console.warn(`[lesson-loop] ${bad} malformed lesson line(s) skipped in ${file}`);

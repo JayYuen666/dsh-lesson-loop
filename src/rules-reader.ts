@@ -1,4 +1,4 @@
-// src/rules-reader.ts —— 设置卡读/写**宿主侧规则评审**的那一面（官方 Typert Remote 的消费侧）。
+// src/rules-reader.ts —— 设置卡读写**宿主侧规则评审**的入口（官方 Typert Remote 的消费端）。
 //
 // 为什么需要它：卡片跑在浏览器里，而规则库、事件流水与人工动作都在宿主进程。设置面没有
 // 「宿主执行动作」的口子，唯一的官方通道就是 Remote（见 lib/rules-remote.ts 的文件头）。
@@ -10,11 +10,11 @@
 // 从不跨网；宿主那边仍按源模式从签名取参数名。
 //
 // ⚠ **为什么走 `ctx.get("remote")` 而不是把 `remote` 写进 `inject`**：cordis 对**未 inject 的
-// 服务**读取是**抛错**。而本卡的其余部分在"没装远程面"的部署里也必须照常渲染（远程读面是
-// 可选能力），`inject: ["remote", …]` 却会把整条 client 入口绑死在远程面上——缺它就不激活。
+// 服务**读取是**抛错**。而本卡的其余部分在"没装远程通道"的部署里也必须照常渲染（远程读取接口是
+// 可选能力），`inject: ["remote", …]` 却会把整条 client 入口绑死在远程通道上——缺它就不激活。
 // `ctx.get` 是**显式读取**，不受 inject 门禁约束——官方网关自己也是这么读可选服务的。
 //
-// ⚠ 类型一律 `import type`（产物里零新说明符）：`@deepseek-ai/*` 只作类型消费。
+// ⚠ 类型一律 `import type`：`@deepseek-ai/*` 只作类型消费，产物里不新增模块说明符。
 import type {
   InvocationDescriptor,
   RemoteResult,
@@ -37,7 +37,7 @@ import type {
  *  所以只能在挂载后按这个键去读，而不是提前 inject。 */
 const RULES_SERVICE_KEY = `remote.${RULES_REMOTE_NAMESPACE}`;
 
-/** 卡片所在 bundle 的包名（`$mount` 的 `package` 位与槽位键同源）：真源在 lib/rules-shape.ts，
+/** 卡片所在 bundle 的包名（`$mount` 的 `package` 位与槽位键同源）：唯一来源在 lib/rules-shape.ts，
  *  client-entry 的 BUNDLE_PKG 与这里都从它取——字面量只有一份。 */
 const PACKAGE_NAME = RULES_BUNDLE_PACKAGE;
 
@@ -125,7 +125,7 @@ const RULE_ACTION_CODEC: TypertCodec<RuleActionRequest> = {
   }),
 };
 
-/** 把宿主那四个方法挂到客户端远程面上的描述符（`id` 的形状照生成器：`<包>#<命名空间>/<方法>`）。
+/** 把宿主那四个方法挂到客户端远程通道上的描述符（`id` 的形状照生成器：`<包>#<命名空间>/<方法>`）。
  *  导出它只为一件事：`test/rules-remote.test.ts` 拿它与宿主侧 `remoteMethods()` 的标记对质
  *  —— 两侧分叉时卡片不会报错，只会"读不到"，所以那条比较必须在门禁里。 */
 export const RULES_DESCRIPTORS: readonly InvocationDescriptor[] = [
@@ -172,7 +172,7 @@ export interface RemoteHost {
   get?: (name: string, strict?: boolean) => unknown;
 }
 
-/** 官方网关的客户端服务面：本卡只用 `$mount` 一位（挂载一枚手写贡献）。 */
+/** 官方网关的客户端宿主服务：本卡只用 `$mount` 一位（挂载一枚手写贡献）。 */
 interface RemoteMounter {
   $mount: (contribution: {
     package: string;
@@ -180,9 +180,9 @@ interface RemoteMounter {
   }) => Promise<unknown>;
 }
 
-/** 挂载后由网关提供的命名空间服务面。方法名在此文件里有**四份手写副本**：本接口、
+/** 挂载后由网关提供的命名空间宿主服务。方法名在此文件里有**四份手写副本**：本接口、
  *  isRulesNamespace 的逐名守卫、RULES_DESCRIPTORS 的 method 位、以及 createRulesReader
- *  返回面里的 ns.xxx() 调用——任何一份与宿主实际方法名分叉，先红的是 descriptor 对质
+ *  返回类型里的 ns.xxx() 调用——任何一份与宿主实际方法名分叉，先红的是 descriptor 对质
  *  那条测试（test/rules-remote.test.ts），改方法名时四处一起动。 */
 interface RulesNamespace {
   stats: () => Promise<RemoteResult<Record<string, unknown>>>;
@@ -202,7 +202,7 @@ export interface RulesReader {
   ruleAction: (id: string, action: string, statement?: string) => Promise<RuleActionReply>;
 }
 
-/** 网关拒绝回执 → 抛错（四个读取方法同一段判据，抽出来保证口径一致：错误前缀
+/** 网关拒绝回执 → 抛错（四个读取方法同一段判据，抽出来保证规则一致：错误前缀
  *  `code: message` 不许某一处悄悄变体）。 */
 function unwrapRemote<Value>(result: RemoteResult<Value>): Value {
   if (!result.ok) {
@@ -211,7 +211,7 @@ function unwrapRemote<Value>(result: RemoteResult<Value>): Value {
   return result.value;
 }
 
-/** 这个值能当远程面用吗（只核我们要调的那一位；服务来自别的实现或版本时保守当作没有）。 */
+/** 这个值能当远程通道用吗（只核我们要调的那一位；服务来自别的实现或版本时保守当作没有）。 */
 const isRemoteMounter = (value: unknown): value is RemoteMounter =>
   isRecord(value) && typeof value["$mount"] === "function";
 
@@ -226,7 +226,7 @@ const isRulesNamespace = (value: unknown): value is RulesNamespace =>
 /**
  * 造出真正的读取器（挂载一次 + 每次读命名空间服务）。
  * @param ctx - 客户端上下文
- * @param remote - 已核过形状的远程面
+ * @param remote - 已核过形状的远程通道
  * @returns 读取器
  */
 function buildRulesReader(ctx: RemoteHost, remote: RemoteMounter): RulesReader {
@@ -275,18 +275,18 @@ function buildRulesReader(ctx: RemoteHost, remote: RemoteMounter): RulesReader {
 }
 
 /**
- * 造一个「读/写宿主侧规则评审」的读取器；**当前部署没有远程面时返回 `undefined`**
- * （卡片照常渲染，只是数据面显示读不到 —— 与 host 侧可选读面同一条口径）。
+ * 造一个「读/写宿主侧规则评审」的读取器；**当前部署没有远程通道时返回 `undefined`**
+ * （卡片照常渲染，只是数据那一栏显示读不到 —— 与 host 侧可选读取接口同一条规则）。
  *
  * `$mount` 是**幂等**的（挂进本 fiber，随卡片卸载自动撤），所以这里缓存那枚 promise：
  * 同一次会话里反复拉取只挂一次。
  *
  * @param ctx - 客户端上下文（只用 `get` 一位）
- * @returns 读取器；没有远程面时 `undefined`
+ * @returns 读取器；没有远程通道时 `undefined`
  */
 export function createRulesReader(ctx: RemoteHost): RulesReader | undefined {
   const remote = ctx.get?.("remote");
   // 单 return（三元的另一支是 `undefined`）：`consistent-return` 不接受"早退 undefined + 晚退函数"
-  // 这种混合形状，而这里两种结果本来就是同一件事的两面。
+  // 这种混合形状，而这里两种结果本来就是同一件事的两头。
   return isRemoteMounter(remote) ? buildRulesReader(ctx, remote) : undefined;
 }

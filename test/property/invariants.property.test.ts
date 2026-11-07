@@ -1,4 +1,4 @@
-// 衰减裁决、签名折叠、围栏定界与蒸馏解析的属性面。期望值全部来自各模块头注写明的
+// 衰减裁决、签名折叠、围栏定界与蒸馏解析的属性测试。期望值全部来自各模块头注写明的
 // 契约（脏计数不参与裁决、NUL 分隔、行首引用标记、白名单类别），不从实现派生。
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
@@ -125,7 +125,7 @@ describe("ruleKey 与 stableSignatureFor 的折叠性质", () => {
       assert.equal(stableSignatureFor(category, stable), stable);
       const summary = `${stable}:rejected`;
       assert.equal(stableSignatureFor(category, summary), summary);
-      // 稳定签名不是碎片签名（归并识别器的对偶面）。
+      // 稳定签名不是碎片签名（归并识别器的对偶）。
       assert.equal(isFragmentSignatureOf(category, stable), false);
     }
   });
@@ -142,7 +142,7 @@ describe("fenceUntrusted 的定界性质", () => {
   const cleanLineArb = fc
     .stringMatching(/^[a-z][a-z0-9 ,.;:]{0,30}$/u)
     .filter((line) => !structuralLead.test(line));
-  /** 行终止符全集（与模块头注写明的一致：LF/CRLF/裸 CR/LS/PS/NEL/VT/FF；十六进制转义按
+  /** 行终止符全集（与模块开头注释写明的一致：LF/CRLF/孤立 CR/LS/PS/NEL/VT/FF；十六进制转义按
    *  lint 基线用大写）。 */
   const terminatorArb = fc.constantFrom(
     "\n",
@@ -172,7 +172,7 @@ describe("fenceUntrusted 的定界性质", () => {
     );
   });
 
-  it("行首结构符本体被【】包住（探针实测：包的是匹配段，不是整行）", () => {
+  it("行首结构符本体被【】包住（实测：包的是匹配段，不是整行）", () => {
     assert.equal(fenceUntrusted("1. 危险命令"), `${QUOTE_MARK}【1.】 危险命令`);
     assert.equal(fenceUntrusted("## 标题"), `${QUOTE_MARK}【##】 标题`);
     assert.equal(fenceUntrusted("---"), `${QUOTE_MARK}【---】`);

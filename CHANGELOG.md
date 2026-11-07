@@ -4,24 +4,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## 0.1.9
 
-宿主开发基线抬到 `0.2.2-rc.1`，支持窗口从单条 `^0.2.1-rc.3` 改成两条宿主线的并集，`engines.node` 地板抬到 `>=24.9.0`；卡片组件改由 shared 的 `./client` 供。`/lessons-digest` 的事件读取改走无投影通道并归还观察租约。默认配置与注入行为不变，需要留意的是 `engines.node` 抬高后 node 22 装不上本包。
+宿主开发基线抬到 `0.2.2-rc.1`，支持窗口从单条 `^0.2.1-rc.3` 改成两条宿主线的并集，`engines.node` 下限抬到 `>=24.9.0`；卡片组件改由 shared 的 `./client` 供。`/lessons-digest` 的事件读取改走无投影通道并归还观察租约。默认配置与注入行为不变，需要留意的是 `engines.node` 抬高后 node 22 装不上本包。
 
 ### Changed
 
-- **宿主开发基线**：`devDependencies` 的 `@deepseek-ai/dsh-*` 全族抬到 `0.2.2-rc.1`，`@deepseek-ai/cordis` 抬到 `4.1.0`、`@deepseek-ai/cordis-plugin-loader` 抬到 `1.1.0`、`@deepseek-ai/cordis-plugin-timer` 抬到 `1.2.0`、`@deepseek-ai/schemastery` 抬到 `3.19.0`；根 catalog 与 overrides 的投影同步，`pnpm-lock.yaml` 随之重解。
-- **支持窗口写成并集**：`engines.dsh` 与四枚 `@deepseek-ai/dsh*` peer 由 `^0.2.1-rc.3` 改为 `^0.2.1-rc.5 || ^0.2.2-alpha.3`；`@deepseek-ai/schemastery` 的 peer 由 `^3.18.6-alpha.1` 放宽为 `^3.18.5 || ^3.18.6-alpha.1`，与两条宿主线各自的实装版本（rc 线 `3.18.5`、`0.2.2-rc` 线 `3.19.0`）对齐。caret 的预发布比较只吃自己那条元组，单写一条线会把另一条线上的预发布判成不满足；`engines.node` 由 `>=22.12.0` 抬到 `>=24.9.0`，取值取自宿主自己的地板。
+- **宿主开发基线**：`devDependencies` 里整组 `@deepseek-ai/dsh-*` 包抬到 `0.2.2-rc.1`，`@deepseek-ai/cordis` 抬到 `4.1.0`、`@deepseek-ai/cordis-plugin-loader` 抬到 `1.1.0`、`@deepseek-ai/cordis-plugin-timer` 抬到 `1.2.0`、`@deepseek-ai/schemastery` 抬到 `3.19.0`；根 catalog 与 overrides 的投影同步，`pnpm-lock.yaml` 随之重解。
+- **支持窗口写成并集**：`engines.dsh` 与四枚 `@deepseek-ai/dsh*` peer 由 `^0.2.1-rc.3` 改为 `^0.2.1-rc.5 || ^0.2.2-alpha.3`；`@deepseek-ai/schemastery` 的 peer 由 `^3.18.6-alpha.1` 放宽为 `^3.18.5 || ^3.18.6-alpha.1`，与两条宿主线各自的实装版本（rc 线 `3.18.5`、`0.2.2-rc` 线 `3.19.0`）对齐。caret 的预发布比较只吃自己那条元组，单写一条线会把另一条线上的预发布判成不满足；`engines.node` 由 `>=22.12.0` 抬到 `>=24.9.0`，取值取自宿主自己的下限。
 - **卡片组件改由 shared 的 `./client` 供**：`src/client-entry.ts` 与 `src/rules-reader.ts` 的运行期值导入从 `./lib/record`、`./lib/card-diff`、`./lib/card-ui` 迁到 `./client`，`package.json` 新增 `dsh.client.external`，`test/build-client.test.ts` 的基座随之由 11 枚变 12 枚；`cordis.patch.yml` 因此插入一条**不写 id** 的 `@jayyuen66/dsh-plugin-shared` 组件行（写 id 会在插件页多出一个可关闭的组件，关掉后设置卡失去组件供应）。
-- **CI 的 node 矩阵收敛**：`ci.yml` 的 `node: [22, 24]` 加 macOS 排除改为单格 `node: [24.9]`，`ci.yml` 与 `publish.yml` 的 `node-version` 由 `24` 改为 `24.9`，与 `engines.node` 同值。本仓的 pnpm 取值仍由 `packageManager` 单点供给，workflow 不写 `env.PNPM_VERSION`——两处都写就是两份真源。
-- **发布预检按 catalog 的范围口径改判**：`publish.yml` 的依赖库可见性预检原先要求 catalog 里 shared 那条是**精确版本**，而伞根真源按设计写的是范围（`^0.2.4`）——这一位不符就拒发，等于让发布链与八仓的声明方式各说一套。现改为取**范围下限**那一版去查 registry：下限永远落在自己声明的范围里，与根侧 `sync --check` 比「该条范围的最低版本」的产物导出面是同一口径。认不出的写法照旧拒发，`catalog:foo` 这类命名 catalog 仍然点名拒绝，不让这道门被绕过。
-- **文档**：dsh 徽章由 `^0.2.1-rc.3` 抬到 `^0.2.1-rc.5`，与 `engines.dsh` 首条同值；「实测」名单里 `0.2.1-rc.5` 到 `0.2.2` 改写成到 `0.2.2-rc.1`——registry 上没有 `0.2.2` 这一版（`npm view @deepseek-ai/dsh@0.2.2` 回 404，`next` 是 `0.2.2-rc.1`），按 `semver@7.8.5` 带 `includePrerelease` 复核，`0.2.2-rc.1` 落在窗口内、`0.3.0` 不落在；隐私段「证据正文永不过线」收窄成「不进卡片」，因为 `lessons()` 读面确实会带回截到 400 字的 `detail`（`lib/rules-remote.ts`），只有卡片不渲染它；`cordis.patch.yml` 的注册行由「唯一一行」改写为「两条条目」并说明 shared 那行为何不写 id。
+- **CI 的 node 矩阵收敛**：`ci.yml` 的 `node: [22, 24]` 加 macOS 排除改为单格 `node: [24.9]`，`ci.yml` 与 `publish.yml` 的 `node-version` 由 `24` 改为 `24.9`，与 `engines.node` 同值。本仓的 pnpm 取值仍由 `packageManager` 单点供给，workflow 不写 `env.PNPM_VERSION`——两处都写就是两份唯一来源。
+- **发布预检按 catalog 的范围规则改判**：`publish.yml` 的依赖库可见性预检原先要求 catalog 里 shared 那条是**精确版本**，而伞根唯一来源按设计写的是范围（`^0.2.4`）——这一位不符就拒发，等于让发布链与八仓的声明方式各说一套。现改为取**范围下限**那一版去查 registry：下限永远落在自己声明的范围里，与根侧 `sync --check` 比「该条范围的最低版本」的产物导出名单是同一种做法。认不出的写法照旧拒发，`catalog:foo` 这类命名 catalog 仍然点名拒绝，不让这道门被绕过。
+- **文档**：dsh 徽章由 `^0.2.1-rc.3` 抬到 `^0.2.1-rc.5`，与 `engines.dsh` 首条同值；「实测」名单里 `0.2.1-rc.5` 到 `0.2.2` 改写成到 `0.2.2-rc.1`——registry 上没有 `0.2.2` 这一版（`npm view @deepseek-ai/dsh@0.2.2` 回 404，`next` 是 `0.2.2-rc.1`），按 `semver@7.8.5` 带 `includePrerelease` 复核，`0.2.2-rc.1` 落在窗口内、`0.3.0` 不落在；隐私段「证据正文永不过线」收窄成「不进卡片」，因为 `lessons()` 读取接口确实会带回截到 400 字的 `detail`（`lib/rules-remote.ts`），只有卡片不渲染它；`cordis.patch.yml` 的注册行由「唯一一行」改写为「两条条目」并说明 shared 那行为何不写 id。
 
 ### Fixed
 
-- **`/lessons-digest` 的事件读取**：`observeSession` 显式使用 `projectionMode: "none"`，并在 `finally` 归还观察租约；只读事件时不再为整份日志计算全部投影，冷读也不会 pin 住缓存。旧宿主的观察面可能没有 `Symbol.dispose`，释放按尽力而为处理：归还失败不改变本次读窗已经交回的结论。
+- **`/lessons-digest` 的事件读取**：`observeSession` 显式使用 `projectionMode: "none"`，并在 `finally` 归还观察租约；只读事件时不再为整份日志计算全部投影，冷读也不会 pin 住缓存。旧宿主的观察接口可能没有 `Symbol.dispose`，释放按尽力而为处理：归还失败不改变本次读窗已经交回的结论。
 
 ## 0.1.8
 
-一轮跨面审查修复：保险丝的锁恢复改无覆盖、蒸馏超时改类型识别，规则库写面与读面判据收口，
+一轮跨模块审查修复：保险丝的锁恢复改无覆盖、蒸馏超时改类型识别，规则库写入与读取接口判据统一处理，
 发布链同步加固。
 
 ### Changed
@@ -34,13 +34,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
-- **锁恢复改无覆盖**（`lib/jsonl-fuse.ts`）：`restoreLock()` 改 linkSync，原位被占即 EEXIST 留墓碑，替换原 renameSync「物归原主」，不再覆盖第三方新建的锁；同文件的陈旧门槛 `STALE_BYTES_PER_MS` 20→20_480（原单位写错，100MB 流水的门槛曾达约 83 分钟）、账本新建权限 0o600、乐观 size 校验移到 rename 紧前、读回校验只把 ENOENT 当「行被覆盖」（其余读错视为已在并告警，绝不补写）。
+- **锁恢复改无覆盖**（`lib/jsonl-fuse.ts`）：`restoreLock()` 改 linkSync，原位被占即 EEXIST 留墓碑，替换原 renameSync「物归原主」，不再覆盖第三方新建的锁；同文件的陈旧阈值 `STALE_BYTES_PER_MS` 20→20_480（原单位写错，100MB 流水的阈值曾达约 83 分钟）、账本新建权限 0o600、乐观 size 校验移到 rename 紧前、读回校验只把 ENOENT 当「行被覆盖」（其余读错视为已在并告警，绝不补写）。
 - **蒸馏超时改类型识别**（`lib/digest.ts`）：新增 `DigestTimeoutError` 与 `MAX_TIMER_MS=2^31-1`，替代按「蒸馏超时」文案子串匹配；`runDigest` 入口先校验 timeoutMs（非有限/≤0/超上限即拒）；被放弃的流静默落定不再误报日志。
 - **蒸馏解析健化**（`lib/digest-prompt.ts`）：超长切片及时 break、尝试超限时仍交回 `parsedButEmpty`（保住 rejected 计数）、空结果按 rejected 取大者。
-- **衰减裁决脏输入收口**（`lib/decay-policy.ts`）：负/小数/NaN/Infinity 一律 keep，四档阈值非法回落默认档，`now` 非有限回落当前时间。
-- **签名与起草**（`lib/rule-signature.ts`、`lib/statement-draft.ts`）：rejected 汇总签名原样返回不再折回 stable 与活卡撞键；起草查表改 freeze + `Object.hasOwn`，原型链键不再把函数透传进注入面。
-- **规则库写面**（`lib/rules-layout.ts`、`lib/rules-namespace.ts`、`lib/rules-remote.ts`）：坏行 evidence 也按上限收敛堵写放大；`save` 拒绝不可用 revision（-1/1.5/NaN）；`limit` 归一后下限 1（`limit:0.5` 不再折成 0=全量）。
-- **读面与排序**（`lib/lesson-jsonl.ts`、`lib/negative-feedback.ts`、`lib/prompt.ts`）：缓存命中即清 lastReadError、同文件刷新先删再 set；空白分类视同缺省；无效 `armedAt` 排最后、双方无效保持原序。
+- **衰减裁决脏输入统一处理**（`lib/decay-policy.ts`）：负/小数/NaN/Infinity 一律 keep，四档阈值非法回落默认档，`now` 非有限回落当前时间。
+- **签名与起草**（`lib/rule-signature.ts`、`lib/statement-draft.ts`）：rejected 汇总签名原样返回不再折回 stable 与活卡撞键；起草查表改 freeze + `Object.hasOwn`，原型链键不再把函数透传进注入。
+- **规则库写入**（`lib/rules-layout.ts`、`lib/rules-namespace.ts`、`lib/rules-remote.ts`）：坏行 evidence 也按上限收敛堵写放大；`save` 拒绝不可用 revision（-1/1.5/NaN）；`limit` 归一后下限 1（`limit:0.5` 不再折成 0=全量）。
+- **读取接口与排序**（`lib/lesson-jsonl.ts`、`lib/negative-feedback.ts`、`lib/prompt.ts`）：缓存命中即清 lastReadError、同文件刷新先删再 set；空白分类视同缺省；无效 `armedAt` 排最后、双方无效保持原序。
 - **构建脚本硬化**（`build-types.mjs`、`build-client.mjs`）：tsc 入口读/解析失败带清单路径、bin 越界或缺失分别报错；client 外置清单校验 `dsh` / `dsh.client` 必须是对象，防 external 清单静默消失。
 
 ### Added
@@ -49,55 +49,55 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## 0.1.7
 
-这一版把插件页的展示面交给 locale 与详情文档，设置卡与请求校验统一到 shared 组件和 zod，读面失败改走本地化回执；同时修掉重试重复记账、整片覆盖删存量行与升格时间戳被拉早这三处会静默算错或丢数据的边。
+这一版把插件页的展示交给 locale 与详情文档，设置卡与请求校验统一到 shared 组件和 zod，读取接口失败改走本地化回执；同时修掉重试重复记录下来、整片覆盖删存量行与升格时间戳被拉早这三处会静默算错或丢数据的边。
 
 ### Changed
 
-- **插件页展示面下沉到 locale**：新增 `locale/en.json` / `locale/zh.json` 的 `meta.title`、`meta.description` 与 `meta.detail`；详情页英文读 `docs/DETAIL.md`、中文读 `docs/DETAIL.zh.md`。`exports` 增加 `./locale/*.json`，`files` 在 locale 两条之后紧跟 `docs`。插件页不再从 README 取标题与说明。
+- **插件页展示落到 locale**：新增 `locale/en.json` / `locale/zh.json` 的 `meta.title`、`meta.description` 与 `meta.detail`；详情页英文读 `docs/DETAIL.md`、中文读 `docs/DETAIL.zh.md`。`exports` 增加 `./locale/*.json`，`files` 在 locale 两条之后紧跟 `docs`。插件页不再从 README 取标题与说明。
 - **设置卡迁到 shared 组件与 zod 校验**：开关、数字、保存条与状态条改用 `@jayyuen66/dsh-plugin-shared/lib/card-ui`，卡片文案按分区、状态条与单位拆开；`src/rules-reader.ts` 的 strict codec 由手写判断换成 zod schema。`zod` 因此进入 `dependencies`，与 react 一样由宿主平台模块提供，避免第二份身份。
 - **宿主开发线抬到 `0.2.2-alpha.2`**：devDependencies 与 catalog/overrides 同值；`engines.dsh` 与
   `@deepseek-ai/dsh*` peer 写支持窗口 `^0.2.1-rc.3`。
-- **读面失败改走本地化回执**：`stats` / `rules` / `lessons` 不再把宿主异常抛给网关折成英文内部错误，而是回 `{ ok: false, error, status: 500 }`；卡片按方法显示对应文案，日志保留原文。
-- **摘要候选解析改用 zod**：`lib/digest-prompt.ts` 的类别白名单、正文非空与签名兜底收敛为一张 schema；白名单仍与输出契约行同源。
+- **读取接口失败改走本地化回执**：`stats` / `rules` / `lessons` 不再把宿主异常抛给网关折成英文内部错误，而是回 `{ ok: false, error, status: 500 }`；卡片按方法显示对应文案，日志保留原文。
+- **摘要候选解析改用 zod**：`lib/digest-prompt.ts` 的类别白名单、正文非空与签名兜底统一成一张 schema；白名单仍与输出契约行同源。
 
 ### Fixed
 
 - **单仓安装态下 client 测试拿到真实 React hook**：registry 版 shared 的 `dist/card-ui.js` 被
   vitest 外部化，它内部的 `require("react")` 绕过 `vi.mock("react")`；vitest 配置把
   `@jayyuen66/dsh-plugin-shared` 内联，测试架重新走 mock。
-- **CAS 失败后的上报重试不再重复写事件流水**：上一次已追加流水、只是规则面没写成时，同一教训的重试不再追加第二行，流水条数与规则卡计数不会分叉。
+- **CAS 失败后的上报重试不再重复写事件流水**：上一次已追加流水、只是规则库那次没写成时，同一教训的重试不再追加第二行，流水条数与规则卡计数不会分叉。
 - **规则库整片覆盖保留读不动的存量行**：`save` 把 `normalizeRuleCardRow` 判掉的行原样带回，不再因为一次保存把用户的旧卡永久删除。
 - **armed 碎片继承时间戳取更晚者**：主卡已有的 `armedAt` / `lastViolationAt` / `lastSuppressedAt` 不再被更早的碎片覆盖，避免刚升格的卡被 `decayVerdict` 提前判降级。
-- **两份 README 补上支持窗口与读面回执**：宿主版本号不再写成长期承诺；`stats unavailable` 的两种成因分开，读方法失败的 `{ ok: false, error, status }` 写进对外接口。
+- **两份 README 补上支持窗口与读取接口回执**：宿主版本号不再写成长期承诺；`stats unavailable` 的两种成因分开，读方法失败的 `{ ok: false, error, status }` 写进对外接口。
 
 ### Added
 
-- 新增统计、规则列表与事件流水的本地化读面错误文案。
+- 新增统计、规则列表与事件流水的本地化读取接口错误文案。
 - 新增 `docs/DETAIL.md` 与 `docs/DETAIL.zh.md` 作为插件页详情来源。
 
 ## 0.1.6
 
-这一版收口全仓审查：事件流水与规则库在坏数据与并发边上改为 fail-closed，蒸馏与读面补齐边界，测试门禁与发布工作流加固；设置卡新增规则正文上限。对外方法面保持兼容，新增 `statement-too-long` 回执与 `maxStatementChars` 设置；`lessons` 的默认条数与 `detail` 长度改为有界。
+这一版统一处理全仓审查：事件流水与规则库在坏数据与并发边上改为 fail-closed，蒸馏与读取接口补齐边界，测试门禁与发布工作流加固；设置卡新增规则正文上限。对外方法子集保持兼容，新增 `statement-too-long` 回执与 `maxStatementChars` 设置；`lessons` 的默认条数与 `detail` 长度改为有界。
 
 ### Changed
 
-- **规则正文写入上限**：设置卡新增 `maxStatementChars`（默认 4000，1–100000）。arm/edit 的生效正文超限时回 400 与本地化文案、库不动；arm 继承存量超长正文同样被拒。蒸馏建出的候选不受写入闸门约束，人审改写后再升格。
+- **规则正文写入上限**：设置卡新增 `maxStatementChars`（默认 4000，1–100000）。arm/edit 的生效正文超限时回 400 与本地化文案、库不动；arm 继承存量超长正文同样被拒。蒸馏建出的候选不受这条写入上限约束，人审改写后再升格。
 - **规则库坏形状判定补上 user 层**：`user` 不是记录同样按读不懂处理；`UNUSABLE_READ` 改用 `-1` 哨兵并冻结；`describe()` 抛错的日志按状态翻转节流。
-- **事件流水读取口径收紧**：改用 `statSync` 区分 ENOENT 与其它读失败（"读不到"不再洗成"没有"）；解析缓存键加入 ctime；目录按仅属主可进创建。
-- **JSONL 保险丝进一步加固**：陈旧锁接管后按 ino/mtime 验明正身，搬错人时物归原主；归还锁改为原子搬走再验令牌；临时文件沿用原文件权限；陈旧门槛随数据文件大小放大；追加后的自查改为全文查找。
-- **读面收敛**：`lessons` 缺省 50 / 上限 500 条，`detail` 下发前截断 400 字符且不外借 evidence；规则卡投影加编译期钉子，`RuleCard` 新增字段必须先表态。
+- **事件流水读取规则收紧**：改用 `statSync` 区分 ENOENT 与其它读失败（"读不到"不再洗成"没有"）；解析缓存键加入 ctime；目录按仅属主可进创建。
+- **JSONL 保险丝进一步加固**：陈旧锁接管后按 ino/mtime 验明正身，搬错人时物归原主；归还锁改为原子搬走再验令牌；临时文件沿用原文件权限；陈旧阈值随数据文件大小放大；追加后的自查改为全文查找。
+- **读取接口收敛**：`lessons` 缺省 50 / 上限 500 条，`detail` 下发前截断 400 字符且不外借 evidence；规则卡投影加编译期钉子，`RuleCard` 新增字段必须先表态。
 - **测试门禁硬化**：`schema-coverage` 跳过注释/字符串定位 `Schema.object`，支持单行写法与 `.tsx/.mts/.cts`；`profile-bundle` 按花括号深度取整个注册对象并只认顶层 `key:`，拼接常量响亮失败；`setup-logs` 接管 debug/trace、按全部实参归属、安装幂等；两份新鲜度夹具补导出与产物形状校验；客户端测试拆出 `tsconfig.client-tests.json`，client 程序保持 `types: []`。
 - **CI / 发布**：来源证明只签默认分支；发布用完整 ref 比较、`curl` 加超时/重试、`setup-node` 开 pnpm 缓存、预检改查 catalog 钉的 shared 版本、发布前断言 tarball 依赖段没有未解析的 `catalog:`/`workspace:`；CodeQL 补 `actions: read`；scorecard 补 concurrency 且 artifact 失败不阻断 SARIF；actionlint 走 `-config-file` 并覆盖 `*.yaml`。
 - **文档与配置**：两份 README 的注入事件名、降级条件、正文上限、术语与 `LICENSE` 署名对齐代码；`cordis.patch.yml` 的维护命令指向包根；`dependabot.yml` 不再复述 rc 版本号并写明安全更新路径；`oxfmt.config.ts` 的共享基线声明改正；`.gitignore` 补根锚定、凭据载体、模板例外与本地 tgz。
 
 ### Fixed
 
-- **会话清算在落盘之后才登记**：`markSettled` 移到持久化成功之后；失败时回滚清算标记与台账条目，下一次 dispose 边带全量数据重试；无预种台账的会话失败时只回滚标记。
+- **会话清算在写到磁盘之后才登记**：`markSettled` 移到持久化成功之后；失败时回滚清算标记与台账条目，下一次 dispose 边带全量数据重试；无预种台账的会话失败时只回滚标记。
 - **插件关闭后的持久化副作用**：周期衰减在 `enabled=false` 时不再降级写库；timer disposer 等待在飞的一轮落定。
-- **两条会话写入口同判据**：`agent/created` 预种、违规记账与 pass 记账都先查 `hasSettled`，已清算会话不再重建台账。
-- **蒸馏墙钟到点必返回**：abort 后加短宽限，仍不落定的流按超时收场；`selection` 逐位按字符串收窄并 trim；解析加切片长度/尝试次数上限；单轮候选上限 20，超出与落盘失败分列 `dropped`。
-- **负反馈投影兜底**：循环引用/BigInt/`toJSON` 返回 undefined 不再炸整条投影；指纹键改用 JSON 序列化、业务键加前缀、会话备注按 trim 后的文本去重。
-- **人工动作的写面收口**：空正文与超长正文都被拒且库不动；`edit` 与现文相同回 `unchanged` 不写盘；`addCandidate` 命中非候选卡不再空写 `updatedAt`；rejected 汇总卡不覆盖人工正文。
+- **两条会话写入口同判据**：`agent/created` 预种、违规记录与 pass 记录都先查 `hasSettled`，已清算会话不再重建台账。
+- **蒸馏墙钟到点必返回**：abort 后加短宽限，仍不落定的流按超时收场；`selection` 逐位按字符串收窄并 trim；解析加切片长度/尝试次数上限；单轮候选上限 20，超出与写到磁盘失败分列 `dropped`。
+- **负反馈投影后备**：循环引用/BigInt/`toJSON` 返回 undefined 不再炸整条投影；指纹键改用 JSON 序列化、业务键加前缀、会话备注按 trim 后的文本去重。
+- **人工动作的写入统一处理**：空正文与超长正文都被拒且库不动；`edit` 与现文相同回 `unchanged` 不写盘；`addCandidate` 命中非候选卡不再空写 `updatedAt`；rejected 汇总卡不覆盖人工正文。
 - **规则卡渲染与编辑**：草稿在非编辑态跟随宿主的 statement；同一 tick 的重复操作不再发第二笔请求；越界时间戳退 `?`；配置行补 React key 与可访问名；动作失败显示本地化文案。
 - **工具链与配置漂移**：`prepare` 转调 `prepack`；`tsconfig.types.json` 去掉 DOM lib；`tsconfig.json` 删除不存在的 `build-utils.mjs`；`tsconfig.build-scripts.json` 改 `build-*.mjs` 通配；actionlint 的按文件豁免改为真正生效。
 
@@ -108,13 +108,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## 0.1.5
 
-这一版统一到伞工作区的构建与门禁基线，并修掉规则库、会话清算与蒸馏解析里几处会静默算错或静默丢数据的面；两份 README 按模板重写。条目与注入文案的对外形状未改。
+这一版统一到伞工作区的构建与检查基线，并修掉规则库、会话清算与蒸馏解析里几处会静默算错或静默丢数据的那一侧；两份 README 按模板重写。条目与注入文案的对外形状未改。
 
 ### Changed
 
-- **宿主线抬到 `0.2.1-rc.3`**：`engines.dsh`、peer/dev 依赖、`pnpm-workspace.yaml` 的 overrides 与 README 徽标/正文同值；shared 下限随根真源投影。
+- **宿主线抬到 `0.2.1-rc.3`**：`engines.dsh`、peer/dev 依赖、`pnpm-workspace.yaml` 的 overrides 与 README 徽标/正文同值；shared 下限随根唯一来源投影。
 - **不可判定窗口锚定在 `armedAt`（回退 `createdAt`）**：最近一次复发不再重置窗口。旧写法会让一条零星复发、却从未被遵守的规则永远到不了「挂满」——既降不了级，也判不成不可判定，只能一直 armed。
-- **候选升格提示改为边沿触发**：只在刚越过门槛的那一回报一次，不再每次上报都重复同一句。
+- **候选升格提示改为边沿触发**：只在刚越过阈值的那一回报一次，不再每次上报都重复同一句。
 - **蒸馏墙钟只约束模型流**：解析与落库不再被算进模型超时；`reasoningEffort` 原样透传。
 - **构建脚本薄化**：host/client/types 的编排统一走 shared 的 `lib/build-*`，产物仍落 `dist/`；CI/CodeQL/Scorecard/Dependabot 与 Windows 矩阵补齐。
 - **两份 README 按伞工作区的 README 模板重写**。顺序改成「这是什么 → 怎么装 → 怎么确认真在工作 → 它做什么 → 怎么调 → 对外接口 → 数据与隐私 → 已知边界 → 疑难 → 开发 → 许可」，读者不必再从全文里拼出安装路径；补齐头部视觉层（logo、徽章行、技术栈图标、个人与语言链接）与目录节；逐节的正文都比旧稿短（旧稿把同一件事在两三个小节里各说一遍），总篇幅与旧稿持平——按模板补出了「确认它真的在工作」「已知边界」「开发」「许可」四节，另加头部视觉层。设置表补上此前两份文档都漏掉的 `maxInjectedRules`（默认 50、0–1000、`0` = 不设上限），并把「两枚部署值」改正为三枚。
@@ -122,21 +122,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
-- **会话清算按 durable 会话去重**：`session/disposed` 是每条 store 条目生命周期各发一次，同一会话每 resume 一次就多一条边，旧实现把 `samples` 数成了「重开过几次」。现在首次清算才记账，退出清算与 disposed 两条入口共用同一判据。
+- **会话清算按 durable 会话去重**：`session/disposed` 是每条 store 条目生命周期各发一次，同一会话每 resume 一次就多一条边，旧实现把 `samples` 数成了「重开过几次」。现在首次清算才记录下来，退出清算与 disposed 两条入口共用同一判据。
 - **归并碎片不复活人工否决**：主卡处于 rejected/archived/demoted 时只合并度量，不再把状态改回候选；`needsUserConfirmation` 上报只补证据，不计复发。
 - **蒸馏解析逐切片回退并按类别白名单过滤**：输出里找不到任何可解析的 JSON 数组时按硬错误上报，不再冒充「蒸馏出 0 条」；单条落库失败记 `dropped`，其余候选择常入库。
 - **JSONL 锁改成带持有者令牌、陈旧锁原子接管、临时文件唯一命名、追加后自查补写**：并发追加不再被裁剪的 rename 静默抹掉；流水读失败会告警一次，不再与空库同形。
 - **规则库 revision 非法或解析值不是数组时判不可用**：不再拿空库回写；缺 `id` 的行被丢弃时会记日志。
 - **归档汇总正文改为类别无关模板**：不再把 `:rejected` 签名当成路径或命令嵌入。
-- **未知 rating 的差评不再清空已有差评**；会话备注按内容指纹去重。
+- **未知 rating 的差评不再清空已有差评**；会话备注按指纹去重。
 - **注入定界按 CR/LS/PS 切行**，防止一条草稿伪造规则条目。
-- **保存期间配置行冻结，成功后只清本次真正写下的键**：在途期间的新改动留在待保存面；Remote 挂载失败不再缓存，卡片可自行恢复。
+- **保存期间配置行冻结，成功后只清本次真正写下的键**：在途期间的新改动留在待保存的那一侧；Remote 挂载失败不再缓存，卡片可自行恢复。
 - **插件关闭时系统提示常驻段一并停用**：`enabled=false` 的承诺与 `sectionEnabled` 同一条判据。
-- **两份 README 的宿主版本校验口径与宿主实现相反**。原文写「宿主安装期强制逐条比对 `@deepseek-ai/dsh*` peer，`engines.dsh` 在宿主代码里没有读取方」。实测 `evaluatePluginCompatibility` 的行为是：**存在 `engines.dsh` 时它单独决定、完全不读 peer**，只有缺 `engines.dsh` 才逐条比 peer。本包两者都有，所以那句结论对本包不成立。现在按实测重写：版本门槛来自 `engines.dsh`（本版最终声明为 `^0.2.1-rc.3`），peer 的精确钉改述为编译期纪律，两条不再混为一谈。
+- **两份 README 的宿主版本校验规则与宿主实现相反**。原文写「宿主安装期强制逐条比对 `@deepseek-ai/dsh*` peer，`engines.dsh` 在宿主代码里没有读取方」。实测 `evaluatePluginCompatibility` 的行为是：**存在 `engines.dsh` 时它单独决定、完全不读 peer**，只有缺 `engines.dsh` 才逐条比 peer。本包两者都有，所以那句结论对本包不成立。现在按实测重写：版本下限来自 `engines.dsh`（本版最终声明为 `^0.2.1-rc.3`），peer 的精确钉改述为编译期纪律，两条不再混为一谈。
 - **装机验收的判据改成读者可观察的结果**。原文把「peer 被强制比对」写进验收步骤里，而那是宿主机制不是可观察结果；现在五条分别是层行、卡片实时数据、一条教训真的进库、armed 规则真的注回会话，以及「profile 里没有 `@deepseek-ai/` 目录」这条宿主包漏进 `dependencies` 的指纹。
-- **数据与隐私一节按代码重述**。原文说证据「全文落盘、零截断」，与 `lib/rules-layout.ts` 的写侧收敛（单条 `detail` 上限、每卡只留最近几条）不符——那句现在只描述事件流水与规则正文，规则卡证据另起一行写明收敛上限、`signature` 与计数器不受影响、以及收敛只发生在写侧。
-- **注入条数上限与「不可判定」两条边界原来互相矛盾**：一处说 armed 规则全文注入不设上限，另一处说零干净命中的卡永不自动收敛。现在写明两者是同一件事的两面——正文仍全文注入，收紧的是条数，而收紧的理由正是不可判定卡没有自动收敛路径。
-- **四处证据面口径按代码改正**。①「具体路径或命令留在证据的 signature」只对 `secret-path` 与 `dangerous-bash` 成立：`factgate-deny` 上报的签名本身就是折叠后的稳定键，路径落在证据的 `target` 里。②「不可判定时复发率恒为 1.0」错一格：违反也为零时那是 0/0，未定义而不是 1.0。③写入落点补上事件流旁边瞬时的 `.lock` / `.tmp` 兄弟文件，以及 `arm` 连衰减锚点一起清空这件事。④报告回执的形状补上 `justReady`，它此前只说 `ready`。
+- **数据与隐私一节按代码重述**。原文说证据「全文写到磁盘、零截断」，与 `lib/rules-layout.ts` 的写侧收敛（单条 `detail` 上限、每卡只留最近几条）不符——那句现在只描述事件流水与规则正文，规则卡证据另起一行写明收敛上限、`signature` 与计数器不受影响、以及收敛只发生在写侧。
+- **注入条数上限与「不可判定」两条边界原来互相矛盾**：一处说 armed 规则全文注入不设上限，另一处说零干净命中的卡永不自动收敛。现在写明两者是同一件事的两头——正文仍全文注入，收紧的是条数，而收紧的理由正是不可判定卡没有自动收敛路径。
+- **四处证据规则按代码改正**。①「具体路径或命令留在证据的 signature」只对 `secret-path` 与 `dangerous-bash` 成立：`factgate-deny` 上报的签名本身就是折叠后的稳定键，路径落在证据的 `target` 里。②「不可判定时复发率恒为 1.0」错一格：违反也为零时那是 0/0，未定义而不是 1.0。③写到哪个文件补上事件流旁边瞬时的 `.lock` / `.tmp` 兄弟文件，以及 `arm` 连衰减锚点一起清空这件事。④报告回执的形状补上 `justReady`，它此前只说 `ready`。
 
 ### Added
 
@@ -147,38 +147,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Fixed
 
 - **jsonl 保险丝补上乐观并发控制**：rename 前先确认读完之后没有人追加过，有人追加就放弃本轮裁剪；锁的四条降级路径一并补齐。此前该层只被 `lesson-store` 间接覆盖，「并发追加不许被裁剪的 rename 抹掉」这条不变式没有自己的判据，现在单独成文件钉住。
-- **归并键与签名归一收口**：rejected 卡复发转回候选时不再覆盖累计观测数（旧写法 `occurrences = recurrences` 会让卡片上的「观察 N 次」凭空变小）。
-- **草稿与注入段的取数口径对齐**：`prompt` / `digest` 读同一份草稿状态；消息表补新词条。
+- **归并键与签名统一处理**：rejected 卡复发转回候选时不再覆盖累计观测数（旧写法 `occurrences = recurrences` 会让卡片上的「观察 N 次」凭空变小）。
+- **草稿与注入段的取数规则对齐**：`prompt` / `digest` 读同一份草稿状态；消息表补新词条。
 
 ## 0.1.3-rc
 
-本版只出库一处修复：规则库落盘前的证据收敛。总线接口、规则卡动作、判定阈值与十二项设置的默认值一律未改。
+本版只出库一处修复：规则库写到磁盘前的证据收敛。总线接口、规则卡动作、判定阈值与十二项设置的默认值一律未改。
 
 ### Fixed
 
-- **证据逐字落盘把 patch 文档撑到上千行**。规则库整份存在 profile 的 patch 文档里，`evidence` 是其中唯一会无界增长的部分：每次命中追加一条逐字 `detail`，而 gate 失败与 lint 报错本身就是整段输出（实测一份 940 行的 patch 里绝大部分是这些转储）。现在 `lib/rules-layout.ts` 的 `capEvidence` 在**写这一刻**收敛——单条 `detail` 超过 `MAX_EVIDENCE_DETAIL_CHARS`（400）截断并补省略号，每卡只留最近 `MAX_EVIDENCE_ENTRIES`（5）条；`signature`（命中的原始路径/命令）与 `occurrences`、`violation`/`suppressed`/`samples` 度量原样保留，人审判"这张卡管的是哪条命令"不受影响。收敛只放在写侧、读侧 `cardsOfValue` 照旧全量解析不做二次改写，于是"盘上存的"与"读出来的"仍是同一份事实，截断一生只发生一次；存量库不需要迁移，下一次写盘自然收敛。`test/lesson-store.test.ts` 新增用例钉住保留条数、丢的是最旧几条、截断后长度（上限 + 一枚省略号）与不改入参。
-- **两份 README 的「全量存储、零截断」口径收窄**：那句此前对规则库同样成立，现在只描述事件流水的 `detail` 与规则正文；规则卡的 `evidence` 另起一条写明落盘收敛（上限、保留条数、`signature` 与度量不受影响）。HTTP 投影那句的「证据是全文」也按上限重述。
+- **证据逐字写到磁盘把 patch 文档撑到上千行**。规则库整份存在 profile 的 patch 文档里，`evidence` 是其中唯一会无界增长的部分：每次命中追加一条逐字 `detail`，而 gate 失败与 lint 报错本身就是整段输出（实测一份 940 行的 patch 里绝大部分是这些转储）。现在 `lib/rules-layout.ts` 的 `capEvidence` 在**写这一刻**收敛——单条 `detail` 超过 `MAX_EVIDENCE_DETAIL_CHARS`（400）截断并补省略号，每卡只留最近 `MAX_EVIDENCE_ENTRIES`（5）条；`signature`（命中的原始路径/命令）与 `occurrences`、`violation`/`suppressed`/`samples` 度量原样保留，人审判"这张卡管的是哪条命令"不受影响。收敛只放在写侧、读侧 `cardsOfValue` 照旧全量解析不做二次改写，于是"盘上存的"与"读出来的"仍是同一份事实，截断一生只发生一次；存量库不需要迁移，下一次写盘自然收敛。`test/lesson-store.test.ts` 新增用例钉住保留条数、丢的是最旧几条、截断后长度（上限 + 一枚省略号）与不改入参。
+- **两份 README 的「全量存储、零截断」规则收窄**：那句此前对规则库同样成立，现在只描述事件流水的 `detail` 与规则正文；规则卡的 `evidence` 另起一条写明写到磁盘收敛（上限、保留条数、`signature` 与度量不受影响）。HTTP 投影那句的「证据是全文」也按上限重述。
 
 ## 0.1.2
 
 ### Fixed
 
-- **开机迁移在真实宿主上曾经静默空转**。`startBootMigrations` 在 `apply()` 内同步读规则库，而宿主 `settings.describe()` 只投影 `entry.fiber.state === ACTIVE` 的条目、`apply` 又跑在自己那条 fiber 变 ACTIVE **之前**（harness `packages/settings/settings/src/index.ts:305-306` 与 `:665-672`）——那一刻读到的 describe() 是空的，规则库端口判「不可用」，`commit` 不写，于是存量碎片归并（`migrateFragmentRules`）与 project 键归一（`migrateProjectKeys`）**一次都不执行**，日志一声不响。现在迁移先 `fiber.await()` 等本条目 settle 再读（装载失败即收手）；`isHostCtx` 契约守卫同步核验 `fiber.await` 这一位。新增集成测试 `test/integration/activation-order.test.ts`：假件按 harness 真实语义门控 describe()（非 ACTIVE 不投影），并断言"每一次规则库读取都发生在 ACTIVE 之后"——修复前那条断言会红。
+- **开机迁移在真实宿主上曾经静默地什么也没做**。`startBootMigrations` 在 `apply()` 内同步读规则库，而宿主 `settings.describe()` 只投影 `entry.fiber.state === ACTIVE` 的条目、`apply` 又跑在自己那条 fiber 变 ACTIVE **之前**（harness `packages/settings/settings/src/index.ts:305-306` 与 `:665-672`）——那一刻读到的 describe() 是空的，规则库端口判「不可用」，`commit` 不写，于是存量碎片归并（`migrateFragmentRules`）与 project 键归一（`migrateProjectKeys`）**一次都不执行**，日志一声不响。现在迁移先 `fiber.await()` 等本条目 settle 再读（装载失败即收手）；`isHostCtx` 约定守卫同步核验 `fiber.await` 这一位。新增集成测试 `test/integration/activation-order.test.ts`：假件按 harness 真实语义门控 describe()（非 ACTIVE 不投影），并断言"每一次规则库读取都发生在 ACTIVE 之后"——修复前那条断言会红。
 - **事件流水尾部的半行会吞掉下一条教训**。`appendJsonl` 无条件追加，文件尾若不是换行（崩溃、ENOSPC 半写、外部编辑留下的残行），新记录会与残行拼成**一条**坏行被读侧整条丢弃，而 `report()` 仍回 `ok:true`。现在追加前先补一个换行（残行字节保留在盘上，读侧如实报坏行）；坏行 warn 改为"计数变化时才报"（`/stats` 每轮全量读不再刷屏）。
-- **`/lessons-digest` 曾谎报已蒸馏**。`addCandidate` 丢弃 `commit` 的落盘结果，CAS 冲突耗尽或端口拒写时仍回显"已蒸馏 N 条候选规则"，而规则库里一张卡都没有。现在回执带 `persisted`，命令把未落盘的那批单独报成 `digestPartialFailure`（error 回执）并提示重试。
+- **`/lessons-digest` 曾谎报已蒸馏**。`addCandidate` 丢弃 `commit` 的写到磁盘结果，CAS 冲突耗尽或端口拒写时仍回显"已蒸馏 N 条候选规则"，而规则库里一张卡都没有。现在回执带 `persisted`，命令把未写到磁盘的那批单独报成 `digestPartialFailure`（error 回执）并提示重试。
 - **收尾清算与周期衰减不再把计划当事实报**。`sessionEnded` 在写失败时不再打 "session settled"（改打一条 error 点名没存住、下次会话收尾重试），`runDecay` 只在**真的写进库**后才报 `demoted` 计数（写失败时报 0 并点明"规则仍是 armed"）。
 - **revive 不再抹小累计观察数**：rejected 卡转回候选时把复发次数**并入** `occurrences`（旧实现写 `occurrences = recurrences`，卡片上的"观察 N 次"会凭空变小）。
-- **project 键撞车合并会丢掉生命周期度量**：两张 armed 卡撞同键时，被并那张的 `violation`/`suppressed`/`samples` 现在累加进主卡（三个时间戳取较晚者，衰减锚点不被拉早）——旧实现只折叠观察类字段，等于把一条规则真实被测到的证据抹掉。
-- **卡片保存改为一次原子提交**：改用官方 `ConfigForm.mutate(ops, revision)`（一次校验、一次 CAS、一次落盘），并消费受理位——被拒时报错并**保留草稿**（旧实现逐字段写、忽略受理位、无条件清草稿，中途失败会留下改了一半的库，用户却以为全保存成功）。
+- **project 键撞车合并会丢掉生命周期度量**：两张 armed 卡撞同键时，被并那张的 `violation`/`suppressed`/`samples` 现在累加进主卡（三个时间戳取较晚者，衰减锚点不被拉早）——旧实现只把观察类字段并进来，等于把一条规则真实被测到的证据抹掉。
+- **卡片保存改为一次原子提交**：改用官方 `ConfigForm.mutate(ops, revision)`（一次校验、一次 CAS、一次写到磁盘），并消费受理结果——被拒时报错并**保留草稿**（旧实现逐字段写、忽略受理结果、无条件清草稿，中途失败会留下改了一半的库，用户却以为全保存成功）。
 - **卡片不再把解析异常原文贴给用户**：`/stats` 回包不是 JSON 时（路由未注册，SPA fallback 回一页 HTML）显示本地化兜底文案，原文只进 console。
 - **数字输入不再与模型长期分叉**：越界/非数草稿在失焦时纠回模型值（此前输入框会永久显示一个从未被接受的数）。
-- **未知规则状态不再被塞进默认折叠的分组**：状态漂移兜成 `unknown` 并与候选同列可见、原文状态串显形、不给动作按钮（旧实现归 `archived`，宿主要新增合法状态时用户会完全看不到那张卡）。
+- **未知规则状态不再被塞进默认收起的分组**：状态漂移兜成 `unknown` 并与候选同列可见、原文状态串显形、不给动作按钮（旧实现归 `archived`，宿主要新增合法状态时用户会完全看不到那张卡）。
 - **卡片字段分组一次遍历**（旧实现对同一份规则数组做四次 filter，规则库一大就是 4N 次比较 × 每次渲染）。
-- **卡片声明挂在 `configForms.whileServed` 上**：宿主没投影本命名空间时页面不再出现一张全只读、stats 也拉不到的空卡（官方首方口径同款）；`apply` 增加按 ctx 的幂等守卫（重复 apply 会让官方 locale 对同名 `(ns, locale)` 抛错，整条 client fiber 变 FAILED）。
-- **文档口径对齐代码**：两份 README 的「不可判定」说明改为与 `decay-policy.ts` 一致——`suppressed` 为 0 且（静置超过 `decayDays`，锚点为最近一次活动）或（复发已达 `demoteThreshold`）即不可判定，而不是"两个计数器都为 0"，并写明出现一次 `pass` 即退出该态。
+- **卡片声明挂在 `configForms.whileServed` 上**：宿主没投影本命名空间时页面不再出现一张全只读、stats 也拉不到的空卡（官方首方规则同款）；`apply` 增加按 ctx 的幂等守卫（重复 apply 会让官方 locale 对同名 `(ns, locale)` 抛错，整条 client fiber 变 FAILED）。
+- **文档规则对齐代码**：两份 README 的「不可判定」说明改为与 `decay-policy.ts` 一致——`suppressed` 为 0 且（静置超过 `decayDays`，锚点为最近一次活动）或（复发已达 `demoteThreshold`）即不可判定，而不是"两个计数器都为 0"，并写明出现一次 `pass` 即退出该态。
 - **事件流水的裁剪会覆盖并发追加的那一行**。裁剪是"读整份 → 按行裁尾 → 写回"，另一进程在「读完之后、写回之前」追加的记录被整段覆盖掉（事件静默消失，而 `report()` 仍回 `ok`）。现在 `lib/jsonl-fuse.ts` 把裁剪与追加放进**同一把跨进程排他锁**：`.lock` 兄弟文件以 `wx`（O_CREAT|O_EXCL）原子占位，`mtime` 超过 10s 视为持有者已死、可接管，**拿不到锁仍追加、只跳过裁剪**（宁可这轮不裁，绝不丢事件）；整文件重写改走 `.tmp` + 原子 `rename`，读者要么见旧全文、要么见新全文。取舍：每条追加多两次同步 fs 调用；崩溃时可能留下 `.lock`/`.tmp` 两个兄弟文件（前者靠陈旧接管回收，后者是覆盖写、下一轮裁剪自然复用）。
 - **locale 偏好未注册时，host 的回显文案不再一律中文**：四条路由里只有 `rule-action` 产人读文案，现在按请求的 `Accept-Language` 协商（`lib/messages.ts` 新增 `localeFromAcceptLanguage`：q 值降序 + 主语言子标签；`*`/表外语言/坏 q 值/空串判不出 → 中文缺省）。官方 locale 条目在场时设置优先，请求头不参与；注入段与起草正文没有请求可依，仍走设置偏好。
-- **卡片字段的三处口径修正**：规则卡补渲染 `signature`（投影一直带着它，卡面此前只显示正文，人审时判不出"管的是哪条命令/路径"）；所有按钮补 `type="button"`（将来被套进 `<form>` 时不会默认变成 submit）；`lessonsCount` 与规则字段改走**同一数值容忍度**（数字或**非空**数字字符串），`numericOf` 不再把空白串读成 `0`（`Number("  ")` 是 0，收下等于把"字段缺失"虚报成"计数为 0"）。
+- **卡片字段的三处规则修正**：规则卡补渲染 `signature`（投影一直带着它，卡片此前只显示正文，人审时判不出"管的是哪条命令/路径"）；所有按钮补 `type="button"`（将来被套进 `<form>` 时不会默认变成 submit）；`lessonsCount` 与规则字段改走**同一数值容忍度**（数字或**非空**数字字符串），`numericOf` 不再把空白串读成 `0`（`Number("  ")` 是 0，收下等于把"字段缺失"虚报成"计数为 0"）。
 
 以下两条属 `dangerous-bash` 类别，成型早于上面那批：
 
@@ -187,22 +187,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
-- **client 分组懒渲染**：每组默认只画 20 条 + 「加载更多」（每组各记已展开条数，组间互不影响），标题与副标题的计数仍按全量——规则库不设条数上限，展开时不再一次渲染上千张卡。不做完整虚拟化：折叠面板不是长列表，滚动容器/测量/回收那套复杂度换不来对应收益。
-- **`build-client.mjs` 的 `external` 对齐官方 client 基线**：从硬编码 `["react"]` 改为官方 `PLATFORM_MODULES` 九枚（外壳预置的冻结模块表）∪ 本包 `dsh.client.external`（取值以 `package.json` 现量为准），并在测试里逐条钉住——基座里的模块必须保持外部引用，内联一份副本就是同一个模块两份身份（宿主只认模块表那一条）。
+- **client 分组懒渲染**：每组默认只画 20 条 + 「加载更多」（每组各记已展开条数，组间互不影响），标题与副标题的计数仍按全量——规则库不设条数上限，展开时不再一次渲染上千张卡。不做完整虚拟化：分组只有展开与收起两种状态，不是长列表，滚动容器/测量/回收那套复杂度换不来对应收益。
+- **`build-client.mjs` 的 `external` 对齐官方 client 基线**：从硬编码 `["react"]` 改为官方 `PLATFORM_MODULES` 九枚（宿主 外壳 预置的冻结模块表）∪ 本包 `dsh.client.external`（取值以 `package.json` 以当场读到的值为准），并在测试里逐条钉住——基座里的模块必须保持外部引用，内联一份副本就是同一个模块两份身份（宿主只认模块表那一条）。
 - 注释里反复出现的「0.1.7」统一改成现装版本 `0.2.1-alpha.2`：它是 harness 的旧版本号，留着容易被读成本包版本（本包是 `0.1.x` 线）。
 
 ### Added
 
 - `test/integration/activation-order.test.ts`：真实 cordis + Loader 下的**装载时序契约**（见上）。
-- `test/integration/http-routes.test.ts`：四条 `/_dsh/lesson-loop/*` 路由的**真实 HTTP 契约**——真 `@deepseek-ai/dsh-host-webserver`（127.0.0.1:0）+ 真 `node:http` 请求，覆盖 `kind: "exact"`（子路径不被吃掉）、405 的 `Allow`、缺/错 csrf 的 403、413（含 content-length 与流式两条路径）、以及信任闸门三判据在真请求上的落点。
-- `test/client-data.test.ts`：client 半的**数据面**契约（此前零覆盖）——`/stats` 拉取与错误呈现、rule-action 的 csrf 与回执、原子保存（ops/revision/受理位）、越界输入纠偏、未知状态可见性；测试侧带一个最小的有状态 hook 运行时（setter 身份跨渲染稳定，否则 effect 会与 setState 自激）。
+- `test/integration/http-routes.test.ts`：四条 `/_dsh/lesson-loop/*` 路由的**真实 HTTP契约**——真 `@deepseek-ai/dsh-host-webserver`（127.0.0.1:0）+ 真 `node:http` 请求，覆盖 `kind: "exact"`（子路径不被漏掉）、405 的 `Allow`、缺/错 csrf 的 403、413（含 content-length 与流式两条路径）、以及三项信任检查在真实请求上的实际表现。
+- `test/client-data.test.ts`：client 半的**数据那一栏**契约（此前零覆盖）——`/stats` 拉取与错误呈现、rule-action 的 csrf 与回执、原子保存（ops/revision/受理结果）、越界输入纠偏、未知状态可见性；测试侧带一个最小的有状态 hook 运行时（setter 身份跨渲染稳定，否则 effect 会与 setState 自激）。
 - `test/publish-manifest.test.ts` 新增五条发布面门禁：`dsh.client` 必须伴随 `./client` export 且在发布面内、`dsh.bundle.patch` 指向存在且随包发布的文件、patch 的裸条目 id 与包名必须与代码里的 settings 命名空间同源、client 与 host 两半的端点/请求头常量一致、`client.js` 的 `require` 清单只允许平台模块。
 - `test/host.test.ts`：`/lessons-digest` 的"部分失败"回执用例、装载失败（`fiber.await` 重抛）时迁移整条收手的用例。
-- `test/lesson-store.test.ts`：残尾保护、空文件追加、坏行 warn 去重、落盘失败不报成功（含无 sessionId 的卸载清算）、两张 armed 卡撞键累加度量、revive 不抹小累计观察数等用例。
+- `test/lesson-store.test.ts`：残尾保护、空文件追加、坏行 warn 去重、写到磁盘失败不报成功（含无 sessionId 的卸载清算）、两张 armed 卡撞键累加度量、revive 不抹小累计观察数等用例。
 - `test/digest.test.ts`：候选没写进规则库时落进 `dropped` 的用例。
 - 事件流水读取加 `(size, mtimeMs)` 解析缓存：卡片轮询 `/stats` 不再每轮把整份流水重新解析；`/stats` 一次读取同时用于投影与计数（此前同一轮读两遍规则库）。
 - `test/lesson-store.test.ts` 新增用例：同类别两条不同命令必须汇成**一张卡**（`occurrences=2`），且两条命令原文分别落在各自证据行的 `signature` 上；稳定正文不含单条命令。`DRAFT_CASES` 增补稳定签名一格（11 → 12 条模板）。
-- 新增用例覆盖：事件流水保险丝（忙锁跳过裁剪、陈旧锁接管、接管失败也不丢追加、失败路径释放锁）；`accept-language` 协商的纯函数与真 HTTP 回显；client 分组懒渲染、数值口径与 `signature` 渲染；`build-client` 的 external 基座；`dangerous-bash` 的存量碎片迁移。
+- 新增用例覆盖：事件流水保险丝（忙锁跳过裁剪、陈旧锁接管、接管失败也不丢追加、失败路径释放锁）；`accept-language` 协商的纯函数与真 HTTP 回显；client 分组懒渲染、数值规则与 `signature` 渲染；`build-client` 的 external 基座；`dangerous-bash` 的存量碎片迁移。
 
 ## 0.1.1
 
@@ -214,41 +214,41 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - **宿主线 `@deepseek-ai/dsh-*` 从 `0.2.0-rc.2` 升到 `0.2.1-alpha.2`**，四处同值：`devDependencies`（27 枚）、`peerDependencies`（`dsh` 本体 + `dsh-brand` + `dsh-home-paths`）、`engines.dsh`（`>=0.2.1-alpha.2`）、`pnpm-workspace.yaml` 的 `overrides`（86 条同族钉）。只改 `package.json` 会被解析器静默改回去——`overrides` 钉的是整个家族，这正是它存在的理由；`test/publish-manifest.test.ts` 要求同族每一枚都与 peer 的 `dsh` 逐项相等。**cordis 半区不动**：`@deepseek-ai/cordis` `4.0.5-alpha.1`、`@deepseek-ai/cosmokit` `1.8.6-alpha.1`、`@deepseek-ai/schemastery` `3.18.5-alpha.1` 与三枚 cordis 插件就是 `dsh@0.2.1-alpha.2` 自己声明的那几枚（`~4.0.5-alpha.1` / `~3.18.5-alpha.1`），registry 上没有更新的 alpha，它们的 `latest` tag 反而指向更旧的稳定线。同批 `@deepseek-ai/dsh-invariants` 退出 `overrides`（无 alpha 发布，运行期内置插件也已移除）。
 
-- **`@jayyuen66/dsh-plugin-shared` `^0.1.0` → `^0.1.4`**。这一枚跨了三个小版本，改变的是**依赖树的形状**：`0.1.2` 把宿主依赖抬上 alpha 线并把 `MessagesCatalog` 换成 homomorphic mapped type（各消费方那几份 `interface Messages` 此前过不了隐式索引签名这一关）；`0.1.3` 把 `dsh-tools`/`dsh-session` 等宿主包从 shared 自己的 `dependencies` 挪进 `peerDependencies`，消费方 profile（`nodeLinker: hoisted` + `autoInstallPeers: false`）不再为依赖的依赖物化出第二份宿主类型面；`0.1.4` 把那几枚 peer 钉到 `0.2.1-alpha.2`，与本包同版本，树里最后一处 `alpha.1` 需求随之清零。装完后锁文件解析出 46 个 `@deepseek-ai/*` 名字、**没有任何一个落到两个版本**，`pnpm outdated` 为空。
-- **宿主包从 `dependencies` 移到 `peerDependencies`，`dependencies` 只剩 `@jayyuen66/dsh-plugin-shared`**。`@deepseek-ai/dsh-brand`、`@deepseek-ai/dsh-home-paths`、`@deepseek-ai/schemastery` 是本包产物里三枚**值导入**（品牌构造函数、home 解析、schema），运行期确实必须在场——但"在场"由宿主交付，不由本包安装：写进 `dependencies` 就会在消费方 profile 里落成真实目录，与宿主进程已加载的那份并存。分流口径以**构建产物**为准而不是源码：源码里的 `import type` 会被编译抹掉，只有 `host.js`/`client.js` 里真出现裸说明符的那些才需要运行期在场；只被类型面引用的留在 `devDependencies`。
-- **入口面改为顶层自证，`publishConfig` 不再承载入口字段**。`main` 与 `exports["."]` 从 `./host.ts` 改指产物 `host.js`；原先那份正确性挂在 `publishConfig` 的入口覆盖上，而 pnpm 发布时会把它合并到顶层、npm **不**合并（打印 `Unknown publishConfig config main/exports` 并忽略）——同一个仓库换个发布器就发出一个 import 必失败的包。实测 `0.1.0` 的 tarball 里 `main` 确实是 `host.js`，说明那条正确性是**发布器行为**给的，不是清单自己给的；本版把它钉成不变式：顶层入口自己完整可解析，`publishConfig` 只留 `access` 与 `registry`。
-- **`pnpm-workspace.yaml` 补齐三件套**：`autoInstallPeers: false`（可选 peer 不再被拖进安装面）、覆盖整族的 `overrides`、以及 `catalog:` 单源工具链版本。前两项是「只改 `package.json` 会被解析器改回去」这件事的解法，`test/publish-manifest.test.ts` 的版本形状门禁与之配套。
+- **`@jayyuen66/dsh-plugin-shared` `^0.1.0` → `^0.1.4`**。这一枚跨了三个小版本，改变的是**依赖树的形状**：`0.1.2` 把宿主依赖抬上 alpha 线并把 `MessagesCatalog` 换成 homomorphic mapped type（各消费方那几份 `interface Messages` 此前过不了隐式索引签名这一关）；`0.1.3` 把 `dsh-tools`/`dsh-session` 等宿主包从 shared 自己的 `dependencies` 挪进 `peerDependencies`，消费方 profile（`nodeLinker: hoisted` + `autoInstallPeers: false`）不再为依赖的依赖物化出第二份宿主类型；`0.1.4` 把那几枚 peer 对齐到 `0.2.1-alpha.2`，与本包同版本，树里最后一处 `alpha.1` 需求随之清零。装完后锁文件解析出 46 个 `@deepseek-ai/*` 名字、**没有任何一个落到两个版本**，`pnpm outdated` 为空。
+- **宿主包从 `dependencies` 移到 `peerDependencies`，`dependencies` 只剩 `@jayyuen66/dsh-plugin-shared`**。`@deepseek-ai/dsh-brand`、`@deepseek-ai/dsh-home-paths`、`@deepseek-ai/schemastery` 是本包产物里三枚**值导入**（`brand` 标记的构造函数、home 解析、schema），运行期确实必须在场——但"在场"由宿主交付，不由本包安装：写进 `dependencies` 就会在消费方 profile 里落成真实目录，与宿主进程已加载的那份并存。分流规则以**构建产物**为准而不是源码：源码里的 `import type` 会被编译抹掉，只有 `host.js`/`client.js` 里真的按包名引用外部包的那些才需要运行期在场；只被类型引用的留在 `devDependencies`。
+- **入口改为顶层自证，`publishConfig` 不再承载入口字段**。`main` 与 `exports["."]` 从 `./host.ts` 改指产物 `host.js`；原先那份正确性挂在 `publishConfig` 的入口覆盖上，而 pnpm 发布时会把它合并到顶层、npm **不**合并（打印 `Unknown publishConfig config main/exports` 并忽略）——同一个仓库换个发布器就发出一个 import 必失败的包。实测 `0.1.0` 的 tarball 里 `main` 确实是 `host.js`，说明那条正确性是**发布器行为**给的，不是清单自己给的；本版把它钉成不变式：顶层入口自己完整可解析，`publishConfig` 只留 `access` 与 `registry`。
+- **`pnpm-workspace.yaml` 补齐三件套**：`autoInstallPeers: false`（可选 peer 不再被拖进安装范围）、覆盖整族的 `overrides`、以及 `catalog:` 唯一来源工具链版本。前两项是「只改 `package.json` 会被解析器改回去」这件事的解法，`test/publish-manifest.test.ts` 的版本形状门禁与之配套。
 - **工具链（`catalog`）跟到发布线**：`@types/node` 26.6.3→26.6.5、`vitest` 与 `@vitest/coverage-v8` 5.0.2→5.0.3、`vite` 8.3.1→8.3.4、`rolldown` 1.2.11→1.2.13、`oxlint` 1.86.0→1.87.0、`oxfmt` 0.71.0→0.72.0、`oxlint-tsgolint` 7.0.2003→7.0.2004，以及本包暂不安装但同表的 `happy-dom` 20.14.6、`jsdom` 30.1.2（免得将来某条 `catalog:` 引用领到一枚陈年值）。`typescript` 7.0.2、`eslint-plugin-sonarjs` 4.2.2、`react`/`@types/react*` 19.3.0 已是发布线，未动。
 - **README 拆成两份语言文档**：`README.md` 只留英文、`README.zh-CN.md` 承载中文，顶部互链。此前一份文件里 `## 中文` / `## English` 两段共处，npm 页面与仓库首页只能展示其中的混合体。
-- **`files` 显式列全归属文档**（`README.md`、`README.zh-CN.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`types`）。实测 npm 只无条件附带 package.json、`README*` 与 `LICENSE*`：`CHANGELOG.md` 与 `THIRD_PARTY_NOTICES.md` 不写进 `files` 就**静默不随包分发**，npm 页面看不出任何异常。门禁改为「包根每一份 `.md` 都必须在发布面里」，不再每加一份文档补一条断言。
+- **`files` 显式列全归属文档**（`README.md`、`README.zh-CN.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`types`）。实测 npm 只无条件附带 package.json、`README*` 与 `LICENSE*`：`CHANGELOG.md` 与 `THIRD_PARTY_NOTICES.md` 不写进 `files` 就**静默不随包分发**，npm 页面看不出任何异常。门禁改为「包根每一份 `.md` 都必必须在发布名单里」，不再每加一份文档补一条断言。
 
 ### Fixed
 
-- **信任闸门的绑定地址取值口径跟着宿主走**。`host.ts` 里那枚 `servingNonLoopback` 原先等于 `webServer.host === "0.0.0.0"`，而 `@deepseek-ai/dsh-host-webserver` 从 alpha.2 起把 `Config.host` 从两值联合换成**任意本机网卡 IP 字面量**，通配地址（`0.0.0.0`、`::` 及其映射形态）在载入即被拒绝——于是那枚比较恒为 `false`：绑真实网卡的装机把自己的每一条 `Host` 权威整片拒成 `403 untrusted host authority`，LAN 上的评审台再也打不开。它是 fail-closed 的，不构成暴露，但功能就这么没了，且**类型检查、构建、覆盖率与其余信任用例一条都不红**（`host: string` 与普通串比较完全合法）。现在改由 `shared/lib/trust` 的 `isNonLoopbackBindHost(webServer.host)` 取，并补两条一放一拒的用例：本机网卡地址在场时断言该权威照常放行（把推导改回字面量比较它立刻失败，已实测），以及回环绑定时私网权威仍拒（挡住"恒为 true"这种绕过）。测试替身也补上 `host: "127.0.0.1"`——原先根本没有那一位，绑定侧的判据一次都没跑过。
+- **信任检查的绑定地址取值规则跟着宿主走**。`host.ts` 里那枚 `servingNonLoopback` 原先等于 `webServer.host === "0.0.0.0"`，而 `@deepseek-ai/dsh-host-webserver` 从 alpha.2 起把 `Config.host` 从两值联合换成**任意本机网卡 IP 字面量**，通配地址（`0.0.0.0`、`::` 及其映射形态）在载入即被拒绝——于是那枚比较恒为 `false`：绑真实网卡的装机把自己的每一条 `Host` 权威整片拒成 `403 untrusted host authority`，LAN 上的评审台再也打不开。它是 fail-closed 的，不构成暴露，但功能就这么没了，且**类型检查、构建、覆盖率与其余信任用例一条都不红**（`host: string` 与普通串比较完全合法）。现在改由 `shared/lib/trust` 的 `isNonLoopbackBindHost(webServer.host)` 取，并补两条一放一拒的用例：本机网卡地址在场时断言该权威照常放行（把推导改回字面量比较它立刻失败，已实测），以及回环绑定时私网权威仍拒（挡住"恒为 true"这种绕过）。测试替身也补上 `host: "127.0.0.1"`——原先根本没有那一位，绑定侧的判据一次都没跑过。
 - **注释里的官方声明行号引用逐条对表 alpha.2，修正 20 处**。本包的镜像类型处处以 `installed <声明文件>:<行号>` 指认官方出处，而 alpha.2 挪动了 `dsh-host-webserver`（`WebServer` 类 :67→:119、`register` :90→:157）、`dsh-system-prompt`（`SystemPrompt` :226→:234）、`dsh-session`（`Session` :101→:135、`header` :115→:150、`snapshotEvents` :186→:218-224）、`dsh-llm`（`RequestMessage` :464→:475、`StreamChunk` :406-436→:417-447）与 `dsh-client-ui-plugin-manager` 的行位。核对脚本按「引用点 → 装好的那份声明里该行的实际内容」逐条打印比对，46 处可解析引用现在全部指在对的位置上；其中若干条**升级前就已失效**（它们对不上 alpha.1，指更早的宿主构建），本轮一并归位。这类引用错了不报错，只会把后来人引到一段无关声明上。
 - 两份 README 里"版本要求写在 `peerDependencies` 与 `engines.dsh`"的说法与实测不符：宿主安装期用 `semver.satisfies(运行版本, 需求, {includePrerelease: true})` 逐条比对 `@deepseek-ai/dsh` 与每一枚 `@deepseek-ai/dsh-*` **peer**（`dsh-app-boot/src/plugin-compatibility.ts:61-86`，`add` 预检与装后复查在 `dsh-plugin-manager/src/operations.ts:344`、`:479`），而 `engines.dsh` 在宿主代码里**没有任何读取方**（`@deepseek-ai/dsh-package-manifest` 只声明类型，其 README 明写安装器与载入器不执行它）。同一段还补上一条推论：本包的 `dsh-*` peer 是精确钉的，所以**高于**本下限的宿主同样判为不兼容，出路是按宿主版本逐条 `allow-version … --accept-risk`。
-- 集成测试里两处失效口径：`bus-boot.test.ts` 头部写着 cordis/loader "4.0.3 / 1.0.3"（实际随宿主线走的那两枚已是 `4.0.5-alpha.1` / `1.0.6-alpha.1`；注释里的版本号是给后来人指错地方的东西，这里直接去掉数字，改为"本包 devDependencies 里的那对"）；以及"翻开关会重挂载条目、旧句柄随旧 fiber 作废"——这份 loader 对**全为 volatile** 的 config 变化走 `_commitVolatile` 就地提交，实测翻完开关后 `entry.fiber` 与 `ctx.get("lessonLoop")` 都是同一枚对象，拿着翻转前的句柄读到的就是新值。这条性质现在不再写在注释里，而由用例断言。
+- 集成测试里两处失效规则：`bus-boot.test.ts` 头部写着 cordis/loader "4.0.3 / 1.0.3"（实际随宿主线走的那两枚已是 `4.0.5-alpha.1` / `1.0.6-alpha.1`；注释里的版本号是给后来人指错地方的东西，这里直接去掉数字，改为"本包 devDependencies 里的那对"）；以及"翻开关会重挂载条目、旧句柄随旧 fiber 作废"——这份 loader 对**全为 volatile** 的 config 变化走 `_commitVolatile` 就地提交，实测翻完开关后 `entry.fiber` 与 `ctx.get("lessonLoop")` 都是同一枚对象，拿着翻转前的句柄读到的就是新值。这条性质现在不再写在注释里，而由用例断言。
 
 ### Added
 
-- **`test/publish-manifest.test.ts`：把"构建与单测全绿、装出去却坏"这一类坑钉成 manifest 门禁**。入口面四条（`files` 覆盖全部入口目标、入口不指源码、`publishConfig` 只留可见性与源、`@deepseek-ai/*` 一律不进 `dependencies`）+ 版本形状三条（`dsh-*` 精确钉、同族与 peer 的 `dsh` 逐项相等、peer 缺失即红）+ 注释卫生一条（注释与文档里不写日期）。判据落在 manifest 而不是运行时，是因为那三类故障的真实形状是**本包一切照绿、宿主瘫痪**：`dsh-tools` 的 `TOOL_RUNTIME_SCHEDULER` 是普通 `Symbol`，符号身份按模块实例计算，第二份实例只会让每次原生工具调用抛 `Cannot read properties of undefined (reading 'prepare')`。本版在其上又加了五条：包根每一份 `.md` 都在发布面内、声明入口存在且 `types/` 有产出、声明不比源码旧、声明不含构建机路径、声明不残留指向源码的相对说明符。
-- **类型声明随包发布**（本包此前最实在的一处缺口）。新增 `tsconfig.types.json` 与 `build-types.mjs`，产出 `types/host.d.ts` 与 `types/lib/*.d.ts` 共 14 份；`package.json` 加 `types` 字段，`.` 入口导出改为同时带 `types` 与 `default` 条件。`exports` 把入口暴露成可 import 却没有任何声明，消费方在 `strict` 下拿到的是 TS7016，而这条故障**没有运行期信号**（宿主按包名载入不需要类型）。`build-types.mjs` 在出声明前清空 `types/`（tsc 自己不清 `outDir`，删掉的源文件其旧声明会留在原地，而 `files` 里 `types` 是整目录），并把声明里 `./lib/x.ts` 这种源码后缀改写成 `./lib/x.js`——tsc 会原样抄它，而包里没有 `lib/x.ts`。`build:types` 已接进 `check` 与 `prepack`，配四条门禁：入口存在且 `types/` 有产出、声明不比源码旧、声明不含构建机路径（判据以引号为锚，否则会把 JSDoc 里"macOS `/tmp` ↔ `/private/tmp` 软链"那句事实说明误杀）、相对说明符不残留 `.ts`。
-- **`THIRD_PARTY_NOTICES.md`**：记录产物边界（`host.js`/`client.js` 里第三方代码一律以裸说明符外部化、React 亦外部化，故不随包分发上游实现）、四枚宿主级运行期依赖各自"为什么只能是运行期依赖"的理由，以及本包不含第三方派生代码这一结论的核对方式。
+- **`test/publish-manifest.test.ts`：把"构建与单测全绿、装出去却坏"这一类坑钉成 manifest 检查**。入口四条（`files` 覆盖全部入口目标、入口不指源码、`publishConfig` 只留可见性与源、`@deepseek-ai/*` 一律不进 `dependencies`）+ 版本形状三条（`dsh-*` 精确钉、同族与 peer 的 `dsh` 逐项相等、peer 缺失即红）+ 注释卫生一条（注释与文档里不写日期）。判据落在 manifest 而不是运行时，是因为那三类故障的真实形状是**本包一切照绿、宿主瘫痪**：`dsh-tools` 的 `TOOL_RUNTIME_SCHEDULER` 是普通 `Symbol`，符号身份按模块实例计算，第二份实例只会让每次原生工具调用抛 `Cannot read properties of undefined (reading 'prepare')`。本版在其上又加了五条：包根每一份 `.md` 都在发布清单内、声明入口存在且 `types/` 有产出、声明不比源码旧、声明不含构建机路径、声明不残留指向源码的相对模块说明符（说明符）。
+- **类型声明随包发布**（本包此前最实在的一处缺口）。新增 `tsconfig.types.json` 与 `build-types.mjs`，产出 `types/host.d.ts` 与 `types/lib/*.d.ts` 共 14 份；`package.json` 加 `types` 字段，`.` 入口导出改为同时带 `types` 与 `default` 条件。`exports` 把入口暴露成可 import 却没有任何声明，消费方在 `strict` 下拿到的是 TS7016，而这条故障**没有运行期信号**（宿主按包名载入不需要类型）。`build-types.mjs` 在出声明前清空 `types/`（tsc 自己不清 `outDir`，删掉的源文件其旧声明会留在原地，而 `files` 里 `types` 是整目录），并把声明里 `./lib/x.ts` 这种源码后缀改写成 `./lib/x.js`——tsc 会原样抄它，而包里没有 `lib/x.ts`。`build:types` 已接进 `check` 与 `prepack`，配四条检查：入口存在且 `types/` 有产出、声明不比源码旧、声明不含构建机路径（判据以引号为锚，否则会把 JSDoc 里"macOS `/tmp` ↔ `/private/tmp` 软链"那句事实说明误杀）、相对说明符不残留 `.ts`。
+- **`THIRD_PARTY_NOTICES.md`**：记录产物边界（`host.js`/`client.js` 里第三方代码一律按包名外部化、React 亦外部化，故不随包分发上游实现）、四枚宿主级运行期依赖各自"为什么只能是运行期依赖"的理由，以及本包不含第三方派生代码这一结论的核对方式。
 - **一条产物可链接性守卫**（`test/build-host.test.ts`）。类型检查只读 `.d.ts`，`import()` 才证明运行时那份模块真有这些出口——ESM 在 link 阶段就校验具名导出。
 - **一条 `plugin:` 记录不污染蒸馏输入的用例**（`test/digest.test.ts`）。alpha.2 给插件开了 `appendPluginRecord`/`pluginRecordOf` 这条 ignorable 记录通道，且 V3→V4 的格式边会把未知可忽略事件统一改名进 `plugin:` 命名空间——本包经 `observeSession()` 读到的事件流从此一定混有读不懂的条目。本包按精确类型分派、未知类型无副作用这件事此前只是隐含性质，现在载荷长得像差评的记录被直接喂进扫描器也断言不出东西。
-- **真实 cordis 装载契约测试 `test/integration/host-contract.test.ts`（七条）**：此前本包所有宿主交互都由手搓 mock ctx 承担，有四件事在结构上就盖不住——服务是否真经官方 reflect 交出（而不只是 `ctx.provide` 被调用过）、兄弟插件声明 `inject: ["lessonLoop"]` 时依赖图解析不解析得动、注入子 fiber 交回的 disposer 形状被不被 cordis 采纳（不采纳就是卸载后路由撤不掉、热重载一次多一套 handler），以及装载失败是不是舱壁内的失败。现在这四点各有一条断言，另加"合法 config 的反向对照"与"`settings` 缺席时不进 ACTIVE"。顺带记下一个 d.ts 与实现的出入：`Fiber.dispose` 声明为 `() => Promise<void>`，实测交回 `undefined`，故卸载按返回值是不是 thenable 决定要不要 await。
+- **真实 cordis 装载约定测试 `test/integration/host-contract.test.ts`（七条）**：此前本包所有宿主交互都由手搓 mock ctx 承担，有四件事在结构上就盖不住——服务是否真经官方 reflect 交出（而不只是 `ctx.provide` 被调用过）、兄弟插件声明 `inject: ["lessonLoop"]` 时依赖图解析不解析得动、注入子 fiber 交回的 disposer 形状被不被 cordis 采纳（不采纳就是卸载后路由撤不掉、热重载一次多一套 handler），以及装载失败是不是舱壁内的失败。现在这四点各有一条断言，另加"合法 config 的反向对照"与"`settings` 缺席时不进 ACTIVE"。顺带记下一个 d.ts 与实现的出入：`Fiber.dispose` 声明为 `() => Promise<void>`，实测交回 `undefined`，故卸载按返回值是不是 thenable 决定要不要 await。
 - **两条舱壁用例进 `bus-boot.test.ts`**：本包条目 `Config` 非法（`decayIntervalMs: 500`，官方约束 `natural().min(1000)`）时，该 fiber 停在 `FAILED`、总线不 provide、`cache/lesson-loop` 不创建，而同桌的兄弟条目照样 `ACTIVE` 且服务可调；反向对照喂合法值，两条 fiber 都 `ACTIVE`。
-- **产物体积闸门 `test/dist-size.test.ts`（三条预算）**：挡两类不会让任何行为用例变红的回退——切面里塞大查表/字面量，以及外部化清单漏一枚包导致整包内联（`build-host.test.ts` 那两条断言判的是说明符字符串还在，翻倍本身不触发它们）。预算取实测值上浮约 25%。产物保持不 minify：压缩后 `from "@jayyuen66/dsh-plugin-shared/lib/record"` 这类说明符字符串会从产物里消失，外部化断言随之恒绿。
-- **发布流水线加固**（照同门 `dsh-danger-guard` 的口径）：`concurrency.group: publish` 挡住两次 dispatch 并行跑同一份 check+publish；三枚 action 改按 commit SHA 引用（tag 被动就等于本仓换构建器）；token 形态校验只报"有没有杂质"、不再打印长度（CI 日志长期留存，字符数是关于凭据本身的信息）；registry 预检加**本包自身**那一读（只查依赖的话，"版本号没进 main 就触发 workflow"这个最常见的失败模式预检发现不了，只能等 publish 自己以版本冲突收尾）；publish 注入的是与预检同款清洗过的 token（预检剔 `\r\n` 与空白，裸 secret 尾部一个换行就会造成"whoami 通过、publish 401"），并加 `--provenance`（`id-token: write` 就是给它用的）与 `--publish-wait-timeout 600000`（等 registry 真正放出该版本并对 tarball 回 HEAD，"发出去了但装不上"在 workflow 里就红）。
-- **两份 README 的「装机验收口径」**：四条判据 + 一条装载侧口径，全部本机对 `dsh 0.2.1-alpha.2` 实测——`DSH_HOME` 指临时目录装 tarball，profile 的 `node_modules/` 只有 `@jayyuen66/` 一层、无 `@deepseek-ai/` 目录（第二份宿主实例的指纹）；`--dump-config` 末尾认领 `- id: lesson-loop`；一枚把 peer 写成 `@deepseek-ai/dsh: 0.1.0` 的探针包被 `dsh: installation rejected` 拒绝并回滚 `package.json`/`pnpm-lock.yaml`/`node_modules`（回滚以加装前后的 diff 为空核对）；`allow-version` / `version-exemptions` / `revoke-version` 三条命令均跑通。
-- **`CHANGELOG.md`**，并按上面的口径写进 `files`。
+- **产物体积闸门 `test/dist-size.test.ts`（三条预算）**：挡两类不会让任何行为用例变红的回退——切面里塞大查表/字面量，以及外部化清单漏一枚包导致整包内联（`build-host.test.ts` 那两条断言判的是说明符字符串还在，翻倍本身不触发它们）。预算取实测值上浮约 25%。产物保持不 minify：压缩后 `from "@jayyuen66/dsh-plugin-shared/lib/record"` 这类说明符字符串会从产物里消失，外部化断言随之总是通过。
+- **发布流水线加固**（照同门 `dsh-danger-guard` 的规则）：`concurrency.group: publish` 挡住两次 dispatch 并行跑同一份 check+publish；三枚 action 改按 commit SHA 引用（tag 被动就等于本仓换构建器）；token 形态校验只报"有没有杂质"、不再打印长度（CI 日志长期留存，字符数是关于凭据本身的信息）；registry 预检加**本包自身**那一读（只查依赖的话，"版本号没进 main 就触发 workflow"这个最常见的失败模式预检发现不了，只能等 publish 自己以版本冲突收尾）；publish 注入的是与预检同款清洗过的 token（预检剔 `\r\n` 与空白，未经清洗的 secret 尾部一个换行就会造成"whoami 通过、publish 401"），并加 `--provenance`（`id-token: write` 就是给它用的）与 `--publish-wait-timeout 600000`（等 registry 真正放出该版本并对 tarball 回 HEAD，"发出去了但装不上"在 workflow 里就红）。
+- **两份 README 的「装机验收」一节**：四条判据+ 一条装载侧规则，全部本机对 `dsh 0.2.1-alpha.2` 实测——`DSH_HOME` 指临时目录装 tarball，profile 的 `node_modules/` 只有 `@jayyuen66/` 一层、无 `@deepseek-ai/` 目录（第二份宿主实例的指纹）；`--dump-config` 末尾认领 `- id: lesson-loop`；一枚把 peer 写成 `@deepseek-ai/dsh: 0.1.0` 的探测包被 `dsh: installation rejected` 拒绝并回滚 `package.json`/`pnpm-lock.yaml`/`node_modules`（回滚以加装前后的 diff 为空核对）；`allow-version` / `version-exemptions` / `revoke-version` 三条命令均跑通。
+- **`CHANGELOG.md`**，并按上面的规则写进 `files`。
 
 ### Not changed, deliberately
 
-- **不采用官方新的会话插件记录（`appendPluginRecord` / `pluginRecordOf`）来承载本包状态**。四条理由，逐条都是硬条件：本包没有"随会话走"的状态可搬——事件流水是一份全局 `cache/events.jsonl`（按官方定位正是可丢弃的派生数据，丢了能由会话与规则库重建），规则卡与升/降格计数在设置命名空间的 `rules` 数组里带 CAS revision，两者都不是会话级的；写入需要活 `Session` 实例，而本包的读面刻意只经 `ctx.sessionQuery.observeSession()` 拿事件切片，把 `sessions` 写进插件级 `inject` 会让没装那个 bundle 的 profile 整条功能下线（同门 `dsh-danger-guard` 记过同一条纪律）；官方把可调用者限定在 `packages/experimental/` 的生产源（`verify-plugin-record-callers` 门禁），包外插件不在被许可的调用面内；且官方明说格式迁移对记录只是 best-effort 保留，而"违规/抑制"计数一旦静默丢失就会把规则卡的判定基础抽掉——那正是 `@deprecated snapshotEvents` 之外另一处"官方不保证"的地方。读侧则按上面的新增用例处理。
-- **不跟进 `dsh-danger-guard` 的 `effectiveCwdOf()`（活目录搬到 `ctx.workingDirectory`）**。那一包需要它是因为判据把工具调用的相对路径按当前目录解析（会话 `cd` 之后密钥路径会按创建期目录判，该拦的拦不住）；本包读 `header.cwd` 只为**项目桶归因**，"这场会话属于它起步时那个工程"恰恰是想要的语义，而全包没有任何一处按 cwd 解析相对路径的判定（`lib/lesson-store.ts` 的键归一另有 `path.resolve` + `realpath` 口径，与 cwd 无关）。没有缺陷就不引入服务依赖。
+- **不采用官方新的会话插件记录（`appendPluginRecord` / `pluginRecordOf`）来承载本包状态**。四条理由，逐条都是硬条件：本包没有"随会话走"的状态可搬——事件流水是一份全局 `cache/events.jsonl`（按官方定位正是可丢弃的派生数据，丢了能由会话与规则库重建），规则卡与升/降格计数在设置命名空间的 `rules` 数组里带 CAS revision，两者都不是会话级的；写入需要活 `Session` 实例，而本包的读取接口刻意只经 `ctx.sessionQuery.observeSession()` 拿事件切片，把 `sessions` 写进插件级 `inject` 会让没装那个 bundle 的 profile 整条功能下线（同门 `dsh-danger-guard` 记过同一条纪律）；官方把可调用者限定在 `packages/experimental/` 的生产源（`verify-plugin-record-callers` 检查），包外插件不在被许可的调用签名内；且官方明说格式迁移对记录只是 best-effort 保留，而"违规/抑制"计数一旦静默丢失就会把规则卡的判定基础抽掉——那正是 `@deprecated snapshotEvents` 之外另一处"官方不保证"的地方。读侧则按上面的新增用例处理。
+- **不跟进 `dsh-danger-guard` 的 `effectiveCwdOf()`（活目录搬到 `ctx.workingDirectory`）**。那一包需要它是因为判据把工具调用的相对路径按当前目录解析（会话 `cd` 之后密钥路径会按创建期目录判，该拦的拦不住）；本包读 `header.cwd` 只为**项目桶归因**，"这场会话属于它起步时那个工程"恰恰是想要的语义，而全包没有任何一处按 cwd 解析相对路径的判定（`lib/lesson-store.ts` 的键归一另有 `path.resolve` + `realpath` 规则，与 cwd 无关）。没有缺陷就不引入服务依赖。
 - **不放宽精确钉**。`dsh-*` 与 cordis 半区继续逐位钉死；registry 的 `dist-tag` 是实测过的陷阱，`latest` 可能指向远早于当前宿主 ABI 的版本。
-- **不改总线契约、规则卡动作面与任何阈值默认值**。`lessonLoop` 的 `report`/`arm`/`observe` 形状、六个动作白名单、`promoteThreshold`/`demoteThreshold`/`decayDays` 等十二项设置的默认值一律未动，同门三包（danger-guard / quality-gate / session-rescue）经 `ctx.get("lessonLoop")` 的调用面因此不受本版影响。
+- **不改总线契约、规则卡的动作与任何阈值默认值**。`lessonLoop` 的 `report`/`arm`/`observe` 形状、六个动作白名单、`promoteThreshold`/`demoteThreshold`/`decayDays` 等十二项设置的默认值一律未动，同门三包（danger-guard / quality-gate / session-rescue）经 `ctx.get("lessonLoop")` 的调用签名因此不受本版影响。
 
 ## 0.1.0
 

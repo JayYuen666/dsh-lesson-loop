@@ -1,9 +1,9 @@
-// decay-policy：armed 规则的**衰减裁决口径**（阈值形状 + 一条复发率判定）。
+// decay-policy：armed 规则的**衰减裁决规则**（阈值形状 + 一条复发率判定）。
 //
 // 为什么从 lib/lesson-store.ts 拆出来：这一层只回答"这张 armed 卡该降级、该判不可判定、
-// 还是该留着"，输入是计数器与阈值，没有任何存放面读写；store 侧负责把 settings 现读的阈值
-// 组装成 DecayPolicy（policy()）并在三个落点上调用裁决（report 的复发即判、/stats 的派生态、
-// 周期衰减）。裁决住在 store 里时，这三枚 export 的消费者只剩单测，`fallow --production`
+// 还是该留着"，输入是计数器与阈值，没有任何存储读写；store 侧负责把 settings 现读的阈值
+// 组装成 DecayPolicy（policy()）并在三处调用裁决（report 的复发即判、/stats 的派生态、
+// 周期衰减）。裁决实现在 store 里时，这三枚 export 的消费者只剩单测，`fallow --production`
 // 因此判成「只被测试养着的导出」。
 //
 // 复发率裁决只用真实证据（violation + suppressed）：样本量 samples 永不进分母（旧设计回避的
@@ -34,7 +34,7 @@ export const DEFAULT_DECAY: DecayPolicy = {
 const MS_PER_DAY = 86_400_000;
 
 /** 计数是否可信：非有限、负数、小数都算脏（读取侧 countField 已归一，但 decayVerdict
- *  是导出面，调用方可以不经 store 归一）。脏计数**不参与任何裁决**——单侧为负会让
+ *  是导出名单，调用方可以不经 store 归一）。脏计数**不参与任何裁决**——单侧为负会让
  *  evidence 变小、复发率被放大而误判降级；NaN 会让 evidence > 0 与 suppressed === 0
  *  同时失效、卡片静默永久 keep。两种都不是"这条规则表现如何"的结论，所以直接 keep
  *  留给人修，不写进 demote / undeterminable 任何一档。 */
@@ -42,9 +42,9 @@ function isCleanCount(value: number): boolean {
   return Number.isFinite(value) && Number.isInteger(value) && value >= 0;
 }
 
-/** 阈值归一：store 侧与 settings schema 都做了钳位，但本函数是导出面，调用方可以不经
- *  它们传策略。非法值按默认档收口——decayDays <= 0 会让"挂满"对任何 armed 卡恒真、
- *  NaN 会让它恒假；demoteRatio 越出 (0, 1] 会让降级永不发生或恒发生。 */
+/** 阈值归一：store 侧与 settings schema 都做了钳位，但本函数是导出名单，调用方可以不经
+ *  它们传策略。非法值按默认档统一处理——decayDays <= 0 会让"挂满"对任何 armed 卡永远成立、
+ *  NaN 会让它永远不成立；demoteRatio 越出 (0, 1] 会让降级永不发生或恒发生。 */
 function policyOf(policy: DecayPolicy): DecayPolicy {
   const days =
     Number.isFinite(policy.decayDays) && policy.decayDays > 0
@@ -71,7 +71,7 @@ function policyOf(policy: DecayPolicy): DecayPolicy {
 }
 
 /** 单条 armed 规则的衰减裁决：'demote'（有真实证据的高复发率）| 'undeterminable'
- *  （armed 后从没有被遵守过，且要么已挂满 decayDays、要么复发已达门槛，机器无从
+ *  （armed 后从没有被遵守过，且要么已挂满 decayDays、要么复发已达阈值，机器无从
  *  裁定）| 'keep'。 */
 export function decayVerdict(
   rule: RuleCard,
@@ -96,7 +96,7 @@ export function decayVerdict(
   // 漂移写坏（0 / 负数 / NaN）：锚 0 会让一张刚升格的卡立刻判"早已挂满"，NaN 会让
   // "挂满"这条路径无声失效。
   // `now` 也必须是有限数：NaN/Infinity 会让 `now - anchor` 变 NaN，挂满窗口与后续所有
-  // >= 比较一起退化，"挂满 decayDays"这条不可判定路径静默失效（与锚点同一个事故面）。
+  // >= 比较一起退化，"挂满 decayDays"这条不可判定路径静默失效（与锚点同一种事故）。
   const clock = Number.isFinite(now) ? now : Date.now();
   const candidateAnchor = rule.armedAt ?? rule.createdAt;
   const anchor = Number.isFinite(candidateAnchor) && candidateAnchor > 0 ? candidateAnchor : clock;
@@ -105,7 +105,7 @@ export function decayVerdict(
   // **分母必须含至少一次干净命中**：suppressed 为 0 时复发率结构上恒为 1.0（分母只剩
   // 违规自己），宿主不发 pass 的类别（典型是 transient-failure）会被自己的分子判有罪。
   // 无分母即不可判定：既不降级也不归档，保留 armed 交人工——挂满 decayDays 或违规已达
-  // 门槛时点出来（后者说明"一直在犯、但从没验证过规则被遵守过"，同样无从判定）。
+  // 阈值时点出来（后者说明"一直在犯、但从没验证过规则被遵守过"，同样无从判定）。
   if (suppressed === 0 && (matured || violation >= activePolicy.demoteThreshold)) {
     return "undeterminable";
   }

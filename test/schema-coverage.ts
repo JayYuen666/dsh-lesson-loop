@@ -18,7 +18,7 @@
 //   }), []);
 //
 // 注意：绑定识别是"出现即算绑定"的宽松启发式（见 isBoundField），假阳性只会让门禁
-// 更宽松（不会假绿漏拦功能性缺失）；假阴性会立刻报错，故宁可宽不可严。反向校验
+// 更宽松（不会误判通过漏拦功能性缺失）；假阴性会立刻报错，故宁可宽不可严。反向校验
 // （stale 豁免）可能被假阳性误伤成假失败——那份失败是响亮的、自修正的（删豁免即恢复），
 // 与设计前提一致。
 
@@ -67,7 +67,7 @@ function skipNonCode(src: string, at: number): number {
 
 /** 从 `open` 处（指向 `(`）起找到与它配对的右括号下标；字符串与注释里的括号不计。
  *  只按字符深度数括号会被 `default("x)y")` 这类字面量骗到：那个 `)` 让深度提前归零，
- *  块在字符串中间被截断，其后的字段全部读不到（假绿 —— 门禁以为字段集就这么多）。 */
+ *  块在字符串中间被截断，其后的字段全部读不到（误判通过 —— 门禁以为字段集就这么多）。 */
 function matchParen(src: string, open: number): number {
   let depth = 0;
   let at = open;
@@ -103,7 +103,7 @@ function matchParen(src: string, open: number): number {
  * 字符是 `{` 或 `,` 的位置上读 `标识符:`——多行注释的续行、跨行模板字符串里的
  * `key:`、单行写法（`Schema.object({ a: 1, b: 2 })`）因此都不会被误收或漏收。
  */
-/** 捕获组取值（严格模式下 matchAll 捕获为 `string | undefined`，这里收口为 string）。 */
+/** 捕获组取值（严格模式下 matchAll 捕获为 `string | undefined`，这里统一处理为 string）。 */
 function group(match: RegExpExecArray, index: number): string {
   return match[index] ?? "";
 }
@@ -246,7 +246,7 @@ function handleEntry(entry: string, dir: string, pending: string[], out: string[
 
 /** 递归收集目录下所有 TS 源文件文本（跳过 node_modules 与 test）。用显式栈代替递归：
  *  单步处理既读目录又读文件，拆成两个互相调用的函数会撞 no-use-before-define，
- *  合回来又把 continue 带回来。目录间顺序无意义（绑定面是各文件字段名的并集）。 */
+ *  合回来又把 continue 带回来。目录间顺序无意义（绑定环节是各文件字段名的并集）。 */
 function walk(root: string): string[] {
   const out: string[] = [];
   const pending: string[] = [root];

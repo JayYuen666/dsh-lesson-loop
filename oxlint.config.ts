@@ -1,6 +1,6 @@
 import { definePluginConfig } from "@jayyuen66/dsh-plugin-shared/config/oxlint";
 
-/** lib/jsonl-fuse.ts 的写侧名单：锁的原子占位与无覆盖归位、原子替换、裁尾临时文件落盘、
+/** lib/jsonl-fuse.ts 的写侧名单：锁的原子占位与无覆盖归位、原子替换、裁尾临时文件写到磁盘、
  *  陈旧锁清理。 */
 const FUSE_SYNC_WRITES = [
   "appendFileSync",
@@ -27,7 +27,7 @@ export default definePluginConfig({
       apis: [...FUSE_SYNC_WRITES, "mkdirSync", "lstatSync", "mkdtempSync", "utimesSync"],
     },
   ],
-  // prefer-lowercase-title 的免检**用例标题**前缀（基线 allowedPrefixes 口径）：本仓
+  // prefer-lowercase-title 的免检**用例标题**前缀（基线 allowedPrefixes 规则）：本仓
   // 实际用到的是 test/host.test.ts 里以 Config 开头的用例标题；DSH_HOME / JSONL /
   // PLUGIN_NAME 是同一批技术名起点（卡片文案走 UI 字面量，不受这条规则管）。
   // 前缀是字面量前缀匹配，`Config` 会连带放行 `Configuration` 一类普通标题——新增

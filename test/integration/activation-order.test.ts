@@ -5,11 +5,11 @@
 // 自己那条 fiber 变 ACTIVE **之前**（harness vendor/cordis/src/fiber.ts 的状态机：`_execute` 结算后才
 // `_updateState`）。于是"在 apply 里同步读规则库"这条路径在真实宿主上拿到的是空投影 →
 // 端口判 unusable（lib/rules-namespace.ts 的 load）→ `commit` 不写（lib/lesson-store.ts 的 commit）
-// → 迁移**静默空转**，用户的历史碎片卡永远不归并。
+// → 迁移**静默地什么也没做**，用户的历史碎片卡永远不归并。
 //
 // 现有单测（host.test.ts）与 bus-boot.test.ts 都盖不住它：那份 settings 假件恒投影本条目
 // （test/rules-fake.ts 的 describe 分支），而这是真实宿主**不可能**出现的状态。所以本文件把假件的
-// 投影面按 harness 的真实语义门控（只有 ACTIVE 才投），并把"装载期确实读到过空投影"
+// 投影按 harness 的真实语义门控（只有 ACTIVE 才投），并把"装载期确实读到过空投影"
 // 钉成反向对照——门控若失效（例如宿主改成投影 PENDING 条目），对照组立刻红。
 //
 // 夹具纪律与 bus-boot.test.ts 相同：装载对象是 host.ts 的逐字节副本（.tmp/activation/），
@@ -74,8 +74,8 @@ interface DescribeSample {
  *
  * @param provider - 底层假件
  * @param trace - 逐次调用的观察记录（反向对照用）
- * @param stateOf - 取条目 fiber 状态的探针（调用方持有 ctx）
- * @returns 门控后的 provider 面
+ * @param stateOf - 取条目 fiber 状态的函数（调用方持有 ctx）
+ * @returns 门控后的 provider
  */
 function gateDescribe(
   provider: SettingsProviderFake,
@@ -189,7 +189,7 @@ describe("装载时序：开机迁移只在本条目 ACTIVE 之后读规则库",
     expect(trace.length, "迁移至少读过一次规则库").toBeGreaterThan(0);
     expect(
       trace.filter((sample) => sample.state !== 2),
-      "装载期（PENDING）读规则库 = 静默空转，不许再有",
+      "装载期（PENDING）读规则库 = 静默地什么也没做，不许再有",
     ).toStrictEqual([]);
 
     const rows = provider.peek(ENTRY_ID)?.[RULES_FIELD] as Record<string, unknown>[];

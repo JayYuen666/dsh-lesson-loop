@@ -51,12 +51,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.9
-          # registry-url 留空，与 ci.yml 同一条口径（见 ci.yml 里的那段注释）：这一步只装依赖与跑
+          # registry-url 留空，与 ci.yml 同一条规则（见 ci.yml 里的那段注释）：这一步只装依赖与跑
           # check，不发布，配上它只会让 setup-node 生成一份带 `${NODE_AUTH_TOKEN}` 占位的用户级
           # .npmrc。pnpm 12 不展开仓库可控配置里的环境变量（实测打一条 Ignored project-level auth
-          # setting 的 WARN 后照常安装），所以后果不是红而是把 CI 的解析口径改得和开发者不一样。
+          # setting 的 WARN 后照常安装），所以后果不是红而是把 CI 的解析规则改得和开发者不一样。
           cache: pnpm
-      # 静态 token 是 OIDC 失败时的兜底，不是发布的前提：仓库里没有这枚 secret 是正常状态，
+      # 静态 token 是 OIDC 失败时的后备，不是发布的前提：仓库里没有这枚 secret 是正常状态，
       # 走 trusted publishing 的仓库本来就不该长期存它。所以这一步在值为空时放行，只把
       # 凭据本身不跨步骤传递：步骤输出会落成 RUNNER_TEMP 下的文件，同 job 后续步骤
       # （含 install 与 check 里跑的依赖脚本）都能枚举读到；写进 job 级环境同理。
@@ -87,7 +87,7 @@ jobs:
             exit 1
           fi
           # 只交出形态合格的结论；凭据本身留在本步骤，不写进任何可跨步骤读取的介质。
-      # 静态 token 只是兜底，所以这里判的是「还能不能用」，不是「必须有效」：
+      # 静态 token 只是后备，所以这里判的是「还能不能用」，不是「必须有效」：
       #   · 200      → 原样传给发布步
       #   · 401/403  → 告警并清空，让发布步走 OIDC。凭据失效不是工作流该红的理由，
       #                OIDC 也没配好时发布步会在认证处以 ENEEDAUTH 红，那一步才是真判据。
@@ -174,7 +174,7 @@ jobs:
             if (key !== undefined) catalog.set(key, matched[4]);
           }
           for (const [name, range] of refs) {
-            // 命名 catalog（catalog:foo / catalogs: 段）的取值不在本脚本的解析面上；
+            // 命名 catalog（catalog:foo / catalogs: 段）的取值不在本脚本的解析上；
             // 与其静默跳过，不如点名拒发，免得依赖库可见性门禁被绕过。
             if (range !== "catalog:") {
               throw new Error(`${name} 用的是命名 catalog（${range}），本预检只解析根 catalog 段`);
@@ -183,10 +183,10 @@ jobs:
             if (version === undefined) {
               throw new Error(`pnpm-workspace.yaml 的 catalog 里没有 ${name}`);
             }
-            // 取值按伞根口径写成范围（shared 是 `^<版本>`，八个消费者的发布物因此声明
+            // 取值按伞根规则写成范围（shared 是 `^<版本>`，八个消费者的发布物因此声明
             // semver 范围，0.2.x 的 bugfix 只需发 shared，不必重发八仓）。可满足性由
             // **范围下限**那一版是否在 registry 上公开来判：下限永远落在自己声明的范围里，
-            // 这与根侧 `sync --check` 拿「该条范围的最低版本」的产物导出面作比是同一口径。
+            // 这与根侧 `sync --check` 拿「该条范围的最低版本」的产物导出名单作比是同一种做法。
             // 认不出的写法照旧拒发，不让依赖库可见性这道门被绕过。
             const floor = version.replace(/^(?:\^|~|>=)\s*/u, "");
             if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(floor)) {
@@ -252,7 +252,7 @@ jobs:
           # 本 job 不检出仓库，读不到 package.json 的 packageManager，只能显式给同一枚钉版。
           version: 12.11.2
       # registry-url 必须配：它把 `${NODE_AUTH_TOKEN}` 占位写进 RUNNER_TEMP/.npmrc 并用
-      # NPM_CONFIG_USERCONFIG 指过去，发布步的静态 token 兜底走的就是这条机制。
+      # NPM_CONFIG_USERCONFIG 指过去，发布步的静态 token 后备走的就是这条机制。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.9
@@ -322,7 +322,7 @@ jobs:
           } >> "$GITHUB_ENV"
       # 凭据优先级：OIDC 在前，这枚 NODE_AUTH_TOKEN 在后（pnpm 的 publish_options.rs 原话
       # "OIDC takes precedence over a configured static token"）。trusted publisher 配好时
-      # 它根本不参与认证，交换失败才轮到它——留着是兜底，不是主路。
+      # 它根本不参与认证，交换失败才轮到它——留着是后备，不是主路。
       # 注入的值与上面预检同款清洗（剔 \r\n 与空白）：预检用副本、publish 读原值，secret 尾部
       # 一个换行就变成「whoami 通过、publish 401」，两处必须是同一份清洗。
       # --provenance 取的是另一枚 id-token（audience 为 sigstore），与 npm 交换那枚互相独立，

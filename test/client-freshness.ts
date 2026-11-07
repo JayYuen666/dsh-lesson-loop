@@ -1,4 +1,4 @@
-// test/client-freshness.ts —— 产物新鲜度指纹门禁。
+// test/client-freshness.ts —— 产物一致性指纹门禁。
 // 本包副本形态：只提供**证据**（磁盘产物 vs 内存构建产物 + 包名），用例注册留在
 // test/build-client.test.ts 的 describe 里。共享夹具一旦自行 it()，它就变成用例文件，
 // vitest 的结构类规则（require-hook / consistent-test-it / valid-title）全部落到夹具上。
@@ -48,9 +48,9 @@ export async function clientFreshnessEvidence(testFileUrl: string): Promise<Fres
   const testDir = path.dirname(fileURLToPath(testFileUrl));
   const pkgDir = path.resolve(testDir, "..");
   const pkgName = packageNameOf(pkgDir);
-  // 动态导入 .mjs 对 TS 为 any，先收窄到调用面再 await（避免 no-unsafe-*）；
-  // 导出面也校验：build-client.mjs 改名/删导出时给出可操作的诊断，而不是让
-  // mod.buildClient() 以 "is not a function" 的裸 TypeError 收场。
+  // 动态导入 .mjs 对 TS 为 any，先收窄到调用处再 await（避免 no-unsafe-*）；
+  // 导出名单也校验：build-client.mjs 改名/删导出时给出可操作的诊断，而不是让
+  // mod.buildClient() 以 "is not a function" 的 TypeError 收场。
   const mod = (await import(pathToFileURL(path.resolve(pkgDir, "build-client.mjs")).href)) as {
     buildClient?: () => Promise<string>;
   };
@@ -65,7 +65,7 @@ export async function clientFreshnessEvidence(testFileUrl: string): Promise<Fres
     pkgName,
     pkgDir,
     // 产物缺失时给占位正文：让门禁红在"内容不一致"的比对里（带修复提示），而不是
-    // 红在 ENOENT 的裸栈里。注意 client.js 是 gitignored 的构建产物，git 的换行
+    // 红在 ENOENT 的原始调用栈里。注意 client.js 是 gitignored 的构建产物，git 的换行
     // 转换碰不到它——不做 BOM/CRLF 规范化，文件被人为改动就该红。
     onDisk: existsSync(artifactPath)
       ? readFileSync(artifactPath, "utf8")

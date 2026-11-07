@@ -1,7 +1,7 @@
 // lesson-store：教训总线的领域核心（纯 TS，宿主依赖只从 RulesRepository 端口进来）。
 //
-// 职责（五段闭环的"沉淀 + 度量 + 衰减"全部在这里）：
-//   沉淀 —— 教训全量落 **官方 cache 目录**的事件流水 JSONL（默认不设上限；可选
+// 职责（五段闭环的"写入 + 度量 + 衰减"全部在这里）：
+//   写入 —— 教训全量落 **官方 cache 目录**的事件流水 JSONL（默认不设上限；可选
 //           maxBytes 仅作磁盘保险，不为省 token 截断内容——用户拍板"保持功能强大"）；
 //           cache 是 dsh 定位的"可丢弃派生数据"目录，流水正是这一类；
 //   蒸馏 —— 同 (project, category, signature) 教训达 promoteThreshold 归并为
@@ -22,7 +22,7 @@
 //           （既非违规亦无一次干净命中，机器无从裁定），保留 armed 交人工，
 //           由 /stats 与卡片显式提示——不再静默归档（人工仍可手动归档）。
 //
-// 规则库的存放面是设置命名空间（= 本包 profile 条目 id `lesson-loop`）里的 `rules`
+// 规则库的存放位置是设置命名空间（= 本包 profile 条目 id `lesson-loop`）里的 `rules`
 // 数组字段（见 lib/rules-namespace.ts）。
 // 本文件只依赖 RulesRepository 端口：读 = 拿"这一刻"的数组 + revision，写 = 带
 // revision 的 CAS。多进程共库的纪律因此从"读前对齐磁盘指纹"变成"写前重读 + CAS
@@ -32,7 +32,7 @@ import { randomUUID } from "node:crypto";
 import { deriveProjectKey } from "@jayyuen66/dsh-plugin-shared/lib/project-key";
 import type { LessonLoopMessages } from "./messages.ts";
 import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
-// 事件流水的落盘面（追加/读取/磁盘保险丝）在 lib/lesson-jsonl.ts：这一层的失败纪律是"只日志、
+// 事件流水的写到磁配置内容（追加/读取/磁盘保险丝）在 lib/lesson-jsonl.ts：这一层的失败纪律是"只日志、
 // 不抛穿热路径"，与本文件的规则库 CAS 回执是两件事，因此分家。
 import { appendJsonl, readJsonl } from "./lesson-jsonl.ts";
 // 键的算法（签名归一 + 类别级稳定签名 + 归并键）与正文起草各自成层：写入侧、查找侧、迁移侧
@@ -46,7 +46,7 @@ import {
   stableSignatureFor,
 } from "./rule-signature.ts";
 import { draftStatement } from "./statement-draft.ts";
-// 衰减裁决只吃计数器与阈值，没有任何存放面读写；store 侧负责把 settings 现读的阈值组装成
+// 衰减裁决只吃计数器与阈值，没有任何存储读写；store 侧负责把 settings 现读的阈值组装成
 // DecayPolicy 递给它。
 import { DEFAULT_DECAY, decayVerdict } from "./decay-policy.ts";
 import type { DecayPolicy } from "./decay-policy.ts";
@@ -78,7 +78,7 @@ export type KnownLessonSource =
   | "manual";
 
 /**
- * `/lessons-digest` 蒸馏生产者的来源名——**同一个串在两处枚举面出现**：既是内置来源
+ * `/lessons-digest` 蒸馏生产者的来源名——**同一个串在两处枚举出现**：既是内置来源
  * `KnownLessonSource` 的一员（`digest.ts` 上报时带它），也是蒸馏建卡的 `RuleOrigin`
  * （`addCandidate` 的默认 source 与 origin）。字面量散着写就要逐处同改，故收成这一枚。
  */
@@ -87,7 +87,7 @@ const LESSONS_DIGEST_SOURCE = "lessons-digest" as const;
 /** 内置五个之外的兜底来源名。 */
 const FALLBACK_LESSON_SOURCE: KnownLessonSource = "manual";
 
-/** 来源名长度上限：防把整段错误文本塞进来源字段（枚举面失控、卡片无法归因）。 */
+/** （枚举值失控、卡片无法归因）。 */
 const MAX_LESSON_SOURCE_LENGTH = 64;
 
 /** Unicode 控制字符类（Cc）：来源字段出现即视为不可信。 */
@@ -97,7 +97,7 @@ const CONTROL_CHARACTER = /\p{Cc}/u;
  * 来源归一（开放集）：trim 后非空、不过长、不含控制字符 → 原样保留（第三方插件得以
  * 自报家门，其教训与内置来源一样可入库、可统计）；空/非字符串/超限/含控制字符 → manual。
  *
- * 控制字符（含换行）不得进入来源名：它会流进卡片渲染面与 `console.warn` 日志，
+ * 控制字符（含换行）不得进入来源名：它会流进卡片渲染与 `console.warn` 日志，
  * `x\n[lesson-loop] …` 一类的串能伪造出一条看似别人的日志行。
  *
  * 为什么退 manual 而不是拒收：manual 是"有人记了这条、但说不出是谁"的最保守归属，
@@ -296,7 +296,7 @@ export interface RuleCard {
   category: string;
   signature: string;
   /** 规则正文（候选期由模板起草，arm 时可人工改写；注入全文，不按 token 截断——
-   *  写入侧另有 maxStatementChars 的体量闸门，超限的 arm/edit 被拒）。 */
+   *  写入侧另有 maxStatementChars 的体量上限，超限的 arm/edit 被拒）。 */
   statement: string;
   status: RuleStatus;
   createdAt: number;
@@ -333,21 +333,21 @@ export interface ReportReceipt {
   reason?: string;
   /** 命中的 armed 规则（violation 已 +1）。 */
   violationOf?: RuleCard;
-  /** 归并到的候选卡（occurrences 已 +1）。`ready` 是"已到升格门槛"的**电平**，
-   *  `justReady` 是"这一次刚推过门槛"的**边沿**——提示用边沿，否则每条上报都重复。 */
+  /** 归并到的候选卡（occurrences 已 +1）。`ready` 是"已到升格阈值"的**电平**，
+   *  `justReady` 是"这一次刚推过阈值"的**边沿**——提示用边沿，否则每条上报都重复。 */
   candidate?: RuleCard;
   ready?: boolean;
   justReady?: boolean;
 }
 
 /**
- * 落盘失败回执的 reason（与 not-found 区分：前者是"没存住、可重试"，后者是 id 错了）。
+ * 写到磁盘失败回执的 reason（与 not-found 区分：前者是"没存住、可重试"，后者是 id 错了）。
  *
  * 一次写不出两类失败，全部收成这一个值，因为它对调用方只有一层含义：**这一次改动没
- * 有进到规则库**。为什么不再是旧契约那句"内存已改、只是没落盘"——本文件已没有跨调用
+ * 有进到规则库**。为什么不再是旧契约那句"内存已改、只是没写到磁盘"——本文件已没有跨调用
  * 存活的内存数组（每笔改动都从端口重读、在"这一刻"的数组上重放，见 LessonStore.commit），
- * "没落盘"因此就等于"没生效"：
- *   (a) 端口明确拒绝（rejected，含 usable:false 的不可写面）：连别人的最新状态都没读到
+ * "没写到磁盘"因此就等于"没生效"：
+ *   (a) 端口明确拒绝（rejected，含 usable:false 的不可写入）：连别人的最新状态都没读到
  *       可信值，这一次改动既不许写出去、也不留在任何地方——留着就是替坏数据背书。
  *   (b) CAS 冲突耗尽（conflict 用满 RULES_CAS_RETRY_LIMIT）：对方确实在推进 revision，
  *       这一次改动同样不外推、不缓存，重试权交回拿着回执的调用方；下一笔仍旧先重读端口，
@@ -358,10 +358,10 @@ export interface ReportReceipt {
 export const PERSIST_FAILED = "rules-not-persisted";
 
 /**
- * 人工动作结果：persisted 已落盘；not-found 无此卡；persist-failed 这一次没存住（需重试）；
+ * 人工动作结果：persisted 已写到磁盘；not-found 无此卡；persist-failed 这一次没存住（需重试）；
  * invalid-statement 动作被拒（arm/edit 带空正文，库未动）；statement-too-long 生效正文
  * 超过 maxStatementChars（库同样没动）；unchanged 请求的终态本就成立（edit 与现文相同），
- * 未落盘也不算失败。
+ * 未写到磁盘也不算失败。
  */
 export type RuleActionResult =
   | "persisted"
@@ -371,7 +371,7 @@ export type RuleActionResult =
   | "statement-too-long"
   | "unchanged";
 
-// ── 规则库端口（settings 命名空间的读写面；实现在 lib/rules-namespace.ts）────
+// ── 规则库端口（settings 命名空间的读写入；实现在 lib/rules-namespace.ts）────
 
 /**
  * 一次规则库读取：`cards` 是"这一刻"解析出的卡（逐行归一后的**新对象**，改它不会
@@ -382,7 +382,7 @@ export interface RulesRead {
   readonly cards: readonly RuleCard[];
   /**
    * false = 该命名空间当前读不出可信值（注册被存量坏数据打回 / provider 缺位 /
-   * 注册已被回收）。此时**读面与写面都算空/拒**——把"读不懂"当成"真的没有"再写回去，
+   * 注册已被回收）。此时**读取接口与写入都算空/拒**——把"读不懂"当成"真的没有"再写回去，
    * 等于替坏数据背书并把别人写好的卡覆掉，这是旧实现里最贵的那类错误。端口即便在
    * usable:false 下递来数组（存量假件、provider 半解析结果），本文件也不认：见
    * LessonStore.workingCards 与 commit 的可信读判定。
@@ -424,9 +424,9 @@ const RULES_CAS_RETRY_LIMIT = 3;
 
 /** 规则正文的默认写入上限（字符）。设置项 maxStatementChars 的 schema 默认也从这里取，
  *  两侧不留第二份数字。armed 正文整段注入每次会话的提示词，没有上限时一次写请求就能
- *  把任意长文本塞进之后每个会话；蒸馏产出的候选不受这条闸门约束（人审时才经过 arm）。 */
+ *  把任意长文本塞进之后每个会话；蒸馏产出的候选不受这条上限约束（人审时才经过 arm）。 */
 export const DEFAULT_MAX_STATEMENT_CHARS = 4000;
-/** 写入上限的硬上界（与 settings schema 的 max 同值）：防一个离谱的配置把闸门变成空门。 */
+/** 写入上限的硬上界（与 settings schema 的 max 同值）：防一个离谱的配置把这条上限抬到形同不存在。 */
 const MAX_STATEMENT_CHARS_CAP = 100_000;
 
 export interface StoreOptions {
@@ -437,7 +437,7 @@ export interface StoreOptions {
   /**
    * 起草新候选卡正文用的消息表（中英双语，见 lib/messages.ts 的 statement* 段）。
    *
-   * 注入的是**取用口**而不是表本身：host 侧每次现取（用户在「设置 → 常规」换语言后，
+   * 注入的是**取用入口**而不是表本身：host 侧每次现取（用户在「设置 → 常规」换语言后，
    * 下一条起草出来的规则正文就是新语言，不需要重启）。本文件仍不读 settings——
    * 语言判定留在 host，这里只吃注入物（同 `rules` 端口的分法）。
    */
@@ -481,11 +481,11 @@ interface Observation {
 }
 
 /**
- * 一条教训在流水里的身份键：用于「规则面写失败 → 调用方重试」这一条窄路上的去重。
+ * 一条教训在流水里的身份键：用于「规则库写失败 → 调用方重试」这一条窄路上的去重。
  *
  * 取 report 入参里能判别"这是同一次发生"的全部字段：同一会话同一轮的同一条签名
  * 就是同一件事；detail 一起进键是为了不把"同一签名、不同细节"的两次真实发生
- * 折叠掉。ts 刻意不进键——重试时调用方递的 ts 就是新的。
+ * 并成一条。ts 刻意不进键——重试时调用方递的 ts 就是新的。
  */
 function lessonLedgerKey(rec: LessonRecord): string {
   return JSON.stringify([
@@ -657,7 +657,7 @@ export function normalizeRuleCardRow(value: unknown): RuleCard | null {
 
 /**
  * 教训行逐字段归一（JSONL 存量漂移容错）。与规则卡同一取向：category/signature
- * 之外的字段漂移不再整行丢弃，否则一次版本升级就把历史教训从管理面与蒸馏背景
+ * 之外的字段漂移不再整行丢弃，否则一次版本升级就把历史教训从管理界面与蒸馏背景
  * 里抹掉（丢掉的正是要拿去归纳规则的材料）。
  */
 function normalizeLessonRow(value: unknown): LessonRecord | null {
@@ -675,7 +675,7 @@ function normalizeLessonRow(value: unknown): LessonRecord | null {
     source: normalizeLessonSource(fieldOf(value, "source")),
     // 空白 category 会把所有漂移行折进蒸馏去重的同一个桶（键 = category+signature），
     // 与卡片归一（normalizeRuleCardRow 对 category 退 "unknown"）取同款兜底；保留行、
-    // 不让一条坏 category 把整条教训从读面抹掉。
+    // 不让一条坏 category 把整条教训从读取接口抹掉。
     category: category.trim().length > 0 ? category : "unknown",
     project: strField(fieldOf(value, "project"), "default"),
     signature,
@@ -708,7 +708,7 @@ function num(value: unknown, fallback: number, min = 0): number {
   return value;
 }
 
-/** commit 的改动计划返回值：write=false = 没有要落盘的改动（不写盘，也不算失败）。 */
+/** commit 的改动计划返回值：write=false = 没有要写到磁盘的改动（不写盘，也不算失败）。 */
 interface Planned<Value> {
   readonly value: Value;
   readonly write: boolean;
@@ -734,9 +734,9 @@ type ReportPlanKind = "created" | "candidate" | "violation" | "settled";
 interface ReportPlan {
   readonly kind: ReportPlanKind;
   readonly card: RuleCard;
-  /** 本次改动前的累计观察数。`justReady` 的边沿判据要拿它比门槛，不能只看改完后的值：
+  /** 本次改动前的累计观察数。`justReady` 的边沿判据要拿它比阈值，不能只看改完后的值：
    *  一次上报可能把 occurrences 跳过多个格（rejected 转回候选时把复发段整段并进来），
-   *  等值比较会整段漏掉；而门槛本身是设置项，下调之后 occurrences 已经大于门槛，
+   *  等值比较会整段漏掉；而阈值本身是设置项，下调之后 occurrences 已经大于阈值，
    *  等值比较永远不再成立。 */
   readonly previousOccurrences?: number;
 }
@@ -795,11 +795,11 @@ function trimmedStatement(statement: string | undefined): string | undefined {
  * 人工动作落地。返回动作有没有真的改了卡：
  * - "changed"：状态/正文/计数有实际变化，updatedAt 推进到 now，写盘。
  * - "no-statement"：arm/edit 需要非空正文而拿不到（缺省、空白）。空正文的规则一旦
- *   armed 会整段注入常驻注入面（prompt 侧不设 token 上限），一条没有内容的"规则"
+ *   armed 会整段注入常驻注入（prompt 侧不设 token 上限），一条没有内容的"规则"
  *   只挤占上下文；edit 空正文则是"什么都没改"。两种都不动卡，调用方回 400。
  * - "too-long"：生效正文超过 maxStatementChars。armed 正文整段注入每次会话的提示词，
  *   写入侧不设限时一次请求就能把它塞满；arm 继承存量正文时同样要判（旧数据不受写入
- *   上限约束，但不许借一次 arm 直接进注入面）。
+ *   上限约束，但不许借一次 arm 直接进注入）。
  * - "no-change"：edit 的正文与现文逐字相同。不碰正文也不推进 updatedAt——那会把
  *   "最后一次人工动作时间"污染成一个没有动作的时刻，还触发一轮整片 CAS 覆写。
  *
@@ -907,7 +907,7 @@ function byOccurrences(left: RuleCard, right: RuleCard): number {
  * primary 时（"单条 rejected 碎片"、"跨项目各自归并"两型）没有卡片被剔掉，但它
  * 的签名/正文就地改写成了稳定签名——这笔改写若因 `write: merged > 0` 被跳过，
  * 端口里仍是旧碎片，下一次装载再判一遍再跳过：迁移永不收敛，而调用方拿到的回执
- * 一切正常（commit 的 ok=true）。这正是"改了没存"最隐蔽的一型，故写面只认 dirty。
+ * 一切正常（commit 的 ok=true）。这正是"改了没存"最隐蔽的一型，故写入只认 dirty。
  */
 interface MergePass {
   readonly merged: number;
@@ -921,8 +921,8 @@ export class LessonStore {
   private readonly opts: StoreOptions & Required<Pick<StoreOptions, "lessonsFile" | "rules">>;
   private readonly repo: RulesRepository;
   private readonly now: () => number;
-  /** 上一次 report 的「流水已写、规则面没写成」记号（见 report 的注释）。
-   *  只活到下一次 report 成功或换了一条教训为止：它是**一次失败重试**的去重面，
+  /** 上一次 report 的「流水已写、规则库没写成」记号（见 report 的注释）。
+   *  只活到下一次 report 成功或换了一条教训为止：它是**一次失败重试**的去重，
    *  不是跨会话的幂等表——持久化幂等需要事件 id 与读侧重放，那是另一套东西。 */
   private pendingLedgerKey: string | null = null;
 
@@ -1047,7 +1047,7 @@ export class LessonStore {
       }
       if (!trustworthy) {
         // (a) 命名空间读不出可信值：写一律拒绝（哪怕端口递来了数组）。把"读不懂"当成
-        // "库里真没有"再覆写上去，等于替坏数据背书——坏内容保持原样等人修，读面已如实报空。
+        // "库里真没有"再覆写上去，等于替坏数据背书——坏内容保持原样等人修，读取接口已如实报空。
         return { ok: false, value: planned.value, trustworthy };
       }
       const outcome = await this.repo.save(cards, current.revision);
@@ -1100,14 +1100,14 @@ export class LessonStore {
       source,
       ts: Number.isFinite(record.ts) ? record.ts : now,
     };
-    // 流水（cache，单写者追加）与规则面（settings，CAS）分两笔：流水失败不挡规则
-    // 归并，规则面失败也不回滚流水——回执如实报 ok:false，调用方自己决定重试。
+    // 流水（cache，单写者追加）与规则库（settings，CAS）分两笔：流水失败不挡规则
+    // 归并，规则库失败也不回滚流水——回执如实报 ok:false，调用方自己决定重试。
     //
-    // 两笔之间没有事务，所以"重试"必须在这里收口：上一次已经写过流水、只是规则面
+    // 两笔之间没有事务，所以"重试"必须在这里统一处理：上一次已经写过流水、只是规则库
     // 没写成时，调用方重试同一条教训**不再追加第二行**——否则一次 CAS 冲突就在流水
     // 里留下两条"这条教训发生过"，而规则卡只加了一次，两个计数从此对不上。
     // 反过来（流水没写成）不做补偿：流水是 cache，少一行只影响展示，补写反而要在
-    // 规则面已经生效之后再造一次写失败面。
+    // 规则库已经生效之后再造一次写失败。
     const ledgerKey = lessonLedgerKey(rec);
     const alreadyAppended = ledgerKey === this.pendingLedgerKey;
     if (!alreadyAppended) {
@@ -1161,7 +1161,7 @@ export class LessonStore {
   private accumulate(rule: RuleCard, obs: Observation): Planned<ReportPlan> {
     const { rec, now, rawSignature, signature } = obs;
     // 改完之后的 occurrences 可能跳过好几格（rejected 转回候选时把复发段整段并进来），
-    // 边沿判据要拿改动前的这一位与门槛比。
+    // 边沿判据要拿改动前的这一位与阈值比。
     const previousOccurrences = rule.occurrences;
     rule.lastSeenAt = rec.ts;
     rule.updatedAt = now;
@@ -1179,7 +1179,7 @@ export class LessonStore {
       // 「需用户拍板」不是「已确认违规」：上报方把 `needsUserConfirmation: true` 打在
       // evidence 里，表示它**判据看不见**这段内容（nestedShellUnconfirmed 一类），
       // 既没确认危险也没有一次干净命中。把它计进复发率会让一条从不产生违规的规则
-      // 凭"问过几次"累积到降级门槛，且分母（suppressed）永远是 0，卡只会停在不可判定。
+      // 凭"问过几次"累积到降级阈值，且分母（suppressed）永远是 0，卡只会停在不可判定。
       // 这类上报只补证据，不动任何度量位。
       if (needsUserConfirmationOf(rec)) {
         return { value: { kind: "settled", card: rule }, write: true };
@@ -1203,7 +1203,7 @@ export class LessonStore {
     // archived/demoted：只补证据不复活（复活是人工动作，卡片上点）。
     // 三条路各自的边界（红线：**机器永不把 rejected 写成 armed**）：
     //   - 未到 reviveThreshold：仍 rejected，只多一条证据 + 一次 recurrences；
-    //   - 到达阈值：转 candidate 待人工重审（转回的是"候选"，注入面仍然不认候选卡）；
+    //   - 到达阈值：转 candidate 待人工重审（转回的是"候选"，注入仍然不认候选卡）；
     //   - 人工 arm：只有 ruleAction(id,"arm") 能把 rejected 直接变 armed。
     // 本方法的任何计数都只改本次读取的副本：写失败（两类失败皆然）时端口里那行原样
     // 不动，于是"被人工拒掉的规则"不可能因为一次没存住的上报就活过来。
@@ -1214,7 +1214,7 @@ export class LessonStore {
   }
 
   /** rejected 卡的复发计数：达阈值则转回候选（返回是否转回）。
-   *  转回的落点是 candidate（待人重审），不是 armed，也不清证据——机器不替人升格。 */
+   *  转回的目标状态是 candidate（待人重审），不是 armed，也不清证据——机器不替人升格。 */
   private noteRecurrence(rule: RuleCard, now: number): boolean {
     rule.recurrences += 1;
     if (rule.recurrences < this.reviveThreshold()) {
@@ -1230,19 +1230,19 @@ export class LessonStore {
     return true;
   }
 
-  /** 组装 report() 回执：ready 只在确实落盘后才报（磁盘没存住就催人工审 = 点空）。 */
+  /** 组装 report() 回执：ready 只在确实写到磁盘后才报（磁盘没存住就催人工审 = 点空）。 */
   private receiptFor(outcome: Committed<ReportPlan>): ReportReceipt {
     const { ok, value } = outcome;
     const { kind, card, previousOccurrences } = value;
     const threshold = this.threshold();
-    // ready 必须同时看落盘：磁盘没存住就催人工审，人点下去是一张不存在的卡。
+    // ready 必须同时看写到磁盘：磁盘没存住就催人工审，人点下去是一张不存在的卡。
     const ready = ok && (kind === "created" ? threshold <= 1 : card.occurrences >= threshold);
-    // 刚越过门槛的那一次：这是**边沿**，与 ready 的**电平**不是一回事。
-    // 调用方拿 ready 打日志会在越过门槛之后每一条上报各打一次（上游持续复发时就是刷屏），
-    // 而"该来审这张卡了"这件事在每个门槛上只发生一次。门槛为 1 时建卡即越线。
-    // 判据是「改动前没过门槛、改动后过了」，不是「改动后恰好等于门槛」：一次上报可能把
+    // 刚越过阈值的那一次：这是**边沿**，与 ready 的**电平**不是一回事。
+    // 调用方拿 ready 打日志会在越过阈值之后每一条上报各打一次（上游持续复发时就是刷屏），
+    // 而"该来审这张卡了"这件事在每个阈值上只发生一次。阈值为 1 时建卡即越线。
+    // 判据是「改动前没过阈值、改动后过了」，不是「改动后恰好等于阈值」：一次上报可能把
     // occurrences 跳过好几格（rejected 转回候选时把复发段整段并进来），等值比较会整段漏掉；
-    // 门槛又是设置项，下调之后 occurrences 已大于门槛，等值比较永远不再成立。
+    // 阈值又是设置项，下调之后 occurrences 已大于阈值，等值比较永远不再成立。
     const justReady =
       ready &&
       (kind === "created"
@@ -1263,7 +1263,7 @@ export class LessonStore {
   }
 
   /** 规则正文写入上限（StoreOptions.maxStatementChars，归一 1-100000，默认 4000）。
-   *  按 UTF-16 码元计：这条闸门护的是"注入面的体量"，不是排版宽度。 */
+   *  按 UTF-16 码元计：这条上限管的是"注入的体量"，不是排版宽度。 */
   private maxStatementChars(): number {
     const value = Number(this.opts.maxStatementChars);
     return Number.isFinite(value) && value >= 1
@@ -1333,7 +1333,7 @@ export class LessonStore {
       );
       return false;
     }
-    // 读不可信（usable:false）时计划折叠成空转：一笔 samples/suppressed 都没记、也没进
+    // 读不可信（usable:false）时计划退化成什么都不做：一笔 samples/suppressed 都没记、也没进
     // 库，outcome 却是 ok:true + value:false——回执 false，别让这次暴露的丢失在日志里
     // 完全无迹可查（规则库侧的 corrupt 告警说的是"读不懂"，这条说的是"因此少记了账"）。
     if (!outcome.trustworthy) {
@@ -1363,7 +1363,7 @@ export class LessonStore {
   }
 
   /** 人工动作：arm（可携改写后的 statement）/ reject / demote / archive / edit / revive。
-   *  返回 not-found = 可信读面上确实无此卡（id 错了，重试也没用）；persist-failed = 这一次
+   *  返回 not-found = 可信读取接口上确实无此卡（id 错了，重试也没用）；persist-failed = 这一次
    *  没存住（含端口读不懂的那种），调用方提示重试，绝不当成"规则不存在"；
    *  invalid-statement = 动作被正文判据拒绝（库未动）；statement-too-long = 生效正文
    *  超过 maxStatementChars（库同样没动）；unchanged = 请求的终态本就成立。 */
@@ -1431,7 +1431,7 @@ export class LessonStore {
         // 查找键，第二张同键卡永远查不到（新观测堆在没人看的卡上），人工决定也会被
         // 蒸馏路径绕过重开一张。故一律并回已有卡。
         // 只有候选卡消费蒸馏产出（计 occurrences + 追加证据）；rejected/armed/archived/
-        // demoted 的状态与证据都由人拍板，蒸馏一概不改。证据这一面尤其不能松：落盘时
+        // demoted 的状态与证据都由人拍板，蒸馏一概不改。证据部分尤其不能松：写到磁盘时
         // capEvidence 只留最近几条（见 lib/rules-layout.ts），而蒸馏正文是模型产出——
         // 模型连报几条同键条目就能把人工卡此前的真实证据整批挤出，且状态与计数一格不动，
         // 任何日志都不会发现。想留下这一笔，就在人审时自己写进卡片正文。
@@ -1507,9 +1507,9 @@ export class LessonStore {
       const pass = this.mergeFragmentsIn(cards);
       return { value: pass.merged, write: pass.dirty };
     });
-    // 与 runDecay 同一口径：计划值不等于落盘值。commit 在 CAS 耗尽/端口拒写时一次都
+    // 与 runDecay 同一种做法：计划值不等于写到磁盘值。commit 在 CAS 耗尽/端口拒写时一次都
     // 没写，盘上一张卡未动——把并掉的张数照原样返回，调用方的 "migrated N fragment
-    // rule(s)" 日志就把未落盘的归并当成了事实。
+    // rule(s)" 日志就把未写到磁盘的归并当成了事实。
     if (!outcome.ok && outcome.value > 0) {
       console.error(
         `[lesson-loop] fragment migration: ${String(outcome.value)} merge(s) were NOT persisted`,
@@ -1660,7 +1660,7 @@ export class LessonStore {
   /**
    * 把若干 armed 碎片的决定与度量折进主卡。
    *
-   * 人工"已升格"的决定优先于卡面状态：碎片里有 armed 而主卡只是候选时，归并后必须
+   * 人工"已升格"的决定优先于卡片状态：碎片里有 armed 而主卡只是候选时，归并后必须
    * 仍是 armed（否则升格过的规则静默退回候选，注入随之停止）。
    *
    * 度量要**逐张累加**：arm 期计数属于各自那次升格，而这里可能不止一张 armed 碎片
@@ -1686,7 +1686,7 @@ export class LessonStore {
       // 归并是**机器**动作，它不能替人撤销一次决定 —— 与 accumulate() 那条「机器永不把
       // rejected 写成 armed」是同一条红线，`STATUS_AUTHORITY` 也把这三档排在 armed 之后。
       // 旧实现只看主卡「当前是不是 armed」，于是 existing 命中即当主卡、随后 inheritArmed
-      // 无条件写 armed，把一次人工否决整个翻掉，规则重新进入注入面。
+      // 无条件写 armed，把一次人工否决整个翻掉，规则重新进入注入。
       for (const source of armedSources) {
         LessonStore.foldMetrics(primary, source);
       }
@@ -1712,7 +1712,7 @@ export class LessonStore {
    *  整片取代会把锚点拉早，decayVerdict 的 `now - anchor >= decayDays` 提前成立，
    *  一张刚升格的卡会被立刻判降级。lastViolationAt/lastSuppressedAt 同属"最近一次"
    *  语义，同样不能被更早的碎片覆盖回去。
-   *  源卡缺这个键时仍按原语义**删键**（不是留着主卡旧值）：那一路的口径是"这次升格
+   *  源卡缺这个键时仍按原语义**删键**（不是留着主卡旧值）：那一路的规则是"这次升格
    *  没有时间戳可承"，留一个陈旧锚点会被 decayVerdict 当成真的升格时刻。 */
   private static inheritArmed(primary: RuleCard, armedSource: RuleCard): void {
     primary.status = "armed";
@@ -1756,9 +1756,9 @@ export class LessonStore {
    *   - 没存 cwd 的存量卡原样留下。project 是跨系统（记忆网关 agent_id）的桶名，
    *     猜错一次就把别的项目的规则注进当前会话，宁可不迁；
    *   - 重算后与别的卡撞同 (project, category, signature) 键 → 归并，主卡由人工
-   *     状态决定（见 pickMergePair），证据/观察次数按 mergeFragment 折叠；
+   *     状态决定（见 pickMergePair），证据/观察次数按 mergeFragment 并入主卡；
    *   - 幂等：第二次跑每张卡的 project 都已等于 deriveProjectKey(cwd) → 零改动、
-   *     零落盘（不会与 migrateFragmentRules 互相回退）。
+   *     零写到磁盘（不会与 migrateFragmentRules 互相回退）。
    * 已规范绝对路径的输入产出的键与旧实现逐字节相同，所以"正常机器"上这里是 no-op。
    */
   public async migrateProjectKeys(): Promise<{ rewrites: number; merged: number }> {
@@ -1779,7 +1779,7 @@ export class LessonStore {
       }
       return { value: { rewrites, merged: this.mergeProjectKeyCollisions(cards) }, write: true };
     });
-    // 与 runDecay / migrateFragmentRules 同一口径：CAS 耗尽 / 端口拒写时一次都没落盘，
+    // 与 runDecay / migrateFragmentRules 同一种做法：CAS 耗尽 / 端口拒写时一次都没写到磁盘，
     // "rewrote N / merged M" 的调用方日志不许把计划当事实报。
     // 两个计划值合并成一个判据（而不是 `a > 0 || b > 0`）：写只可能在 rewrites > 0 时发生，
     // 短路会让 `merged > 0` 成为一条永远不求值的分支，覆盖率门禁把它当未覆盖。
@@ -1821,11 +1821,11 @@ export class LessonStore {
   }
 
   /** 撞键合并前把被并卡的**生命周期度量**累加进主卡：两张 armed 撞同键时被并的那张
-   *  带着自己的 violation/suppressed/samples，而 mergeFragment 只折叠观察类字段
+   *  带着自己的 violation/suppressed/samples，而 mergeFragment 只并观察类字段
    *  （occurrences/evidence/sources/lastSeenAt/statement/armedAt）——不累加就等于把
    *  一条规则真实被测到的证据抹掉，复发率分母随之变小。三个时间戳取较晚者（锚点不拉早，
    *  免得刚并完就判"不可判定"）；源卡缺值时才删键（undefined 与删键在 JSON 往返后语义
-   *  不同，decayVerdict 的锚点回退链会被 undefined 干扰，同 inheritArmed 的口径）。 */
+   *  不同，decayVerdict 的锚点回退链会被 undefined 干扰，同 inheritArmed 的规则）。 */
   private static foldMetrics(primary: RuleCard, extra: RuleCard): void {
     primary.violation += extra.violation;
     primary.suppressed += extra.suppressed;
@@ -1854,7 +1854,7 @@ export class LessonStore {
     return decayVerdict(rule, this.policy(), this.now()) === "undeterminable";
   }
 
-  /** 周期衰减：对全部 armed 规则执行裁决。降级会改状态并落盘；"不可判定"只是派生
+  /** 周期衰减：对全部 armed 规则执行裁决。降级会改状态并写到磁盘；"不可判定"只是派生
    *  提示态（状态仍 armed，等人处理），不改盘。auto-archive 已被不可判定取代。 */
   public async runDecay(): Promise<{ demoted: number; undeterminable: number }> {
     const now = this.now();
@@ -1876,7 +1876,7 @@ export class LessonStore {
     });
     const { undeterminable } = outcome.value;
     // demoted 只在**真的写进库**之后才作数：写失败时库里的状态还是 armed，
-    // 报出 demoted 会让调用点以为降级已生效（/stats 与「N demoted」日志同一条口径）。
+    // 报出 demoted 会让调用点以为降级已生效（/stats 与「N demoted」日志同一条规则）。
     const demoted = outcome.ok ? outcome.value.demoted : 0;
     if (outcome.value.demoted > 0 && !outcome.ok) {
       console.error(
@@ -1901,7 +1901,7 @@ export class LessonStore {
     return limit > 0 ? out.slice(-limit) : out;
   }
 
-  /** 有效教训数：与 recentLessons 同一归一口径（normalizeLessonRow 过滤后的条数），
+  /** 有效教训数：与 recentLessons 同一归一规则（normalizeLessonRow 过滤后的条数），
    *  而不是 JSONL 原始行数——原始行数把"可解析但 category 漂移"之类读侧会兜底/丢弃的
    *  行也计进去，界面的"计数"会大于"列表全量长度"，两个数字对不上。 */
   public lessonsCount(): number {

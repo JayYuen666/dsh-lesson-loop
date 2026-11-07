@@ -1,6 +1,6 @@
-// 客户端规则读面（src/rules-reader.ts）的挂载纪律直测。
+// 客户端规则读取接口（src/rules-reader.ts）的挂载纪律直测。
 //
-// 为什么单独立一份：这份读取器是**卡片生命周期内唯一**持有远程面的地方，它的缓存语义
+// 为什么单独立一份：这份读取器是**卡片生命周期内唯一**持有远程通道的地方，它的缓存语义
 // （挂载幂等、失败不缓存）没有任何页面级用例能观察到 —— 端到端只会看到"数据读不到"，
 // 而读不到既可能是网关拒绝了、也可能是它再也没去问过网关。这里的判据是后者：
 // `$mount` 的**调用次数**。
@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { createRulesReader } from "../src/rules-reader.ts";
 import { RULES_REMOTE_NAMESPACE } from "../lib/rules-shape.ts";
 
-/** 一次成功回执的命名空间服务面（四个方法齐全，`isRulesNamespace` 才认）。 */
+/** 一次成功回执的命名空间宿主服务（四个方法齐全，`isRulesNamespace` 才认）。 */
 function namespaceOf(statsValue: Record<string, unknown>): Record<string, unknown> {
   return {
     stats: async () => ({ ok: true, value: statsValue }),
@@ -20,7 +20,7 @@ function namespaceOf(statsValue: Record<string, unknown>): Record<string, unknow
   };
 }
 
-/** 客户端上下文替身：`remote` 给挂载面，`remote.<namespace>` 给挂载后的服务面。 */
+/** 客户端上下文替身：`remote` 给挂载入口，`remote.<namespace>` 给挂载后的宿主服务。 */
 function ctxOf(
   remote: unknown,
   service?: unknown,
@@ -35,7 +35,7 @@ function ctxOf(
   };
 }
 
-describe("客户端规则读面：$mount 的缓存纪律", () => {
+describe("客户端规则读取接口：$mount 的缓存纪律", () => {
   it("挂载成功后不重复挂载（同一次会话里反复拉取只挂一次）", async () => {
     let mounts = 0;
     const remote = {
@@ -92,7 +92,7 @@ describe("客户端规则读面：$mount 的缓存纪律", () => {
         };
       },
     };
-    // 第一次：服务面缺席（用盒子持有，补上之后再读一次）
+    // 第一次：宿主服务缺席（用盒子持有，补上之后再读一次）
     const service: { current: unknown } = { current: null };
     const ctx = {
       get: (name: string) => {
@@ -105,13 +105,13 @@ describe("客户端规则读面：$mount 的缓存纪律", () => {
     const reader = createRulesReader(ctx);
     assert.ok(reader !== undefined);
     await assert.rejects(async () => reader.stats(), /未提供/u);
-    // 服务面补上之后照常可用，且挂载仍是缓存的那一次
+    // 宿主服务补上之后照常可用，且挂载仍是缓存的那一次
     service.current = namespaceOf({ armed: 2 });
     assert.deepEqual(await reader.stats(), { armed: 2 });
     assert.equal(mounts, 1, "服务面缺席不是挂载失败，不该触发重挂");
   });
 
-  it("没有远程面的部署：返回 undefined（卡片照常渲染，数据面显示读不到）", () => {
+  it("没有远程通道的部署：返回 undefined（卡片照常渲染，数据那一栏显示读不到）", () => {
     assert.equal(
       createRulesReader({
         get: () => null,

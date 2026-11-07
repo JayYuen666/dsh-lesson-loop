@@ -62,7 +62,7 @@ describe("profile-bundle 解析守卫", () => {
     );
     assert.equal(configFormsEntryId('const a = ctx.configForms.get( "plain" );'), "plain");
     // 嵌套括号：实参按深度取全；既非字面量也非标识符的实参（调用表达式）响亮失败，
-    // 报错点名完整实参——漂移针不许拿解析不动的实参继续跑。
+    // 报错点名完整实参——产物漂移检查不许拿解析不动的实参继续跑。
     assert.throws(
       () => configFormsEntryId("const a = ctx.configForms.get(resolve(ns));"),
       /实参不是字面量或标识符（resolve\(ns\)）/u,

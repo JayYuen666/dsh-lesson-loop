@@ -1,4 +1,4 @@
-// host 全链测试：mock ctx 驱动 lesson-loop 的注册面（0.2.1-alpha.2 隐式设置投影 + 页面策略）
+// host 全链测试：mock ctx 驱动 lesson-loop 的注册入口（0.2.1-alpha.2 隐式设置投影 + 页面策略）
 // 与服务供给 / 上报 / 收尾清算 / 会话开始注入 / webServer 端点（csrf）/ /lessons-digest
 // 命令 / 衰减定时器。
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
@@ -48,15 +48,15 @@ interface FakeRes {
 }
 
 /**
- * 0.2.1-alpha.2 的 settings 服务面（`register`/`get`/`installSection` 已被宿主移除）：
+ * 0.2.1-alpha.2 的 settings 宿主服务（`register`/`get`/`installSection` 已被宿主移除）：
  * describe（读，含跨命名空间的 locale）+ update（规则库 CAS 写）+ configure（页面策略）。
- * 对照 installed `@deepseek-ai/dsh-settings/lib/types/index.d.ts`：SettingsForms 残面是
+ * 对照 installed `@deepseek-ai/dsh-settings/lib/types/index.d.ts`：SettingsForms 残缺是
  * `configure`(:80) / `prepareDocument`(:91) / `describe`(:96) / `update`(:102) /
  * `replace`(:108) / `mutate`(:114)。本包只装用得到的三件——写走 `update(ns, patch,
  * expectedRevision)`（merge 写，数组键整片覆盖，正是规则库要的语义），不用 `mutate`
  * （那是给脱敏视图做路径级编辑、避免覆掉 secret 的路子，本包一段里没有 secret）。
  * ⚠ 这份清单**不许**再补回 register/get：假件一旦有它们，host.ts 里"没有注册可被打回"
- * 那几条降级分支就只能在假绿里躺着（真宿主 0.2.1-alpha.2 根本没有那两个方法）。
+ * 那几条降级分支就只能在误判通过里躺着（真宿主 0.2.1-alpha.2 根本没有那两个方法）。
  */
 interface SettingsSurface {
   describe: () => unknown[];
@@ -117,7 +117,7 @@ interface FakeCtx {
   reflect: { provide: (name: string, value: unknown) => () => void };
   get: (name: string) => unknown;
   /** 官方 `ctx.sessionQuery.observeSession()` 交回的事件流（/lessons-digest 的差评来源）。
-   *  迁移前这一档由 `agent.session.snapshotEvents()` 给；官方已把那条同步读面标为
+   *  迁移前这一档由 `agent.session.snapshotEvents()` 给；官方已把那条同步读取接口标为
    *  `@deprecated`，host 侧改走 sessionQuery（见 host.ts 的 digestEvents），假件因此挪到这里。 */
   sessionEvents: Record<string, unknown>[];
   /** `observeSession` 的调用记录：投影模式必须显式为 none（只读事件时不该算全投影）。 */
@@ -141,14 +141,14 @@ function textOf(section: { text: string | ((context: unknown) => string) } | nul
   return text ?? "";
 }
 
-/** 导出 Config schema 的字段名清单（单源：不手写，漏字段就是测试的事）。 */
+/** 导出 Config schema 的字段名清单（唯一来源：不手写，漏字段就是测试的事）。 */
 const CONFIG_KEYS: string[] = Object.keys(
   (plugin.Config as unknown as { dict: Record<string, unknown> }).dict,
 );
 
 /**
  * 复刻 cordis 交进 apply 的那份 Config：每个 volatile 字段一枚**稳定引用**，其 get() 现读
- * 假件解析值——与真实 Volatile 的"引用不变、值可变"同构（官方读面只有 `get()`，见
+ * 假件解析值——与真实 Volatile 的"引用不变、值可变"同构（官方读取接口只有 `get()`，见
  * vendor/cosmokit/src/volatile.ts:9-11；createVolatile 的返回值另挂 symbol 键 `[write]`，
  * 见同文件 :39-45，故按 `get()` 认形状即可）。
  */
@@ -257,7 +257,7 @@ function makeCtx(
       return ctx.services[name] ?? ctx.provided[name];
     },
     /** ctx.inject(deps, fn)：cordis 立即用带齐依赖的子上下文回调一次——依赖名对应的
-     *  服务从本假件的服务面取（缺位即 undefined，与真宿主"还没来"同形）。 */
+     *  服务从本假件的宿主服务取（缺位即 undefined，与真宿主"还没来"同形）。 */
     inject(deps: readonly string[], attach: (child: unknown) => void) {
       ctx.injectDeps.push([...deps]);
       const injected = Object.fromEntries(
@@ -268,9 +268,9 @@ function makeCtx(
         settings: {
           configure: ctx.settings.configure,
         },
-        // 子上下文的 effect 与父面**同构**：disposer 一样进 ctx.effects。少了这一层，
+        // 子上下文的 effect 与父上下文**同构**：disposer 一样进 ctx.effects。少了这一层，
         // "卸载 → 四条路由全部注销"那条断言就失去了观测点（旧实现把路由效应挂在父 ctx 上，
-        // disposer 自然在清单里；改挂子 ctx 后若子面丢弃 disposer，注销语义就成了空话）。
+        // disposer 自然在清单里；改挂子 ctx 后若子上下文丢弃 disposer，注销语义就成了空话）。
         effect(factory: () => (() => unknown) | undefined) {
           const disposer = factory();
           if (typeof disposer === "function") {
@@ -289,7 +289,7 @@ function makeCtx(
       }
     },
   };
-  // 默认服务面（测试按需覆盖 services 字段）
+  // 默认宿主服务（测试按需覆盖 services 字段）
   ctx.services["webServer"] = {
     // 宿主 0.2.1-alpha.2 起 `Config.host` 是任意本机 IP 字面量（通配地址载入即拒），
     // 替身照这个形状给一枚，别再留 undefined 让绑定侧的判据没机会跑。
@@ -319,7 +319,7 @@ function makeCtx(
     },
   };
   // 蒸馏要用的会话事件流经**官方** `ctx.sessionQuery.observeSession()` 取（host 侧
-  // digestEvents 的读面）：默认空事件流，个别用例改 ctx.queryEvents。
+  // digestEvents 的读取接口）：默认空事件流，个别用例改 ctx.queryEvents。
   ctx.services["sessionQuery"] = {
     observeSession: async (sessionId: unknown, options?: { projectionMode?: string }) => {
       ctx.observeCalls.push({ sessionId, options });
@@ -349,9 +349,9 @@ function apply(ctx: FakeCtx): void {
 }
 
 /** rule-action 端点 handler 是 fire-and-forget（同步 wrapper + void 内部 async），
- *  落盘响应在微任务队列完成；setImmediate（宏任务）可保证其已 flush（防时序假设）。 */
+ *  写到磁盘响应在微任务队列完成；setImmediate（宏任务）可保证其已 flush（防时序假设）。 */
 
-// ── 端点/服务面公共小件 ───────────────────────────────────────────────────
+// ── 端点/宿主服务公共小件 ───────────────────────────────────────────────────
 
 // ── 夹具字面量（本文件内重复的输入数据与期望值，逐枚命名）───────────────
 // 全部是测试侧自己写的字面量：本文件从不指向 lib/prompt.ts 的 PLUGIN_NAME/SECTION_NAME
@@ -386,10 +386,10 @@ const SIGNATURE_CARGO_TEST = "cargo test";
 const rulesOf = (ctx: FakeCtx): RuleCard[] =>
   cardsOfValue(ctx.rulesProvider.peek(SETTINGS_NAMESPACE)).cards;
 
-/** lessonLoop 服务面的动作名（与 host 的 ruleAction 参数同集）。 */
+/** lessonLoop 宿主服务的动作名（与 host 的 ruleAction 参数同集）。 */
 type ActionName = "arm" | "reject" | "demote" | "archive" | "edit" | "revive";
 
-/** lessonLoop 服务面投影（测试只用到这些方法；report/ruleAction 自规则库进 settings 起即异步）。 */
+/** lessonLoop 宿主服务投影（测试只用到这些方法；report/ruleAction 自规则库进 settings 起即异步）。 */
 interface LoopService {
   report: (input: Record<string, unknown>) => Promise<ReportReceipt>;
   pass: (input: Record<string, unknown>) => { ok: boolean };
@@ -551,7 +551,7 @@ interface SchemaNode {
   dict?: Record<string, SchemaNode>;
 }
 
-/** 导出 Config schema 的 dict（单源：字段名与元数据都从宿主实际读的那份来）。 */
+/** 导出 Config schema 的 dict（唯一来源：字段名与元数据都从宿主实际读的那份来）。 */
 function configDict(): Record<string, SchemaNode> {
   return (plugin.Config as unknown as SchemaNode).dict ?? {};
 }
@@ -630,7 +630,7 @@ const EDITABLE_FIELDS = [
   "sectionEnabled",
 ];
 
-// ── 非回环服务面判据的两枚夹具（描述块外声明：oxlint 的 consistent-function-scoping
+// ── 非回环宿主服务判据的两枚夹具（描述块外声明：oxlint 的 consistent-function-scoping
 //    不许把只读环境表的函数嵌进 describe，consistent-return 又禁 `return undefined`）──
 
 /**
@@ -765,7 +765,7 @@ describe("host：lesson-loop 的宿主半", () => {
   });
 
   describe("report 上报链", () => {
-    it("教训落盘 + 候选卡归并 + 达阈值 ready", async () => {
+    it("教训写到磁盘 + 候选卡归并 + 达阈值 ready", async () => {
       const ctx = makeCtx();
       apply(ctx);
       const svc = loopService(ctx);
@@ -905,7 +905,7 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(svc.rules()[0]?.samples, 1, "退出清算必须补记这条 samples");
     });
 
-    it("卸载时闭环已关闭 → 不做退出清算（与事件版同一闸门）", async () => {
+    it("卸载时闭环已关闭 → 不做退出清算（与事件版同一条规则）", async () => {
       const ctx = makeCtx();
       apply(ctx);
       const svc = loopService(ctx);
@@ -997,7 +997,7 @@ describe("host：lesson-loop 的宿主半", () => {
       // 声明的持久消息位拒收退役包装 `{ kind: 'plugin', plugin }`，抛
       // "format v4 message requires a producer-owned source kind"：agent.inject 的
       // 消息经 inbox 落 `agent/inbox/spliced`（agent-loop/src/inbox.ts 的 inserted
-      // 数组，sources.ts 遍历的持久位之一），一条这样的注入就会把整个会话的落盘
+      // 数组，sources.ts 遍历的持久位之一），一条这样的注入就会把整个会话的写到磁盘
       // 拒绝掉。`form` 是本插件自有元数据，迁移表原样保留——身份变了它不能丢。
       const ctx = makeCtx();
       apply(ctx);
@@ -1029,7 +1029,7 @@ describe("host：lesson-loop 的宿主半", () => {
 
     it("注入条数上限：只注入最新 N 条、帧尾说明还剩多少，日志报 injected X of Y", async () => {
       // armed 只能人工升格、"零干净命中"的卡又永不自动降级或归档 ⇒ 条数没有自动收敛
-      // 路径。这条上限是唯一兜住"注入面单调增长"的地方，故它自己也要有人钉。
+      // 路径。这条上限是唯一兜住"注入单调增长"的地方，故它自己也要有人钉。
       const ctx = makeCtx({ value: { maxInjectedRules: 2 } });
       const info = vi.spyOn(console, "info").mockImplementation(() => {
         // 断言在下方
@@ -1037,7 +1037,7 @@ describe("host：lesson-loop 的宿主半", () => {
       apply(ctx);
       const svc = loopService(ctx);
       // 三个**不同类别**各自成卡：同类别会被折叠到类别级稳定签名，三张会变一张。
-      // 三次上报必须**串行**（后一次要看见前一次落盘的规则库）。逐段 await 写在
+      // 三次上报必须**串行**（后一次要看见前一次写到磁盘的规则库）。逐段 await 写在
       // 循环里会被 no-await-in-loop 拦，所以把「上报 + 升格」收成一个 helper，循环体只调用它。
       await armingReport(svc, CATEGORY_GATE_FAILURE, "gate-1");
       await armingReport(svc, CATEGORY_TRANSIENT_FAILURE, "transient-1");
@@ -1226,9 +1226,9 @@ describe("host：lesson-loop 的宿主半", () => {
       }
     });
 
-    /** 官方包（@deepseek-ai/dsh-home-paths）口径：空白 $DSH_HOME 视同未设。旧实现自带
+    /** 官方包（@deepseek-ai/dsh-home-paths）规则：空白 $DSH_HOME 视同未设。旧实现自带
      *  "DSH_HOME/HOME 都取不到就抛"的三态回退，那条分支随自实现路径解析一起删掉——
-     *  解析归官方包，插件不再自己造失败口径。 */
+     *  解析归官方包，插件不再自己造失败规则。 */
     it("DSH_HOME 只有空白 → 按未设回退，绝不落进空白目录", () => {
       const previousDshHome = process.env["DSH_HOME"];
       const previousHome = process.env["HOME"];
@@ -1325,8 +1325,8 @@ describe("host：lesson-loop 的宿主半", () => {
     });
 
     // 事件流的取数已迁到官方 `ctx.sessionQuery.observeSession()`（旧写法是
-    // `agent.session.snapshotEvents()`，官方把那条同步读面标了 @deprecated）。
-    // 下面几条钉的是迁移后必须仍然成立的降级口径：**任一条读不到都只少背景，不炸命令**。
+    // `agent.session.snapshotEvents()`，官方把那条同步读取接口标了 @deprecated）。
+    // 下面几条钉的是迁移后必须仍然成立的降级规则：**任一条读不到都只少背景，不炸命令**。
     it("事件流读不到的两条降级：蒸馏仍成功（差评数 0）", async () => {
       const llm = {
         async *stream() {
@@ -1343,7 +1343,7 @@ describe("host：lesson-loop 的宿主半", () => {
       apply(withId);
       const first = await withId.command?.handler(digestInvocation());
       assert.equal(first?.kind, "success", "空事件流只是少背景");
-      // 2. 递来的会话**没有 id**：按 sessionId 查询这一步无法发起（旧同步读面不需要 id，
+      // 2. 递来的会话**没有 id**：按 sessionId 查询这一步无法发起（旧同步读取接口不需要 id，
       //    迁移后这是一道新增的守卫——它挡的是"命令在半截 invocation 上被调用"这一真实形态）。
       const noId = makeCtx();
       noId.services["llm"] = llm;
@@ -1396,7 +1396,7 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(result?.kind, "success");
     });
 
-    it("observation.events 不是数组（契约外交付）→ 退空背景且类型面不被收窄成 any", async () => {
+    it("observation.events 不是数组（契约外交付）→ 退空背景且类型上不被收窄成 any", async () => {
       const ctx = makeCtx();
       ctx.services["llm"] = {
         async *stream() {
@@ -1520,7 +1520,7 @@ describe("host：lesson-loop 的宿主半", () => {
 
   describe("ctx 契约与行 config 底座", () => {
     it("ctx 不满足 HostCtx 结构 → 急停抛错（不用断言糊过去）", () => {
-      // 核验的是 0.2.1-alpha.2 的实际调用面：effect/on 接线、inject+fiber 挂页面策略、
+      // 核验的是 0.2.1-alpha.2 的实际调用形态：effect/on 接线、inject+fiber 挂页面策略、
       // settings.describe 做 locale 跨命名空间读与规则库读。缺任一项都是集成错误。
       assert.throws(() => {
         plugin.apply(null as never, {} as never);
@@ -1556,7 +1556,11 @@ describe("host：lesson-loop 的宿主半", () => {
       const ctx = makeCtx({ value: { promoteThreshold: 7 } });
       apply(ctx);
       const stats = loopService(ctx).stats()["config"] as Record<string, unknown>;
-      assert.equal(stats["promoteThreshold"], 7, "行 config 的覆盖项必须经 schema 解析后抵达闸门");
+      assert.equal(
+        stats["promoteThreshold"],
+        7,
+        "行 config 的覆盖项必须经 schema 解析后才落到生效配置",
+      );
       assert.equal(stats["decayDays"], 30, "行 config 没写的字段仍是 schema 默认（base 层已移除）");
       assert.equal(stats["maxLessonsBytes"], 0, "0 = 不设上限这条默认没被写歪");
       // 设置卡改完下一个读即生效：同一枚引用、不重挂载。
@@ -1588,7 +1592,7 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.notEqual(configIssues({ decayDays: 0 }), undefined, "min 1 必须被拒");
       // 规则库与开关同段之后，这一条从"锦上添花"变成了硬要求：条目 Config 的校验发生在
       // cordis 装载期且**无处 catch**（抛错 = 整条插件不加载、开关与服务一起没）。人改坏
-      // rules 只能让规则面降级，不许打死别的东西——所以这个字段是 .loose() 的。
+      // rules 只能让规则库降级，不许打死别的东西——所以这个字段是 .loose() 的。
       assert.equal(
         configIssues({ [RULES_FIELD]: "用户手改坏的存量段" }),
         undefined,
@@ -1618,13 +1622,13 @@ describe("host：lesson-loop 的宿主半", () => {
     );
   });
 
-  describe("规则面降级：装载不许被存量数据或半装配炸断", () => {
-    it("settings 没有 CAS 面（缺 update）⇒ 记 error 日志、服务与开关面照常装载", () => {
+  describe("规则降级：装载不许被存量数据或半装配炸断", () => {
+    it("settings 没有 CAS 能力（缺 update）⇒ 记 error 日志、服务与开关照常装载", () => {
       const error = vi.spyOn(console, "error").mockImplementation(() => {
         // 断言在下方
       });
       const ctx = makeCtx();
-      // 留 describe（ctx 契约要求它）、拿掉 update：isSettingsProvider 认不出这套半装配的面。
+      // 留 describe（ctx契约要求它）、拿掉 update：isSettingsProvider 认不出这套半装配的类型。
       const surface = ctx.settings as unknown as Record<string, unknown>;
       Reflect.deleteProperty(surface, "update");
       apply(ctx);
@@ -1677,7 +1681,7 @@ describe("host：lesson-loop 的宿主半", () => {
         "用户手改坏的存量段",
         "坏内容保持原样等人修，开关段也不被顺手覆写",
       );
-      // 同段之后最容易丢的就是这条：规则面降级不许牵连开关面的读写。
+      // 同段之后最容易丢的就是这条：规则库降级不许牵连的开关的读写。
       ctx.value["injectEnabled"] = false;
       assert.equal(
         (loopService(ctx).stats()["config"] as Record<string, unknown>)["injectEnabled"],
@@ -1706,10 +1710,10 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(SETTINGS_NAMESPACE, patchEntryId(), "代码里的段名与 profile 条目 id 同源");
     });
 
-    it("假件的 settings 面就是 0.2.1-alpha.2 的残面：三项在、被移除的三项绝不在", () => {
+    it("假件的 settings 面就是 0.2.1-alpha.2 的残缺：三项在、被移除的三项绝不在", () => {
       // 0.1.6 的假件里有 register（两段各注册一次）与 get（读 locale）。迁移时若只把调用
       // 点改掉、假件却留着这两扇门，host.ts 那些"没有注册可被打回""describe 是唯一读口"的
-      // 分支就会在假绿里静默失真——真宿主 0.2.1-alpha.2 上它们不存在，插件会当场 TypeError。
+      // 分支就会在误判通过里静默失真——真宿主 0.2.1-alpha.2 上它们不存在，插件会当场 TypeError。
       // 故这里直接钉假件自己的形状：本包用到的就是 describe/update/configure 三件。
       const ctx = makeCtx();
       const surface = ctx.settings as unknown as Record<string, unknown>;
@@ -1731,7 +1735,7 @@ describe("host：lesson-loop 的宿主半", () => {
       // 0.1.6 这里有**两段**：`lesson-loop`（开关，settings.register(PLUGIN_NAME, …)）与
       // `lesson-loop-rules`（规则库，register(RULES_NAMESPACE, RulesSchema, {base})）。
       // 0.2.1-alpha.2 的命名空间就是 profile 条目 id 且一条目一份 Config，第二段因此无处安放——
-      // 迁移的落点是把规则数组并成同一 Config 的第 12 个 volatile 字段（rules）。
+      // 迁移的做法是把规则数组并成同一 Config 的第 12 个 volatile 字段（rules）。
       // 这条断言钉的是拓扑本身：卡片必须落在开关那一段里，而旧段名一次都不许被写出来
       // （写进孤儿段 = 宿主 describe() 永远看不见，规则库静默失联）。
       const ctx = makeCtx();
@@ -1812,7 +1816,7 @@ describe("host：lesson-loop 的宿主半", () => {
     });
   });
 
-  describe("/lessons-digest 的开关与失败面", () => {
+  describe("/lessons-digest 的开关与失败", () => {
     it("总开关或上报开关关闭 → 拒绝蒸馏（不烧 LLM 也不写候选卡）", async () => {
       const off = makeCtx({ value: { enabled: false } });
       apply(off);
@@ -1888,7 +1892,7 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.deepEqual(injected, []);
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
       fireDisposed(ctx, { id: "s1" });
-      // 闸门关闭期间既不清算也不记账
+      // 开关关闭期间既不清算也不记录下来
       assert.equal(ended.mock.calls.length, 0);
     });
 
@@ -1985,7 +1989,7 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.match(String(error.mock.calls[1]?.[0]), /pass failed: pass 炸了/u);
     });
 
-    it("pass：闸门关 / 无 armed 命中 / 无 sessionId 都不登台账", async () => {
+    it("pass：开关关闭 / 无 armed 命中 / 无 sessionId 都不写入台账", async () => {
       const off = makeCtx({ value: { enabled: false } });
       apply(off);
       assert.deepEqual(
@@ -2019,7 +2023,7 @@ describe("host：lesson-loop 的宿主半", () => {
         { ok: true },
       );
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
-      // 两条都没留下台账：收尾只能走空集合兜底
+      // 两条都没留下台账：收尾只能走空集合后备
       fireDisposed(ctx, { id: "nope" });
       assert.deepEqual(ended.mock.calls[0]?.[2], new Set());
       // 有 sessionId 但从未 created 预种 → pass 现场新建台账，收尾照常清算
@@ -2042,7 +2046,7 @@ describe("host：lesson-loop 的宿主半", () => {
       apply(ctx);
       const svc = loopService(ctx);
       const id = await armedRule(ctx);
-      // s0 先拿到 pass 记账：它排在插入序最前，正是溢出时要丢的那条
+      // s0 先拿到 pass 记录下来：它排在插入序最前，正是溢出时要丢的那条
       svc.pass({
         category: CATEGORY_GATE_FAILURE,
         cwd: GATE_PROJECT_CWD,
@@ -2053,10 +2057,10 @@ describe("host：lesson-loop 的宿主半", () => {
         fireCreated(ctx, { session: { id: `s${index}`, header: { cwd: GATE_PROJECT_CWD } } });
       }
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
-      // s0 已被丢出 → 收尾走"无台账"兜底，pass 集合为空（没被丢就会带着 id）
+      // s0 已被丢出 → 收尾走"无台账"后备，pass 集合为空（没被丢就会带着 id）
       fireDisposed(ctx, { id: "s0", header: { cwd: GATE_PROJECT_CWD } });
       assert.deepEqual(ended.mock.calls[0]?.[2], new Set());
-      // 末位的新会话还在表里：pass 记账照常清算
+      // 末位的新会话还在表里：pass 记录下来照常清算
       svc.pass({
         category: CATEGORY_GATE_FAILURE,
         cwd: GATE_PROJECT_CWD,
@@ -2088,7 +2092,7 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(ended.mock.calls.at(-1)?.[4], false, "集合内的会话重复边不计 exposure");
     });
 
-    it("无台账且无 header → 按 default 项目清算（插件中途装载的兜底）", () => {
+    it("无台账且无 header → 按 default 项目清算（插件中途装载的后备）", () => {
       const ctx = makeCtx();
       apply(ctx);
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
@@ -2146,14 +2150,14 @@ describe("host：lesson-loop 的宿主半", () => {
       const ctx = makeCtx({ rules: [fragmentRow("f1", "/repo/src/a.ts")] });
       // cordis 的 Fiber.await() 在装载失败时重抛（vendor/cordis/src/fiber.ts:698-710）：
       // 那种情况下本条目根本不会 ACTIVE，规则库也读不出来，迁移必须直接收手而不是
-      // 拿着"读不懂"的读面继续跑（否则每次失败装载都多刷一条日志）。
+      // 拿着"读不懂"的读取接口继续跑（否则每次失败装载都多刷一条日志）。
       ctx.fiber.await = () => Promise.reject(new Error("装载失败"));
       const migrate = vi.spyOn(LessonStore.prototype, "migrateFragmentRules");
       apply(ctx);
       await flushAsync();
       await flushAsync();
       assert.equal(migrate.mock.calls.length, 0, "装载失败时一条迁移都不该起");
-      assert.notEqual(ctx.provided["lessonLoop"], undefined, "服务面照常供给");
+      assert.notEqual(ctx.provided["lessonLoop"], undefined, "服务照常供给");
     });
 
     it("存量 project 键重算且撞车 → info 日志带出归并数，两键收敛成一张卡", async () => {
@@ -2282,9 +2286,9 @@ describe("host：lesson-loop 的宿主半", () => {
   // ── 双语：host 侧文案随官方 locale 偏好走，规则数据永不改写 ───────────────
   // 读的是官方 dsh-client-locale 拥有的 settings 命名空间 `locale`（假件里由
   // makeCtx({ locale }) 递值）；未注册即中文——上面 60 多条既有断言全走中文路径，
-  // 它们本身就是「默认语言 = zh」的回归网。这里只补 en 分支与数据面红线。
+  // 它们本身就是「默认语言 = zh」的回归网。这里只补 en 分支与数据那一栏红线。
   describe("host 文案的语言偏好（locale.preference）", () => {
-    /** 常驻段 + 命令注册面（description / input.hint 在装载期求值一次）。 */
+    /** 常驻段 + 命令注册入口（description / input.hint 在装载期求值一次）。 */
     it("preference=en-US → 常驻 systemPrompt 段是英文（主语言子标签判定）", () => {
       const ctx = makeCtx({ locale: { preference: "en-US" } });
       apply(ctx);
@@ -2304,7 +2308,7 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.ok(textOf(notARecord.section).includes("自进化环"));
     });
 
-    it("en：命令的 description 与 input.hint 是英文（注册面也吃偏好）", () => {
+    it("en：命令的 description 与 input.hint 是英文（注册入口也吃偏好）", () => {
       const ctx = makeCtx({ locale: { preference: "en" } });
       apply(ctx);
       const desc = ctx.command?.desc as { description?: string; input?: { hint?: string } };
@@ -2316,7 +2320,7 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(zhDesc.description, MESSAGES.zh.digestCommandDescription);
     });
 
-    it("en：/lessons-digest 的闸门回显、失败回显与成功清单都是英文", async () => {
+    it("en：/lessons-digest 关闭时的回显、失败回显与成功清单都是英文", async () => {
       const off = makeCtx({ locale: { preference: "en" }, value: { enabled: false } });
       apply(off);
       const rejected = await off.command?.handler(digestInvocation());
@@ -2445,7 +2449,7 @@ describe("host：lesson-loop 的宿主半", () => {
   // 装载次序的既定事实，不是数据坏了：把它报成 rejected，人就会去修根本没坏的数据；报成
   // 一行 warn，则是每次正常开机都多一条与故障无关的噪声（用户报的日志噪点正是这条）。
   // 真正的坏形状（行在投影里、rules 却不是数组）仍必须出声——两条在这里分开钉。
-  describe("规则面装载期降级说法（apply 早于条目 ACTIVE）", () => {
+  describe("规则装载期降级说法（apply 早于条目 ACTIVE）", () => {
     it("本条目尚未进 describe() 投影 ⇒ 装载期一律不出声（既不 rejected 也不 warn）", () => {
       const error = vi.spyOn(console, "error").mockImplementation(() => {
         // 断言在下方
@@ -2499,7 +2503,7 @@ describe("host：lesson-loop 的宿主半", () => {
       "maxStatementChars",
     ] as const;
 
-    it("七个数值字段的 hint 写着 schema 的区间与默认（zh/en 同查，期望从 schema 现量读）", () => {
+    it("七个数值字段的 hint 写着 schema 的区间与默认（zh/en 同查，期望从 schema 当场读出）", () => {
       for (const field of NUMERIC_HINT_FIELDS) {
         const meta = plugin.Config.dict?.[field]?.meta;
         assert.ok(meta !== undefined, `configSchema 里该有 ${field} 这一位`);
@@ -2585,11 +2589,11 @@ describe("host：lesson-loop 的宿主半", () => {
 
     it("会话已结束后命中的违规不得重建台账条目（否则退出时多算一次 exposure）", async () => {
       // 审查点：`reportLesson` 在 `await store.report()` 之后补记 violationOf。若会话在这段
-      // 期间已经结束、台账被清掉，旧实现用 `?? {}` 重建条目 —— 那条目要等进程退出才清算，
+      // 期间已经结束、台账被清掉，旧实现用 `?? {}` 重建条目 —— 那个条目要等进程退出才清算，
       // 等于把一场已结束的会话又算一次 exposure。
       //
-      // 这里不 mock 时序（`store.report` 本身是同步落盘的，用假 await 制造窗口只会测出
-      // 假绿）：直接按真实事件顺序摆{"先结束会话，再让它收一条 armed 命中"}，
+      // 这里不 mock 时序（`store.report` 本身是同步写到磁盘的，用假 await 制造窗口只会测出
+      // 误判通过）：直接按真实事件顺序摆{"先结束会话，再让它收一条 armed 命中"}，
       // 然后断言退出清算不会看到这个会话的条目。
       const ctx = makeCtx();
       apply(ctx);
@@ -2742,7 +2746,7 @@ describe("host：lesson-loop 的宿主半", () => {
       );
     });
 
-    it("清算没落盘 → 回滚清算标记与台账条目，下一边带全量数据重试", async () => {
+    it("清算没写到磁盘 → 回滚清算标记与台账条目，下一边带全量数据重试", async () => {
       const ctx = makeCtx();
       apply(ctx);
       const svc = loopService(ctx);
@@ -2756,7 +2760,7 @@ describe("host：lesson-loop 的宿主半", () => {
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded").mockResolvedValue(false);
       fireDisposed(ctx, { id: "s-r", header: { cwd: GATE_PROJECT_CWD } });
       await flushAsync();
-      // 第一边没落盘：标记与台账条目都还原了。
+      // 第一边没写到磁盘：标记与台账条目都还原了。
       fireDisposed(ctx, { id: "s-r", header: { cwd: GATE_PROJECT_CWD } });
       await flushAsync();
       const retryCall = ended.mock.calls[1]!;

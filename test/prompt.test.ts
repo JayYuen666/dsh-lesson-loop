@@ -23,7 +23,7 @@ const tEn: LessonLoopMessages = MESSAGES.en;
 
 const t0 = 1_700_000_000_000;
 
-/** 模板里的 {占位符} 名单（只认花括号里的名字；裸文本片段如 "armed" 不算占位符）。 */
+/** 模板里的 {占位符} 名单（只认花括号里的名字；不在花括号里的文本片段，如 "armed"，不算占位符）。 */
 function placeholderNames(template: string): string[] {
   return Array.from(
     template.matchAll(/\{(?<name>\w+)\}/gu),
@@ -191,7 +191,7 @@ describe("fenceUntrusted（不可信正文定界）", () => {
     assert.equal(restored, hostile);
   });
 
-  it("裸 CR / LS / PS 也是行终止符：它们之后的编号行同样拿不到真正的行首", () => {
+  it("孤立 CR / LS / PS 也是行终止符：它们之后的编号行同样拿不到真正的行首", () => {
     // 只按 \n 切行时，这些字符之后的 `2. …` 落在同一"行"内，拿不到引用标记；
     // 而渲染器（Markdown 与多数 UI）偏偏把它们当换行——定界就在那里断掉。
     for (const [name, terminator] of [
@@ -206,7 +206,7 @@ describe("fenceUntrusted（不可信正文定界）", () => {
       for (const line of lines) {
         assert.ok(line.startsWith("│ "), `${name}: 每一行都要带引用符：${JSON.stringify(line)}`);
       }
-      assert.doesNotMatch(lines[1]!, /^\d+\.\s/u, `${name}: 第二行不得是裸编号行`);
+      assert.doesNotMatch(lines[1]!, /^\d+\.\s/u, `${name}: 第二行不得以编号列表符开头`);
       // 零截断：原文的字符一个不丢（只是终止符被归一成 \n）。
       assert.equal(
         fenced
@@ -286,7 +286,7 @@ describe("注入帧的伪造防护（可证定界）", () => {
 });
 
 // describeRule / statusLabel 与状态标签、ruleSummary 键已随「零生产调用方的导出」清理
-// 移除：卡片与端点的摘要行走的是规则读面自己的投影，不再经 prompt 层这副模板。
+// 移除：卡片与端点的摘要行走的是规则读取接口自己的投影，不再经 prompt 层这副模板。
 
 // ── 双语（host 半消息表注入；规则正文是用户数据，两语下都原样透传）────────
 describe("注入帧与摘要行的双语", () => {
@@ -361,7 +361,7 @@ describe("注入帧与摘要行的双语", () => {
     assert.equal(fill(protoPlaceholder, { constructor: "自有值" }), "自有值");
   });
 
-  it("host 字典全键对账：任一键的 zh/en 占位符集合相等、模板非空（上面那份名单只盖注入面，这里盖全集）", () => {
+  it("host 字典全键对账：任一键的 zh/en 占位符集合相等、模板非空（上面那份名单只盖注入，这里盖全集）", () => {
     let keysWithPlaceholders = 0;
     for (const key of Object.keys(MESSAGES.zh)) {
       const zh = MESSAGES.zh[key as keyof LessonLoopMessages];

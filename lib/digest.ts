@@ -12,28 +12,29 @@
 // 进模型的提示词与失败原因的语言**全部由调用点注入**（`messages` 入参，见 lib/messages.ts）：
 // 本文件是纯函数、不读设置。蒸馏出来的规则条目是用户数据，一律原样透传，不改写。
 //
-// 文本面不住在这里：差评投影在 lib/negative-feedback.ts，system/用户帧拼装与产出解析在
+// 文本不定义在这里：差评投影在 lib/negative-feedback.ts，system/用户帧拼装与产出解析在
 // lib/digest-prompt.ts。本文件只剩"跑一次蒸馏"（取数 → 发流 → 建卡），三段同一条注入纪律。
 
 import { randomUUID } from "node:crypto";
 // 事件形状取官方判别联合，不再本地写 `type?: string; data?: Record<string, unknown>`
-// ——那等于把整张事件表抹平成一个字典，宿主新增/改名事件位在类型面上完全隐形。
+// ——那等于把整张事件表抹平成一个字典，宿主新增/改名事件位在类型上完全隐形。
 // `feedback/message-put` 与 `feedback/message-delete` 由 @deepseek-ai/dsh-message-feedback、
 // `feedback/record` 由 @deepseek-ai/dsh-command-feedback 各自以 `declare module
 // '@deepseek-ai/dsh-session/types'` 增强进 SessionEventMap；TS7 不接受 `import type "mod"`
 // 这种无绑定形式，故用具名 type-only 导入把三份增强一起带进本模块的 program。
 import type { Session, SessionEvent, SessionHeader } from "@deepseek-ai/dsh-session";
-// 三条宿主服务面绑官方声明（全部 type-only：运行时服务由 ctx 注入）：
+// 三个宿主服务的类型都绑官方声明（全部 type-only：运行时服务由 ctx 注入）：
 // - `LlmRuntime`：`Context.llm` 的类型（installed @deepseek-ai/dsh-llm/lib/types/index.d.ts:29-31）
 // - `AgentDefaultModelConfig`：`Context.agentDefaultModel` 的类型（installed
 //   @deepseek-ai/dsh-agent-default-model/lib/types/index.d.ts:6-8, :24）
 // - `Session` / `SessionHeader`：installed @deepseek-ai/dsh-session/lib/types/index.d.ts:135 起
 //   （`header` :150、`id` :154）与 lib/types/types.d.ts:58-95
 import type { AgentDefaultModelConfig } from "@deepseek-ai/dsh-agent-default-model";
-// 注入消息的 id 位是官方幻影品牌 `MessageId`，唯一合法构造口是官方 `brandString`（恒等函数；
-// 口径：dsh-brand 在 peerDependencies，产物留裸说明符，不再内联）。本文件与 host.ts 共用这
-// 同一条口径——两半各自自包含，谁也不 import 谁的运行时。`reasoningEffort` 的品牌同源
-// （`Branded` 原语与构造器都住在 dsh-brand，dsh-llm 只交出类型位），故透传它也只引类型。
+// 注入消息的 id 位是官方的 `MessageId`（带 `brand` 标记的幻影类型），唯一合法构造口是官方
+// `brandString`（恒等函数；规则：dsh-brand 在 peerDependencies，产物里按包名引用它，不再内联）。
+// 本文件与 host.ts 共用这同一条规则——两半各自自包含，谁也不 import 谁的运行时。
+// `reasoningEffort` 的 `brand` 标记同源（`Branded` 原语与构造器都定义在 dsh-brand，
+// dsh-llm 只交出类型位），故透传它也只引类型。
 import { brandString } from "@deepseek-ai/dsh-brand";
 import type {
   LlmRuntime,
@@ -61,15 +62,15 @@ import type { LessonLoopMessages } from "./messages.ts";
 export type { SessionEvent } from "@deepseek-ai/dsh-session";
 
 /**
- * 会话的归因读取面 = **官方 `Session` 的键名投影**（installed
+ * 会话的归因读取 = **官方 `Session` 的键名投影**（installed
  * @deepseek-ai/dsh-session/lib/types/index.d.ts：`get id(): SessionId` :154、
  * `readonly header: SessionHeader` :150）。
  * 值域两处都收窄：整枚 `Session` 是带 private 字段的类（:135-139 → 名义比较），本包与
  * 测试的替身永远满足不了；`header` 只读 `cwd`（官方即 `readonly cwd?: string`，
  * lib/types/types.d.ts:69），因为 `deriveProject` 只要根目录。可缺失是本包对**跨进程
- * 边界**的口径（命令 handler 递来的 agent.session 是否具备某位只能运行时判，
+ * 边界**的规则（命令 handler 递来的 agent.session 是否具备某位只能运行时判，
  * 见 host.ts 的 `isSessionLike`），不是替宿主重定必选性。
- * ⚠ 这里**不再有** `snapshotEvents`：官方把同步事件读面标成 `@deprecated`（"new calls are
+ * ⚠ 这里**不再有** `snapshotEvents`：官方把同步事件读取接口标成 `@deprecated`（"new calls are
  * prohibited"，:186-187），本包的读法已改到 `ctx.sessionQuery.observeSession()` 上（事件由
  * 调用方取好后经 {@link DigestRunOptions.events} 注入，见 host.ts 的 registerDigestCommand）。
  */
@@ -83,40 +84,40 @@ export interface SessionLike {
  * installed @deepseek-ai/dsh-llm/lib/types/types.d.ts:492
  * `RequestMessage = Message | RequestUserInput`——**两档都受理**：本包的帧带稳定 `id` 与
  * producer 归属（`source.form` 声明"这段上下文是要读的指令"，见 lib/prompt.ts），故走完整的
- * 官方 `UserMessage`（`id` 是品牌 `MessageId`，installed lib/types/brand.d.ts:14，构造口只有
+ * 官方 `UserMessage`（`id` 是带 `brand` 标记的 `MessageId`，installed lib/types/brand.d.ts:14，构造口只有
  * 官方 `brandString`；`source.kind` 由 lib/prompt.ts 那条 producer 声明 merge 进
  * `MessageSourceMap`）。dir-prep-organize 的整理帧走的是另一档（`RequestUserInput`，
  * 官方在那里把 `id`/`source` 记成 `?: never`），因为它从不声明归属——两包形状不同是**语义
- * 不同**，不是抄本漂移。旧镜像把这一帧手抄成 `{ id: string; role: "user"; content: {...}[];
+ * 不同**，不是两份声明各抄一处造成的不一致。旧版把这一帧自己抄成 `{ id: string; role: "user"; content: {...}[];
  * source?: {...} }`：`id` 降级成裸 string（品牌信息丢）、`content` 只承认 text 块（官方是
  * `readonly ContentBlock[]`），且整块不受官方约束。
  */
 type DigestRequestMessage = UserMessage;
 
 /**
- * `ctx.llm` 的本包面 = 官方 `LlmRuntime` 的 `stream` 方法面投影，签名一个字都不重述
+ * `ctx.llm` 的本包类型 = 官方 `LlmRuntime` 的 `stream` 方法子集投影，签名一个字都不重述
  * （installed @deepseek-ai/dsh-llm/lib/types/index.d.ts:29-31 交出 `Context.llm`）。
- * 旧镜像把入参整块手抄（provider/model/messages/system/signal 逐个自己判可选性），把返回
- * 也手抄成 `{ type?: string; text?: unknown; reason?: {...} }`——于是流块换名
+ * 旧版把入参整块自己抄了一遍（provider/model/messages/system/signal 逐个自己判可选性），把返回
+ * 也自己抄成 `{ type?: string; text?: unknown; reason?: {...} }`——于是流块换名
  * （`text-delta`/`finish` 是官方判别联合的 kind）、或 `reason.failure` 换形状，本包都静默
  * 读不到。现在载荷类型全部由官方成员交出，而**交付侧**的宽容（chunk 缺字段、reason 非对象）
  * 仍由 drainStreamText 里的 `typeof` 守卫承担：官方说的是适配器的承诺，跨实现交付要自己判。
  */
 export type LlmService = Pick<LlmRuntime, "stream">;
 
-/** `ctx.agentDefaultModel` 的本包面：只 `currentSelection()`（installed 同文件 :41）。 */
+/** `ctx.agentDefaultModel` 的本包类型：只 `currentSelection()`（installed 同文件 :41）。 */
 export type AgentDefaultModel = Pick<AgentDefaultModelConfig, "currentSelection">;
 
-/** 默认模型选择 = 官方 `ModelSelection` 的三位形状，但**可选性按交付面放宽**：`currentSelection()`
+/** 默认模型选择 = 官方 `ModelSelection` 的三位形状，但**可选性按交付类型放宽**：`currentSelection()`
  *  是宿主服务交回来的值，官方声明里 `provider`/`model` 必选，而本包拿到的是跨边界交付——配置
  *  没落、Volatile 引用未解析时照样可能是缺位的半截对象。守卫留在 runDigest 入口，类型不再替
  *  宿主打包票。`reasoningEffort` 是官方选择保留的第三位，runDigest 会把它**原样透传**给
- *  `llm.stream`（官方 `GenerateOptions` 受理该位）——类型面留着它却不用它，等于把用户选定
+ *  `llm.stream`（官方 `GenerateOptions` 受理该位）——类型声明留着它却不用它，等于把用户选定
  *  的推理强度静默丢给适配器默认档。
  *
  *  为什么不直接 import 官方类型：那会在 `types/lib/digest.d.ts` 里留下裸说明符
- *  `@deepseek-ai/dsh-agent`，而本包只把它当 devDependency——消费方按 manifest 装依赖，
- *  声明里没这个名字就是 TS2307。扩 peer 是发布契约变更，归用户裁决；此前用结构等价类型。 */
+ *  的按包名引用，而本包只把它当 devDependency——消费方按 manifest 装依赖，
+ *  声明里没这个名字就是 TS2307。放宽 peer 是发布契约的变更，要由用户决定，所以这里用结构等价的类型。 */
 export interface ModelSelection {
   readonly provider?: string;
   readonly model?: string;
@@ -165,7 +166,7 @@ export const DEFAULT_DIGEST_TIMEOUT_MS = 120_000;
  * 那说的是适配器**承诺**的形状；跨界载荷实际会漂移（test/digest.test.ts 的 weirdReason
  * 就钉"连 kind 都缺"这一档）。若照声明类型把这里的兜底当成死代码删掉，
  * `{kind}` 会原样留在用户看得见的文案里 —— 此前就是这么改红过一条断言。
- * 按 `unknown` 建模，守卫与类型面才是同一件事，类型感知规则也不会反过来把守卫判成冗余。
+ * 按 `unknown` 建模，守卫和类型声明才是同一件事，类型感知规则也不会反过来把守卫判成冗余。
  */
 function kindLabel(reason: unknown): string {
   // 不做类型断言（`as {kind?: unknown}` 会被 no-unsafe-type-assertion 判掉，而且它
@@ -179,15 +180,15 @@ function kindLabel(reason: unknown): string {
  * drain llm.stream → 全文。流块与终态就此是**官方判别联合**（installed
  * @deepseek-ai/dsh-llm/lib/types/index.d.ts 的 `StreamChunk` 与 `FinishReason`，
  * dir-prep-organize 同批绑定）：`switch/===` 比 `chunk.type` 即收窄载荷，块换名或换字段
- * 在本文件当场编译不过——旧镜像把三块形状手抄成 `{ type?: string; text?: unknown;
- * reason?: {...} }`，那份抄本既不允许编译器认识真实的块集合，也 let 本包把"缺 text"
+ * 在本文件当场编译不过——旧版把三块形状自己抄成 `{ type?: string; text?: unknown;
+ * reason?: {...} }`，那份自己写的声明既不允许编译器认识真实的块集合，也 let 本包把"缺 text"
  * 这种事写成合法形状。
  * 交付侧的宽容保留，且"finish 块有没有"与"reason 读不读得懂"分开记：`reason` 按官方
  * 声明必在，但跨边界交付会漂移——把它直接塞进 `FinishReason` 变量，缺位时会被误判成
  * "缺 finish 块"（errMissingFinishChunk 说的是另一件事），非对象时 `.kind` 会绕过全部
  * 注入文案直接 TypeError。所以 `reason` 落 unknown，读侧经 isRecord/Reflect 收窄；
  * `typeof chunk.text === "string"` 与 `typeof failed.message === "string"` 两道交付判据
- * 同理保留。`kind` 的兜底走 kindLabel()：官方形状说的是适配器的**契约**，而
+ * 同理保留。`kind` 的后备走 kindLabel()：官方形状说的是适配器的**契约**，而
  * test/digest.test.ts 钉的是**实际吐出来的块**缺字段 / kind 非字符串那几档——声明里
  * 有没有，和运行时读不读得懂，是两件事，缺了后者就会把 `{kind}` 印给用户。
  */
@@ -212,7 +213,7 @@ async function drainStreamToText(
   if (!isRecord(finishReason) || finishReason["kind"] !== "stop") {
     // 官方 `FinishReason` 只在 `aborted` / `error` 两档带 `failure`（installed
     // @deepseek-ai/dsh-llm/lib/types/types.d.ts:132-150），`tool-calls`/`max-tokens` 没有这一位。
-    // 旧镜像写成"任何非 stop 都可能带 failure"，那是比契约更宽的声明：宽出来的一档
+    // 旧版写成"任何非 stop 都可能带 failure"，那是比契约更宽的声明：宽出来的一档
     // 在渲染分支里长出测不到的路径。现在按官方判别联合收窄后再读，交付判据
     // （failure 是否对象、message 是否字符串）保留——适配器交来的形状不由本包决定。
     const failed =
@@ -253,9 +254,9 @@ export interface DigestResult {
 /**
  * runDigest 的收尾入参：消息表（语言由调用点决定）+ 用户附加说明 + **本会话事件流**。
  * `events` 由调用方取好交进来（host 走官方 `ctx.sessionQuery.observeSession()`），本文件
- * 不再自己读会话日志：官方把同步事件读面 `Session.snapshotEvents` 标成 `@deprecated`
+ * 不再自己读会话日志：官方把同步事件读取接口 `Session.snapshotEvents` 标成 `@deprecated`
  * （installed @deepseek-ai/dsh-session/lib/types/index.d.ts:218-224 "new calls are
- * prohibited"），而本文件是纯函数、拿不到 ctx——把取数留在唯一真正持有 ctx 的那一侧。
+ * prohibited"），而本文件是纯函数、拿不到 ctx——把取数留在唯一真正持有 ctx 的地方。
  * 值域是官方判别联合（`SessionEvent`，shared/本包都按它分支），非数组交付一律退空表
  * 那条 `unknownArray` 判据仍然生效。
  */
@@ -351,15 +352,15 @@ async function streamDigestText(
     const stream = llm.stream({
       provider: selection.provider,
       model: selection.model,
-      // 官方选择里的第三位原样透传（GenerateOptions 受理 `reasoningEffort`）：品牌构造
+      // 官方选择里的第三位原样透传（GenerateOptions 受理 `reasoningEffort`）：`brand` 标记
       // 走 dsh-brand 的 brandString（恒等函数），不为此引 dsh-llm 的运行时。
       ...(selection.reasoningEffort === undefined
         ? {}
         : { reasoningEffort: brandString<ReasoningEffortId>(selection.reasoningEffort) }),
-      // 帧走 `DigestRequestMessage`（官方 `RequestMessage` 的 `Message` 那一臂，见文件顶部）：
-      // 稳定 `id` 与 producer 归属都是这一臂的形状要求。这帧从不落任何持久消息位（runDigest
+      // 帧走 `DigestRequestMessage`（官方 `RequestMessage` 的 `Message` 那一条分支，见文件顶部）：
+      // 稳定 `id` 与 producer 归属都是这一条分支的形状要求。这帧从不落任何持久消息位（runDigest
       // 只把 prompt 送进适配器、结果经 store 写进设置段），但形状仍按 `Message` 交，
-      // 不降级成 `RequestUserInput`——那会把品牌 id 与 `source` 归属一起丢掉。
+      // 不降级成 `RequestUserInput`——那会把带 `brand` 标记的 id 与 `source` 归属一起丢掉。
       messages: [
         {
           id: brandString<MessageId>(`lesson-loop-digest-${randomUUID()}`),
@@ -456,7 +457,7 @@ async function persistCandidates(
     created: [],
     dropped: [],
   };
-  // 条数上限在解析结果上收口：超出部分按"没写进去"处理（与拒写同一档），回执里
+  // 条数上限在解析结果上统一处理：超出部分按"没写进去"处理（与拒写同一档），回执里
   // 它们就在 dropped 里，用户重试也无济于事——所以超额必须留一条日志点名真实原因。
   const overflow = Math.max(0, parsed.length - MAX_DIGEST_CANDIDATES);
   if (overflow > 0) {
@@ -466,7 +467,7 @@ async function persistCandidates(
   }
   const accepted = parsed.slice(0, MAX_DIGEST_CANDIDATES);
   // 超出上限的条目按"模型提出了、但没写进规则库"回执（与拒写同一档 dropped），
-  // 回显口径一致：那些卡同样不在库里。
+  // 回显规则一致：那些卡同样不在库里。
   for (const entry of parsed.slice(MAX_DIGEST_CANDIDATES)) {
     acc.dropped.push({
       category: entry.category,
@@ -513,7 +514,7 @@ export async function runDigest(
   options: DigestRunOptions,
 ): Promise<DigestResult> {
   const { messages, extra, events, timeoutMs } = options;
-  // 选择是宿主 currentSelection() 的跨边界交付（可能是缺位的半截对象）：类型面说的
+  // 选择是宿主 currentSelection() 的跨边界交付（可能是缺位的半截对象）：类型声明说的
   // 是宿主的承诺，守卫只认 string。统一取 trim 后的值——既挡住 `{ provider: null,
   // model: 5 }` 一类的穿透（它们会在 .trim() 处 TypeError，把一句未本地化的底层错误
   // 甩给用户），也让 " p " 这种带空白的取值不再原样进 llm.stream。
@@ -527,14 +528,14 @@ export async function runDigest(
   if (provider.length === 0 || model.length === 0) {
     throw new Error(messages.errNoModelSelection);
   }
-  // 墙钟口径只在三处出现：configSchema 的 min(1000) 是**配置面**约束（设置卡/文档），
+  // 墙钟规则只在三处出现：configSchema 的 min(1000) 是**配置表**约束（设置卡/文档），
   // 本守卫只管"能不能拿去 setTimeout"——有限正数且不超过 Node 的 2^31-1 毫秒上限
-  // （超出会溢出成立即触发，等于零墙钟）。文案因此只说本守卫自己的口径，不重复
+  // （超出会溢出成立即触发，等于零墙钟）。文案因此只说本守卫自己的规则，不重复
   // schema 的 1000 下限：单测要用几十毫秒的墙钟驱动超时分支。
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_MS) {
     throw new Error(messages.errDigestTimeoutInvalid);
   }
-  // 交付面守卫：events 非数组（host 取数失败交回了别的形状）退空表继续跑，但必须留下
+  // 交付类型守卫：events 非数组（host 取数失败交回了别的形状）退空表继续跑，但必须留下
   // 一条诊断——"零证据蒸馏"与"真的没有差评"在回执上同形（feedbackCount: 0），没有这条
   // 日志，取数侧的集成故障会长期隐形。
   if (!Array.isArray(events)) {

@@ -1,7 +1,7 @@
-// test/publish-manifest.test.ts —— 发布形态门禁：入口面必须**与发布器无关**地可解析。
+// test/publish-manifest.test.ts —— 发布形态门禁：入口必须**与发布器无关**地可解析。
 //
-// 为什么值得一条测试：构建与单测都在源码侧跑绿，而真实故障发生在装出去之后。三类坑都在
-// 那一侧。其一是入口指向没随包发出去的文件；其二是入口覆盖写在 `publishConfig` 里——
+// 为什么值得一条测试：构建与单测都在源码里跑绿，而真实故障发生在装出去之后。三类坑都在那之后：
+// 其一是入口指向没随包发出去的文件；其二是入口覆盖写在 `publishConfig` 里——
 // pnpm 发布时把它合并到顶层，npm 不合并（npm 会打印
 // "Unknown publishConfig config main/exports" 并忽略），同一个仓库换个发布器就发出一个
 // import 必失败的包。这里不模仿任何发布器的实现，而是把不变式钉成断言：**顶层入口自己就
@@ -10,8 +10,8 @@
 // 里出现第二份实例——判据与它的崩法写在「宿主依赖的版本形状」那组门禁的第一条里。
 //
 // 第二组门禁扫注释：日期与轮次编号写下时有用，读的人只会困惑，且没有任何读者能从中重建
-// 当时的上下文。只扫注释行与文档；测试夹具里的日期（modifiedAfter 之类的边界值）是数据，
-// 角色文档里的日期是内容，两者都不在禁面内。
+// 当时的上下文。只扫注释行与文档；夹具里的日期（modifiedAfter 之类的边界值）是数据，
+// 角色文档里的日期是内容，两者都不在禁止名单内。
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -33,17 +33,17 @@ const DECLARATION_ENTRY = "types/host.d.ts";
  */
 const FORBIDDEN_IN_COMMENTS: readonly RegExp[] = [/\b(?:19|20)\d{2}-\d{2}-\d{2}\b/u];
 
-/** `publishConfig` 里唯一允许出现的字段：可见性与源，都不是入口面。 */
+/** `publishConfig` 里唯一允许出现的字段：可见性与源，都不是入口。 */
 const ALLOWED_PUBLISH_CONFIG = new Set(["access", "registry"]);
 
-/** 遍历时跳过的目录：依赖、产物、以及本门禁刻意不管的面。 */
+/** 遍历时跳过的目录：依赖、产物、以及本门禁刻刻意不管的目录。 */
 const SKIP_DIRS = new Set([
   "node_modules",
   "coverage",
   "_env",
   "dist",
   ".git",
-  // 测试夹具里的日期与轮次编号是数据，不是注释噪音。
+  // 夹具里的日期与轮次编号是数据，不是注释噪音。
   "test",
   "tests",
   "__tests__",
@@ -51,7 +51,7 @@ const SKIP_DIRS = new Set([
   "agents",
 ]);
 
-/** package.json 里与入口面有关的形状；其余字段本门禁不关心。 */
+/** package.json 里与入口有关的形状；其余字段本门禁不关心。 */
 interface Manifest {
   readonly name?: string;
   readonly main?: string;
@@ -206,7 +206,7 @@ async function collectSources(dir: string, prefix: string): Promise<string[]> {
  * 取一段文本里属于注释或文档的行。文档（`.md`）整体算；代码只取注释行，免得把字符串
  * 字面量里的数据（日期夹具、示例路径）误判成注释噪音。
  *
- * @param file - 相对包根的文件名，用于决定判定口径
+ * @param file - 相对包根的文件名，用于决定判定规则
  * @param text - 文件全文
  * @returns 参与门禁的行
  */
@@ -239,7 +239,7 @@ describe("发布形态", () => {
     }
   });
 
-  it("包根的每一份 .md 都在发布面里（npm 只自动附带 README* 与 LICENSE）", async () => {
+  it("包根的每一份 .md 都在发布名单里（npm 只自动附带 README* 与 LICENSE）", async () => {
     // 封住这一类而不是每加一份文档补一条断言：漏写 `files` 时 npm 页面看不出异常。
     const { shipped } = await readSurface();
     const docs = readdirSync(pkgDir)
@@ -285,7 +285,7 @@ async function declarationTexts(): Promise<{ file: string; text: string }[]> {
   );
 }
 
-describe("类型声明随包发布（build:types 的产物面）", () => {
+describe("类型声明随包发布（build:types 的产物）", () => {
   it("声明入口存在，且 types/ 真的产出了声明文件", async () => {
     // 缺声明没有运行期信号：tsserver 与 npm 页面只会静默退化成"无类型模块"。
     expect(existsSync(path.join(pkgDir, DECLARATION_ENTRY)), `${DECLARATION_ENTRY} 不存在`).toBe(
@@ -354,10 +354,10 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     // "Cannot read properties of undefined (reading 'prepare')"，整个 profile 的工具一起失效。
     // 本包的构建、类型检查与覆盖率门禁在此之前全部照绿，判据只能落在 manifest 面上。
     //
-    // 分流口径以**构建产物**为准而不是源码：源码里的 `import type` 会被编译抹掉，只有
-    // host.js/client.js 里真出现裸说明符的那些才需要宿主在运行期在场。当前三枚
+    // 分流规则以**构建产物**为准而不是源码：源码里的 `import type` 会被编译抹掉，只有
+    // host.js/client.js 里真的按包名引用外部包的那些才需要宿主在运行期在场。当前三枚
     // （`schemastery` 默认导入、`dsh-brand` 与 `dsh-home-paths` 具名导入）都是值导入，
-    // 因此进 peer 且不标 optional；只被类型面引用的留在 dev，编译期解析得到、运行期不相干。
+    // 因此进 peer 且不标 optional；只被类型引用的留在 dev，编译期解析得到、运行期不相干。
     const { manifest } = await readSurface();
     const leaked = Object.keys(manifest.dependencies ?? {}).filter((name) =>
       name.startsWith("@deepseek-ai/"),
@@ -369,8 +369,8 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     // registry 上的 dist-tag 是实测出来的陷阱：`latest` 可能指向远早于宿主 ABI 的版本。
     // 精确钉是让「不带版本地装成远古版本」这件事不发生的最小条件；一旦放宽成 `^`/`~`，
     // 宿主某天发新 minor 就会自动跟上去，而插件与宿主 ABI 耦合，那等于让本包在没有测试的
-    // 情况下换掉编译用的宿主类型面。
-    // 只判 dev 这一侧：它才是本包真正装下来的那一份。peer 记的是「运行期由宿主提供」，
+    // 情况下换掉编译用的宿主类型。
+    // 只判 dev这一侧 段：它才是本包真正装下来的那一份。peer 记的是「运行期由宿主提供」，
     // 装什么版本由宿主决定，判据在下面那条。
     const { manifest } = await readSurface();
     // 过滤出违规项再一次性断言，而不是在循环里按条件 expect：失败时 diff 直接列出
@@ -383,8 +383,8 @@ describe("宿主依赖的版本形状（升级防线）", () => {
   });
 
   it("devDependencies 里的 dsh-* 全部同版本（不许装出第二份宿主类型）", async () => {
-    // 宿主类型面被这些包以 type-only 方式消费；同一次安装里出现两枚 dsh-session 的拷贝，
-    // nominal 类型（品牌串、投影状态）会开始互相不认，而那不报编译错、只报运行期
+    // 宿主类型被这些包以 type-only 方式消费；同一次安装里出现两枚 dsh-session 的拷贝，
+    // nominal 类型（带类型品牌的串、投影状态）会开始互相不认，而那不报编译错、只报运行期
     // 「认不出这个 callId」。同版本是让这件事不发生的最小条件。
     const { manifest } = await readSurface();
     const dshDev = Object.entries(manifest.devDependencies ?? {}).filter(([name]) =>
@@ -434,7 +434,7 @@ describe("注释与文档没有内部指涉", () => {
   });
 });
 
-/** `dsh` 声明面的形状（宿主按它决定装什么、加载什么）。 */
+/** `dsh` 声明的形状（宿主按它决定装什么、加载什么）。 */
 interface DshDeclaration {
   manifestVersion?: number;
   bundle?: { patch?: string | string[] };
@@ -466,7 +466,7 @@ function requiresIn(text: string): string[] {
   return [...new Set(text.match(/require\("(?<specifier>[^"]+)"\)/gu))].toSorted();
 }
 
-describe("dsh 声明面（宿主按这些字段决定装什么、加载什么）", () => {
+describe("dsh 声明（宿主按这些字段决定装什么、加载什么）", () => {
   it("dsh.client 声明 web 平台时必须同时交出 ./client export（缺了宿主扫描直接抛错）", async () => {
     const { manifest, shipped } = await readSurface();
     const { client } = dshOf(manifest);
@@ -483,7 +483,7 @@ describe("dsh 声明面（宿主按这些字段决定装什么、加载什么）
     }
   });
 
-  it("dsh.bundle.patch 指向存在的文件且在发布面里（读不到 patch 的 bundle 会被宿主静默跳过）", async () => {
+  it("dsh.bundle.patch 指向存在的文件且在发布名单里（读不到 patch 的 bundle 会被宿主静默跳过）", async () => {
     const { manifest, shipped } = await readSurface();
     const patches = patchFiles(dshOf(manifest).bundle);
     expect(patches.length, "dsh.bundle.patch 缺失：这条 bundle 在宿主侧等于不存在").toBeGreaterThan(
@@ -505,13 +505,13 @@ describe("dsh 声明面（宿主按这些字段决定装什么、加载什么）
       patches.map((file) => readFile(path.join(pkgDir, file), "utf8")),
     );
     const yml = texts.join("\n");
-    // 条目 id 是设置命名空间的真源（宿主读 entry.options.id）：代码侧读同一枚常量的导出口。
+    // 条目 id 是设置命名空间的唯一来源（宿主读 entry.options.id）：代码侧读同一枚常量的导返回路径。
     const entryId = SETTINGS_NAMESPACE;
     expect(yml, `patch 里没有 - id: ${entryId}，规则库的命名空间就会对不上`).toContain(
       `id: ${entryId}`,
     );
     // 行按裸包名引用本包：client-modules 只扫裸包名条目的 dsh.client 声明。
-    expect(yml, "patch 的 name 必须是本包包名（裸名，不带版本/路径）").toContain(
+    expect(yml, "patch 的 name 必须是本包包名（原样包名，不带版本/路径）").toContain(
       `name: "${manifest.name}"`,
     );
   });
