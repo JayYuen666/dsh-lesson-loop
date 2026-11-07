@@ -95,7 +95,7 @@ If your profile pins `@jayyuen66/dsh-plugin-shared` with a pnpm `overrides` entr
 
 ## <img src="https://api.iconify.design/lucide/plug.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Enabling it in dsh
 
-- `dsh.bundle.patch` points at `cordis.patch.yml`, which carries **two entries**: `- name: "@jayyuen66/dsh-plugin-shared"` (the supplier of the card components, deliberately **without an `id`** so the plugin page does not list it as a switchable component) and `- id: lesson-loop` with `name: "@jayyuen66/dsh-lesson-loop"`. The **bare package name** is what makes the host scan the client half.
+- `dsh.bundle.patch` points at `cordis.patch.yml`, which carries a single `- id: lesson-loop` entry with `name: "@jayyuen66/dsh-lesson-loop"`. What makes the host scan the client half is the **bare package name**. The card components are bundled into `client.js` (only `react` / `zod` stay external to the host's module table), so the card does not depend on a second package being loaded.
 - **One entry, one `Config`.** The settings namespace is the entry id, so switches, thresholds and the `rules` array share one section and one revision. `rules` carries `.loose()`, the read side checks the raw shape through `describe().user` (unreadable means it refuses to write rather than overwriting), and every write is one CAS commit with re-read and replay.
 - `settings` is the only plugin-level hard dependency. `timer` / `commands` / `systemPrompt` / `llm` are optional: a missing one removes that capability, the plugin still loads.
 - The card's data plane is installed unconditionally on the apply fiber, so it exists even on a host whose web layer arrives late.

@@ -516,13 +516,13 @@ describe("dsh 声明（宿主按这些字段决定装什么、加载什么）", 
     );
   });
 
-  it("client.js 只 require 平台模块与共享客户端行（其余依赖一律内联，避免第二份实例）", async () => {
+  it("client.js 只 require 平台模块（其余依赖一律内联，避免第二份实例）", async () => {
     const out = await readFile(path.join(pkgDir, "client.js"), "utf8");
     const required = requiresIn(out);
-    // 平台模块由宿主 shell 提供；shared/client 由本包 cordis.patch.yml 启用的共享行提供。
+    // 平台模块由宿主 shell 提供；shared 的 `./client` 已收回内联（dsh-ocr-review 仓 issue #2：
+    // 对它的外置请求在传递依赖安装形状下可能落进 "missed the module table"）。
     // 再出现别的裸说明符就等于把一份依赖整包内联/外置进浏览器，符号身份与版本都不再由宿主决定。
-    expect(required, "client.js 的 require 清单只允许平台模块与共享客户端行").toStrictEqual([
-      'require("@jayyuen66/dsh-plugin-shared/client")',
+    expect(required, "client.js 的 require 清单只允许平台模块").toStrictEqual([
       'require("react")',
       'require("zod")',
     ]);

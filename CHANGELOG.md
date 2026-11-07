@@ -2,6 +2,14 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The deviations below are deliberate: version headings carry no release date (publish times are recorded by the registry — `npm view <package> time`), and a release may add sections beyond the standard six, such as `Not changed, deliberately`.
 
+## 0.1.10
+
+修复 0.1.9 引入的 web 启动隐患：卡片组件收回 `client.js` 内联，移除对 `@jayyuen66/dsh-plugin-shared/client` 的模块表外置与 `cordis.patch.yml` 里的 shared 供应行。默认配置与注入行为不变。
+
+### Fixed
+
+- **卡片组件内联进 `client.js`，产物自足**：0.1.9 把 `@jayyuen66/dsh-plugin-shared/client` 外置给宿主模块表，靠 `cordis.patch.yml` 插入的一条**不写 id** 的 shared 组件行把 shared 装载成供应方。这份供应链在 shared 只作为传递依赖装进 profile 时（`dsh plugin add` 的正常结果）没有保证——宿主侧可以既不报错也不把 shared 的 client 产物排进启动图，页面启动时 `require("@jayyuen66/dsh-plugin-shared/client")` 落进 `missed the module table`，整窗「应用无法启动或已意外停止」（dsh-ocr-review 仓 issue #2，宿主 0.2.2-rc.1 dsh desktop 实报）。`dsh.bundle.client.external` 从 `package.json` 移除（`build-client.mjs` 按它读外置清单，基座之外不再有外置项），patch 里的 shared 供应行随之移除，`cordis.patch.yml` 回到只声明本包一行；react / zod 仍外置给宿主 `PLATFORM_MODULES`，内联反而会产生第二份身份。`test/build-client.test.ts` 的 external 清单针与 manifest 针同步反转，`test/publish-manifest.test.ts` 的 require 面改为恰好 react / zod 两枚。
+
 ## 0.1.9
 
 宿主开发基线抬到 `0.2.2-rc.1`，支持窗口从单条 `^0.2.1-rc.3` 改成两条宿主线的并集，`engines.node` 下限抬到 `>=24.9.0`；卡片组件改由 shared 的 `./client` 供。`/lessons-digest` 的事件读取改走无投影通道并归还观察租约。默认配置与注入行为不变，需要留意的是 `engines.node` 抬高后 node 22 装不上本包。

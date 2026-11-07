@@ -95,7 +95,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 ## <img src="https://api.iconify.design/lucide/plug.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 在 dsh 里启用
 
-- `dsh.bundle.patch` 指向 `cordis.patch.yml`，里面是**两条条目**：`- name: "@jayyuen66/dsh-plugin-shared"`（卡片组件的供应行，**刻意不写 `id`**，所以插件页不会把它列成可停用组件）与 `- id: lesson-loop`，带 `name: "@jayyuen66/dsh-lesson-loop"`。让宿主去扫描 client 半的是**裸包名**。
+- `dsh.bundle.patch` 指向 `cordis.patch.yml`，里面只有一条 `- id: lesson-loop`，带 `name: "@jayyuen66/dsh-lesson-loop"`。让宿主去扫描 client 半的是**裸包名**。卡片组件直接打进 `client.js`（只有 `react` / `zod` 外置给宿主模块表），卡片不依赖第二份包被装载。
 - **一个条目，一份 `Config`。** 设置命名空间就是条目 id，于是开关、阈值与 `rules` 数组共用同一段、同一枚 revision。`rules` 带了 `.loose()`，读侧经 `describe().user` 检查原文形状（读不懂就拒写，而不是覆写），每次写都是一次 CAS 提交加重读重放。
 - `settings` 是唯一插件级硬依赖。`timer` / `commands` / `systemPrompt` / `llm` 可选：缺一个只让对应能力消失，插件照常装载。
 - 卡片的数据那一栏在 apply fiber 上无条件安装，所以即使宿主的 web 层到得晚，它也在。
