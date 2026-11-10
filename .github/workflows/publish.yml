@@ -46,7 +46,7 @@ jobs:
           # 本仓的 workflow 不用 git 写动词，token 没必要留在 .git/config 里：
           # 后续步骤会跑仓库自己的 install/构建/测试脚本，也就跑得到依赖里的脚本。
           persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         # 版本取自 package.json 的 packageManager，与 ci.yml 同一枚钉版。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -247,7 +247,7 @@ jobs:
       # 发布者本人，就是这条路的痕迹：归属仍在 maintainers 与 repository 上，改不动也不必改。
       id-token: write
     steps:
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           # 本 job 不检出仓库，读不到 package.json 的 packageManager，只能显式给同一枚钉版。
           version: 12.11.2
