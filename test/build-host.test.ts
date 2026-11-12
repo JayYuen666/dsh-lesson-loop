@@ -11,6 +11,7 @@
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { buildHost, singleEntryChunk } from "../build-host.mjs";
+import { fieldOf } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { hostFreshnessEvidence } from "./host-freshness.ts";
 
 describe("buildHost()", () => {
@@ -139,17 +140,24 @@ describe("产物 host.js 的运行期可链接性", () => {
     // 类型检查只读 .d.ts，链接才证明**运行时那份模块**真有这些出口：ESM 在 link 阶段就校验
     // 具名导出，宿主线挪动时（如 0.2.1-alpha.2 改掉 webServer.host 的取值域、重排 client.js
     // 的导出）少一枚出口这里立刻红，而不是等装机之后。
-    const linked = await import(new URL("../host.js", import.meta.url).href).then(
-      (mod: { default?: { apply?: unknown } }) => mod,
-      // 拒绝分支的形参按本仓 lint 必须是 unknown；归一成 Error 才既有 message 可读，
+    // 模块命名空间是 any：先落 unknown，再按字段读——与 host 侧读宿主对象的纪律一致。
+    let linked: unknown;
+    try {
+      linked = await import(new URL("../host.js", import.meta.url).href);
+    } catch (error) {
+      // catch 的形参按本仓 lint 必须是 unknown；归一成 Error 才既有 message 可读，
       // 又让下面的收窄成立。
-      (error: unknown) => (error instanceof Error ? error : new Error(String(error))),
-    );
+      linked = error instanceof Error ? error : new Error(String(error));
+    }
     if (linked instanceof Error) {
       // 模块命名空间对象不能模板字符串化（Cannot convert object to primitive value），
       // 失败只取 message。
       assert.fail(`host.js 链接失败：${linked.message}`);
     }
-    assert.equal(typeof linked.default?.apply, "function", "cordis 入口的 apply 必须在场");
+    assert.equal(
+      typeof fieldOf(fieldOf(linked, "default"), "apply"),
+      "function",
+      "cordis 入口的 apply 必须在场",
+    );
   });
 });

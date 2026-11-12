@@ -1614,7 +1614,7 @@ export function apply(ctx: Context, config: Config): void {
   // revision 再投影三份，而 systemPrompt section 的 text 每次提示词装配都求值——那是本包
   // 频度最高的读点。失效靠宿主推送：写配置 → app-boot/config-reload → SettingsForms
   // invalidate() → 微任务里 describe() → 对 raw 变化的条目 emit('settings/document-updated')。
-  let cachedPreference: unknown = undefined;
+  let cachedPreference: unknown;
   let hasCachedPreference = false;
   svc.on("settings/document-updated", (ns: unknown) => {
     if (ns === LOCALE_SETTINGS_NAMESPACE) {

@@ -2,6 +2,27 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The deviations below are deliberate: version headings carry no release date (publish times are recorded by the registry — `npm view <package> time`), and a release may add sections beyond the standard six, such as `Not changed, deliberately`.
 
+## 0.1.11
+
+宿主开发基线抬到 `0.2.2-rc.2`，支持窗口收到 `^0.2.2-rc.1`。规则卡与教训循环行为不变。
+
+### Changed
+
+- **宿主开发基线抬到 `0.2.2-rc.2`**：`devDependencies` 整组 `@deepseek-ai/dsh-*` 抬到 `0.2.2-rc.2`，并补上 rc.2 新增的 `@deepseek-ai/dsh-error`（`dsh-llm` 的精确 peer，`autoInstallPeers: false` 下须显式声明）。
+- **支持窗口收到 `^0.2.2-rc.1`**：`engines.dsh` 与 `@deepseek-ai/dsh*` peer 由 `^0.2.1-rc.5 || ^0.2.2-alpha.3` 改为 `^0.2.2-rc.1`（单条 0.2.2 线）；`@deepseek-ai/schemastery` peer 由 `^3.18.5 || ^3.18.6-alpha.1` 收到 `^3.19.0`。devDependencies 仍精确钉版。
+- **`Remote` 标记收口到 shared**：`lib/rules-remote.ts` 删除本地的 `markRemote` 程序化装饰器副本，改用 `@jayyuen66/dsh-plugin-shared/lib/remote-marker`（shared 0.2.5 起提供）。落标记的类、方法与时机逐位不变，只是不再在本仓维护第二份 TC39 形状说明。
+- **工具链随基线升级**：oxlint `1.91.0 → 1.93.0`、oxfmt `0.76.0 → 0.78.0`、oxlint-tsgolint `7.0.2005 → 7.0.2006`、rolldown `1.2.16 → 1.3.2`、vite `8.3.6 → 8.3.8`，catalog 的 shared 抬到 `^0.2.5`；`pnpm-lock.yaml` 随之重解。
+- **发布门禁补 CHANGELOG 版本针**：`test/publish-manifest.test.ts` 要求 `CHANGELOG.md` 顶部版本与 `package.json` 的 `version` 一致，防止只抬版本号、不写变更记录就发版。
+- **文档**：dsh 徽章与「实测」名单改到 `^0.2.2-rc.1` 窗口；目录锚点跟随标题图标修正；提醒段补明 rc.2 AgentTeam 的具名成员按子代理会话处理，不接收注入。
+
+### Fixed
+
+- **新版 oxlint 判据**：`host.ts` 的 `cachedPreference` 去掉冗余的 `= undefined`（`unicorn/no-useless-undefined`）；`test/build-host.test.ts` 的 `.then(onFulfilled, onRejected)` 改为 `try/catch`（`promise/prefer-catch`），模块命名空间先落 `unknown` 再经 `fieldOf` 读取，避免 `any` 赋值。两处都不改变运行期行为。
+
+### Not changed, deliberately
+
+- **rc.2 兼容面复核**：AgentTeam 的具名与多层成员仍以 `origin: 'subagent'` 与 `delegationDepth` 创建，现有根会话判定照旧跳过注入；`Session.append` 的批量重载、工具失败的新错误码、聊天 codeblock 的 HOC 槽、MCP 动态注册本包均未使用；`HarnessError` 迁到 `@deepseek-ai/dsh-error` 后仍由 `dsh-llm` 再导出，本包不直接构造 `LlmError`。因此除基线抬升外没有功能改动，规则卡与注入行为逐位不变。
+
 ## 0.1.10
 
 修复 0.1.9 引入的 web 启动隐患：卡片组件收回 `client.js` 内联，移除对 `@jayyuen66/dsh-plugin-shared/client` 的模块表外置与 `cordis.patch.yml` 里的 shared 供应行。默认配置与注入行为不变。

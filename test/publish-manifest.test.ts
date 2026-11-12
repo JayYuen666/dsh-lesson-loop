@@ -53,6 +53,7 @@ const SKIP_DIRS = new Set([
 
 /** package.json 里与入口有关的形状；其余字段本门禁不关心。 */
 interface Manifest {
+  readonly version?: string;
   readonly name?: string;
   readonly main?: string;
   readonly types?: string;
@@ -526,5 +527,23 @@ describe("dsh 声明（宿主按这些字段决定装什么、加载什么）", 
       'require("react")',
       'require("zod")',
     ]);
+  });
+});
+
+describe("版本与变更记录", () => {
+  it("变更记录顶部版本与 package.json 的 version 一致", async () => {
+    // 只抬 version 不写条目时，发出去的新版本没有变更记录，而其余门禁全绿。
+    const { manifest } = await readSurface();
+    if (manifest.version === undefined) {
+      throw new Error("package.json 没有 version");
+    }
+    const changelog = await readFile(path.join(pkgDir, "CHANGELOG.md"), "utf8");
+    const top = /^## (?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/mu.exec(changelog)?.groups?.[
+      "version"
+    ];
+    if (top === undefined) {
+      throw new Error("CHANGELOG.md 里没有任何版本标题");
+    }
+    expect(top, "CHANGELOG 顶部版本必须与 package.json 的 version 一致").toBe(manifest.version);
   });
 });

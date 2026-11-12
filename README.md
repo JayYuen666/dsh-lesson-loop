@@ -12,7 +12,7 @@
   <a href="https://github.com/JayYuen666/dsh-lesson-loop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-lesson-loop/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
   <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
   <img src="https://img.shields.io/badge/node-%3E%3D24.9-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
-  <img src="https://img.shields.io/badge/dsh-%5E0.2.1--rc.5-658EFF?style=flat-square" alt="dsh" />
+  <img src="https://img.shields.io/badge/dsh-%5E0.2.2--rc.1-658EFF?style=flat-square" alt="dsh" />
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/powered_by_dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white" alt="powered by dsh" /></a>
 </p>
 
@@ -31,26 +31,29 @@
 
 ## <img src="https://api.iconify.design/lucide/file-text.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Contents
 
-- [What it does](#what-it-does)
-- [Install](#install)
-- [Verify it is live](#verify-it-is-live)
-- [What it does not provide](#what-it-does-not-provide)
-- [Enabling it in dsh](#enabling-it-in-dsh)
-- [The lesson bus](#the-lesson-bus)
-- [Settings](#settings)
-- [Public interface](#public-interface)
-- [Data and privacy](#data-and-privacy)
-- [Known boundaries](#known-boundaries)
-- [FAQ](#faq)
-- [Development](#development)
-- [License](#license)
+- [ Contents](#-contents)
+- [ What it does](#-what-it-does)
+  - [How a rule is judged](#how-a-rule-is-judged)
+- [ Install](#-install)
+  - [ Shared version floor](#-shared-version-floor)
+- [ Verify it is live](#-verify-it-is-live)
+- [ What it does not provide](#-what-it-does-not-provide)
+- [ Enabling it in dsh](#-enabling-it-in-dsh)
+- [ The lesson bus](#-the-lesson-bus)
+- [ Settings](#-settings)
+- [ Public interface](#-public-interface)
+- [ Data and privacy](#-data-and-privacy)
+- [ Known boundaries](#-known-boundaries)
+- [ FAQ](#-faq)
+- [ Development](#-development)
+- [ License](#-license)
 
 ## <img src="https://api.iconify.design/lucide/shield.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> What it does
 
 - **One bus, no coupling.** Sibling plugins report through the optional `lessonLoop` service; a profile without this package only drops those reports. The host half provides the service, the client half renders a web card holding the switches and the rule review desk.
 - **Sink.** Each report appends one line to the event stream and merges into a candidate card keyed by (project, category, signature); at `promoteThreshold` that key is marked ready for review.
 - **A machine never promotes a rule.** Status `armed` is only ever a human decision — the card's `arm` action writes it, and the startup migration merely carries an existing armed state onto a merged card. `reject` / `demote` / `archive` / `edit` / `revive` are human actions too.
-- **Remind.** A project-agnostic standing section keeps the loop visible, and each root session receives the full text of its project's armed rules at `agent/created`. Subagent sessions are skipped.
+- **Remind.** A project-agnostic standing section keeps the loop visible, and each root session receives the full text of its project's armed rules at `agent/created`. Subagent sessions are skipped — rc.2 AgentTeam's named members remain `origin: 'subagent'` subagent sessions and receive nothing either.
 - **Zero model tools, zero HTTP routes of its own.** The card's data plane is the official Typert Remote namespace `lessonLoopRules`, reached through the host `/api` gateway.
 
 ### How a rule is judged
@@ -69,7 +72,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 Remove with `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`. The package is on the public npm registry, so installation needs no credentials.
 
-- **Node.js `>= 24.9`, host `dsh` on the rolling `^0.2.1-rc.5 || ^0.2.2-alpha.3` window.** The plugin's own floor is `engines.node` (`>=24.9.0`), which is the host's floor from `0.2.2-alpha.2` up: a host below it never starts, so a lower claim here would promise an environment nobody can install into. The requirement the host reads is `engines.dsh` (`^0.2.1-rc.5 || ^0.2.2-alpha.3`), and it **decides alone** — with that field present, `evaluatePluginCompatibility` never looks at the `@deepseek-ai/dsh*` peers. Measured: `0.2.0-rc.2`, `0.2.1-rc.1` and `0.2.1-rc.3` are refused, `0.2.1-rc.5` through `0.2.2-rc.1` pass, `0.3.0` is refused. The support window rolls: this package is verified against every released host version inside the window at publish time and re-verified once the window moves, so the version number in this bullet is not a standing promise.
+- **Node.js `>= 24.9`, host `dsh` on the rolling `^0.2.2-rc.1` window.** The plugin's own floor is `engines.node` (`>=24.9.0`), which is the host's floor from `0.2.2-alpha.2` up: a host below it never starts, so a lower claim here would promise an environment nobody can install into. The requirement the host reads is `engines.dsh` (`^0.2.2-rc.1`), and it **decides alone** — with that field present, `evaluatePluginCompatibility` never looks at the `@deepseek-ai/dsh*` peers. Measured: `0.2.0-rc.2`, `0.2.1-rc.5` and `0.2.2-alpha.3` are refused, `0.2.2-rc.1` through `0.2.2` pass, `0.3.0` is refused. The support window rolls: this package is verified against every released host version inside the window at publish time and re-verified once the window moves, so the version number in this bullet is not a standing promise.
 - **No `@deepseek-ai/*` under `dependencies`, by contract.** Profiles install with `nodeLinker: hoisted` and `autoInstallPeers: false`, so a host package there becomes a real second copy; `@deepseek-ai/dsh-tools` keys its scheduler with a plain `Symbol`, so **every native tool call throws** in that profile while build, typecheck and coverage stay green. The four host packages `host.js` imports for value are required peers and repeated under `devDependencies` at the same exact pin, so the bundler externalizes them instead of inlining the official function bodies; `test/publish-manifest.test.ts` enforces both halves. Artifacts are rebuilt by `prepack`, never committed.
 
 ### <img src="https://api.iconify.design/lucide/arrow-down-to-line.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Shared version floor

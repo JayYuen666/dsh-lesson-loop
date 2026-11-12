@@ -12,7 +12,7 @@
   <a href="https://github.com/JayYuen666/dsh-lesson-loop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-lesson-loop/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
   <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
   <img src="https://img.shields.io/badge/node-%3E%3D24.9-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
-  <img src="https://img.shields.io/badge/dsh-%5E0.2.1--rc.5-658EFF?style=flat-square" alt="dsh" />
+  <img src="https://img.shields.io/badge/dsh-%5E0.2.2--rc.1-658EFF?style=flat-square" alt="dsh" />
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/powered_by_dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white" alt="powered by dsh" /></a>
 </p>
 
@@ -31,26 +31,29 @@
 
 ## <img src="https://api.iconify.design/lucide/file-text.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 目录
 
-- [它做什么](#它做什么)
-- [安装](#安装)
-- [确认它真的在工作](#确认它真的在工作)
-- [它不提供什么](#它不提供什么)
-- [在 dsh 里启用](#在-dsh-里启用)
-- [教训总线](#教训总线)
-- [设置项](#设置项)
-- [对外接口](#对外接口)
-- [数据与隐私](#数据与隐私)
-- [已知边界](#已知边界)
-- [常见问题](#常见问题)
-- [开发](#开发)
-- [许可](#许可)
+- [ 目录](#-目录)
+- [ 它做什么](#-它做什么)
+  - [规则如何判定](#规则如何判定)
+- [ 安装](#-安装)
+  - [ shared 的版本下限](#-shared-的版本下限)
+- [ 确认它真的在工作](#-确认它真的在工作)
+- [ 它不提供什么](#-它不提供什么)
+- [ 在 dsh 里启用](#-在-dsh-里启用)
+- [ 教训总线](#-教训总线)
+- [ 设置项](#-设置项)
+- [ 对外接口](#-对外接口)
+- [ 数据与隐私](#-数据与隐私)
+- [ 已知边界](#-已知边界)
+- [ 常见问题](#-常见问题)
+- [ 开发](#-开发)
+- [ 许可](#-许可)
 
 ## <img src="https://api.iconify.design/lucide/shield.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 它做什么
 
 - **一条总线，无耦合。** 兄弟插件经可选的 `lessonLoop` 服务上报；没装本包的 profile 只是丢掉这些上报。host 半提供这个服务，client 半渲染带开关与规则评审台的 web 设置卡。
 - **写入。** 每次上报往事件流追加一行，并按 (project, category, signature) 归并进一张候选卡；同键达到 `promoteThreshold` 时，这张卡被标为待评审。
 - **机器永不升格规则。** 状态 `armed` 只可能来自人工决定——卡片上的 `arm` 动作写它，启动时的迁移只是把既有的 armed 状态搬到归并后的主卡上。`reject` / `demote` / `archive` / `edit` / `revive` 同样是人工动作。
-- **提醒。** 一段与项目无关的常驻段让回路一直可见，每个根会话在 `agent/created` 时收到本项目 armed 规则的全文。子代理会话跳过。
+- **提醒。** 一段与项目无关的常驻段让回路一直可见，每个根会话在 `agent/created` 时收到本项目 armed 规则的全文。子代理会话跳过——rc.2 的 AgentTeam 具名成员仍是 `origin: 'subagent'` 的子代理会话，同样不注入。
 - **零模型工具，零自有 HTTP 路由。** 卡片的数据那一栏是官方 Typert Remote 命名空间 `lessonLoopRules`，经宿主 `/api` 网关访问。
 
 ### 规则如何判定
@@ -69,7 +72,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 卸载用 `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`。本包在公共 npm registry 上，所以安装不需要凭据。
 
-- **Node.js `>= 24.9`、宿主 `dsh` 在滚动的 `^0.2.1-rc.5 || ^0.2.2-alpha.3` 窗口上。** 插件自己的下限是 `engines.node`（`>=24.9.0`），这一档取自宿主：`0.2.2` 系列从 `alpha.2` 起每一版宿主都声明 Node `>=24.9.0`，写得更低等于承诺一个宿主起不来的运行环境。宿主读取的版本要求是 `engines.dsh`（`^0.2.1-rc.5 || ^0.2.2-alpha.3`），而且它**单独决定**——这个字段在时，`evaluatePluginCompatibility` 从不看 `@deepseek-ai/dsh*` 这批 peer。实测：`0.2.0-rc.2`、`0.2.1-rc.1` 与 `0.2.1-rc.3` 被拒，`0.2.1-rc.5` 到 `0.2.2-rc.1`（含 `0.2.2-alpha.3`）通过，`0.3.0` 被拒。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
+- **Node.js `>= 24.9`、宿主 `dsh` 在滚动的 `^0.2.2-rc.1` 窗口上。** 插件自己的下限是 `engines.node`（`>=24.9.0`），这一档取自宿主：`0.2.2` 系列从 `alpha.2` 起每一版宿主都声明 Node `>=24.9.0`，写得更低等于承诺一个宿主起不来的运行环境。宿主读取的版本要求是 `engines.dsh`（`^0.2.2-rc.1`），而且它**单独决定**——这个字段在时，`evaluatePluginCompatibility` 从不看 `@deepseek-ai/dsh*` 这批 peer。实测：`0.2.0-rc.2`、`0.2.1-rc.5` 与 `0.2.2-alpha.3` 被拒，`0.2.2-rc.1` 到 `0.2.2` 通过，`0.3.0` 被拒。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
 - **按约定，`dependencies` 下不放任何 `@deepseek-ai/*`。** profile 以 `nodeLinker: hoisted` 与 `autoInstallPeers: false` 安装，那里放一个宿主包就会变成真实的第二份副本；`@deepseek-ai/dsh-tools` 用普通 `Symbol` 给调度器做键，于是那个 profile 里**每一次原生工具调用都抛错**，而构建、类型检查与覆盖率一直全绿。`host.js` 按值导入的四枚宿主包都是必需 peer，并在 `devDependencies` 里按同一个精确钉版再写一份，好让打包器把它们外部化，而不是内联官方函数体；`test/publish-manifest.test.ts` 把这两半都钉住。产物由 `prepack` 重建，从不提交。
 
 ### <img src="https://api.iconify.design/lucide/arrow-down-to-line.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> shared 的版本下限

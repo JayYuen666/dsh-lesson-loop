@@ -20,9 +20,10 @@
 // 与「id 不在库里就回 404」原样保留——它们护的是动作本身，与传输方式无关。
 
 import type { Context } from "@deepseek-ai/cordis";
-import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
+import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 import { errorText } from "@jayyuen66/dsh-plugin-shared/lib/errors";
+import { markRemote } from "@jayyuen66/dsh-plugin-shared/lib/remote-marker";
 
 import type { LessonStore, RuleCard } from "./lesson-store.ts";
 import { fill } from "./messages.ts";
@@ -313,29 +314,8 @@ export class LessonRulesService extends TypertRemoteService {
   }
 }
 
-/**
- * 标准装饰器的**程序化调用**：`@Remote` 的全部作用就是往类原型写一枚描述符，而标准装饰器
- * 语法需要一条 tsc 降级流水线（本仓的测试/构建解析器都不降级它）。这里直接按 TC39 的
- * `ClassMethodDecoratorContext` 形状调同一个 decorator 函数，把标记落到真正的原型上。
- */
-function markRemote(prototype: LessonRulesService, methodName: string): void {
-  // 官方 `Remote` 的运行时只读 name/private/static 与 addInitializer（TC39 的 access/metadata
-  // 它一概不读），故这里只给这四位；`Reflect.apply` 让装饰器工厂保持未类型化的调用签名。
-  const context = {
-    kind: "method",
-    name: methodName,
-    static: false,
-    private: false,
-    addInitializer: (initializer: (this: unknown) => void): void => {
-      // 初始器只做 `Object.getPrototypeOf(this)` 后落标记；用原型造一枚替身实例即可。
-      Reflect.apply(initializer, Object.create(prototype), []);
-    },
-  };
-  // oxlint-disable-next-line eslint/new-cap -- `Remote(…)` 是装饰器工厂，不是大写开头的构造调用
-  const decorate = Remote(methodName);
-  Reflect.apply(decorate, undefined, [Reflect.get(prototype, methodName), context]);
-}
-
+// 标记实现收口在 shared 的 ./lib/remote-marker（0.2.5 起）：本仓不再维护一份程序化
+// 装饰器副本，调用形状与官方 @Remote 逐位等价（TC39 形状说明见该模块）。
 markRemote(LessonRulesService.prototype, "stats");
 markRemote(LessonRulesService.prototype, "rules");
 markRemote(LessonRulesService.prototype, "lessons");
