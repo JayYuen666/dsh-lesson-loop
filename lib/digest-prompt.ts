@@ -14,6 +14,7 @@ import type { NegativeFeedback } from "./negative-feedback.ts";
 import { fill } from "./messages.ts";
 import type { LessonLoopMessages } from "./messages.ts";
 import { z } from "zod";
+import { truncateCodePoints } from "@jayyuen66/dsh-plugin-shared/lib/text";
 
 /** 背景去重的**事件扫描窗**（条数）：先取更宽的窗口再按 category+signature 去重——
  *  只扫 limit 条事件时，热点签名（每拒绝一次就写一条的 dangerous-bash 一类）能把
@@ -175,21 +176,6 @@ const DIGEST_RULE_SCHEMA = z.object({
 
 /** 空签名时的兜底长度：从正文截一段当签名（按码点截，避免把代理对劈成孤立代理项）。 */
 const SIGNATURE_FALLBACK_MAX = 60;
-
-/** 按码点截断：字符串展开（[...text]）会被 no-misused-spread / prefer-spread 两条
- *  规则各打一板，for..of 按码点迭代两边都不犯。 */
-function truncateCodePoints(text: string, max: number): string {
-  let out = "";
-  let counted = 0;
-  for (const char of text) {
-    if (counted >= max) {
-      return out;
-    }
-    out += char;
-    counted += 1;
-  }
-  return out;
-}
 
 /** 单条模型输出 → 候选：字段缺失、表外类别、空白 statement 一律拒收（返回 null）。
  *  表外类别丢弃的理由：category 是机器读的存储契约，落一张 `pass()` 永远匹配不到、

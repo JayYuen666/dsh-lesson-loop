@@ -38,6 +38,9 @@ export interface UiMessages {
   readonly revert: string;
   /** 保存失败前缀（后接错误摘要）。 */
   readonly saveFailed: string;
+  /** 有字段越界时的保存条提示：`NumberField` 对越界草稿不调 `onChange`，
+   *  只看草稿差异的门禁会以为什么都没改，于是照样提交其余字段。 */
+  readonly invalidFields: string;
   /** 保存被规则库拒绝（CAS 冲突/拒写）时的提示：一次原子提交，改动一个字都没写到磁盘。 */
   readonly saveRejected: string;
   /** stats 端点回非 ok 且没带 error 时的兜底。 */
@@ -197,6 +200,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     saving: "保存中…",
     revert: "撤销",
     saveFailed: "保存失败：",
+    invalidFields: "有字段超出范围，先修正或撤销后再保存。",
     saveRejected: "规则库拒绝了这次保存（可能被别处改过），改动未生效，请重试。",
     statsUnavailable: "stats 不可用",
     actionFailed: "操作失败",
@@ -280,6 +284,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     saving: "Saving…",
     revert: "Revert",
     saveFailed: "save failed: ",
+    invalidFields: "Some fields are out of range; fix them or revert before saving.",
     saveRejected:
       "The rule library refused this save (it may have changed elsewhere) — nothing was applied, retry.",
     statsUnavailable: "stats unavailable",

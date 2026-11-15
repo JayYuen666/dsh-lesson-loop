@@ -18,6 +18,7 @@
 // 仍是**数据**（同 digest-prompt.ts 的处理：键名与枚举值留在原文件，只把说明文字进字典）。
 // console.* 的日志文案也不在此列——那是给排障的人看的，不随界面语言切换。
 import type { MessagesCatalog } from "@jayyuen66/dsh-plugin-shared/lib/locale";
+import { fillPlaceholders } from "@jayyuen66/dsh-plugin-shared/lib/placeholder";
 
 /** 字典模板的插值参数（数值由调用点现算，字典只收整行模板）。 */
 export type MessageParams = Readonly<Record<string, string | number>>;
@@ -174,12 +175,7 @@ export interface LessonLoopMessages {
  * @returns 插值完成的文本。
  */
 export function fill(template: string, params: MessageParams): string {
-  // 捕获组按 lint（prefer-named-capture-group）要求具名；回调取位置参数 p1（值与
-  // groups.name 相同），组名在这里同时是「这个组是什么」的文档。
-  return template.replaceAll(/\{(?<name>\w+)\}/gu, (matched: string, name: string): string => {
-    const value = Object.hasOwn(params, name) ? params[name] : undefined;
-    return value === undefined ? matched : String(value);
-  });
+  return fillPlaceholders(template, params);
 }
 
 export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {

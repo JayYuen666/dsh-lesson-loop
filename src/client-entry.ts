@@ -41,7 +41,6 @@ import type { LocaleNs, Translate, UiMessages } from "./ui-messages.ts";
 import { createRulesReader } from "./rules-reader.ts";
 import type { RulesReader } from "./rules-reader.ts";
 import {
-  CARD_UI_CSS,
   CardForm,
   NumberField,
   SaveBar,
@@ -49,9 +48,11 @@ import {
   StatusBar,
   ToggleField,
   diffTouched,
+  ensureCardUiCss,
   fieldOf,
   isRecord,
   splitHint,
+  useInvalidFields,
 } from "@jayyuen66/dsh-plugin-shared/client";
 
 /** 本包 `NS` 的第三重身份：官方 locale 的命名空间（前两重 = loader 条目 id 与 settings
@@ -649,6 +650,12 @@ interface ConfigInputs {
   eff: (field: string) => unknown;
   setField: (field: string, value: SettingsValue) => void;
   clearField: (field: string) => void;
+  /** 保存/撤销后自增一次，把数字框里的越界草稿清回已提交值：父值没变时组件内「保留输入
+   *  中的草稿」那一支会把非法值一直留在框里，用户点完保存看到的还是那个红框。 */
+  resetToken: number;
+  /** 把「本字段现在越界」上报给卡片，让保存门禁拦住越界草稿：`NumberField` 对越界值
+   *  不调 `onChange`，只看草稿差异的门禁会以为什么都没改，于是照样提交其余字段。 */
+  reportInvalid: (field: string, invalid: boolean) => void;
 }
 
 interface ToggleSpec {
@@ -695,6 +702,10 @@ function configNumber(inputs: ConfigInputs, spec: NumberSpec): ReactNode {
     ...(spec.unit === undefined ? {} : { unit: inputs.t(spec.unit) }),
     invalidHint: inputs.t("outOfRange"),
     disabled: inputs.frozen,
+    resetToken: inputs.resetToken,
+    onInvalidChange: (invalid: boolean): void => {
+      inputs.reportInvalid(spec.field, invalid);
+    },
     onChange: (next: number | undefined): void => {
       if (next === undefined) {
         inputs.clearField(spec.field);
@@ -855,6 +866,8 @@ interface CardView {
   saveError: string | null;
   busy: boolean;
   dirty: boolean;
+  /** 有字段越界：整张卡不给保存（越界草稿不进 touched，只看差异会以为什么都不用存）。 */
+  blocked: boolean;
   /** 本次待保存的字段条数（保存条上的「已修改 N 项」）。 */
   dirtyCount: number;
   /** 宿主规则读取接口；未到达时是 undefined（与拆出前 csrf 空串同一兜底位）。 */
@@ -871,6 +884,10 @@ interface CardView {
   eff: (field: string) => unknown;
   setField: (field: string, value: SettingsValue) => void;
   clearField: (field: string) => void;
+  /** 保存/撤销后自增一次，清掉数字框里的越界草稿（见 ConfigInputs 同名两位）。 */
+  resetToken: number;
+  /** 数字框把越界状态上报给卡片（见 ConfigInputs 同名两位）。 */
+  reportInvalid: (field: string, invalid: boolean) => void;
   onDone: (ok: boolean, message?: string) => void;
   setRuleBusy: (nextBusy: boolean) => void;
   setShowAll: (next: boolean) => void;
@@ -994,6 +1011,8 @@ function renderCardBody(view: CardView): ReactNode {
     eff: view.eff,
     setField: view.setField,
     clearField: view.clearField,
+    resetToken: view.resetToken,
+    reportInvalid: view.reportInvalid,
   };
   const chips = [
     t("chipCandidates", { count: view.groups.candidates.length }),
@@ -1002,9 +1021,10 @@ function renderCardBody(view: CardView): ReactNode {
   ];
   const saveBar = createElement(SaveBar, {
     dirty: view.dirty,
+    blocked: view.blocked,
     busy: view.busy,
     writable: view.writable,
-    error: view.saveError,
+    error: view.saveError ?? (view.blocked ? t("invalidFields") : null),
     saveLabel: t("save"),
     savingLabel: t("saving"),
     revertLabel: t("revert"),
@@ -1089,6 +1109,9 @@ function LlcCard(props: LlcCardProps): ReactNode {
   const [touched, setTouched] = useState<FieldDraft>({});
   const [busy, setBusy] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // 越界集与重置信号由 shared 的 `useInvalidFields()` 提供（七个仓共用同一套判定）。
+  const invalid = useInvalidFields();
+  const { blocked, resetToken, reportInvalid } = invalid;
   const eff = (field: string): unknown => (field in touched ? touched[field] : value[field]);
   const dirtyCount = diffTouched(touched, value).length;
   const dirty = dirtyCount > 0;
@@ -1120,7 +1143,7 @@ function LlcCard(props: LlcCardProps): ReactNode {
 
   const save = async (): Promise<void> => {
     const keys = diffTouched(touched, value);
-    if (keys.length === 0) {
+    if (keys.length === 0 || blocked) {
       return;
     }
     setBusy(true);
@@ -1146,6 +1169,7 @@ function LlcCard(props: LlcCardProps): ReactNode {
         }
         return next;
       });
+      invalid.clear();
       void reloadStats(reader, { t, setStats, setStatsError });
     } catch (error) {
       setBusy(false);
@@ -1156,6 +1180,7 @@ function LlcCard(props: LlcCardProps): ReactNode {
   const discard = (): void => {
     setTouched({});
     setSaveError(null);
+    invalid.clear();
   };
 
   const onDone = (ok: boolean, message?: string): void => {
@@ -1172,8 +1197,9 @@ function LlcCard(props: LlcCardProps): ReactNode {
     statsError,
     saveError,
     busy,
-    dirty,
-    dirtyCount,
+    dirty: dirty || blocked,
+    blocked,
+    dirtyCount: dirtyCount + invalid.count,
     rulesRemote: reader,
     ruleBusy,
     showAll,
@@ -1184,6 +1210,8 @@ function LlcCard(props: LlcCardProps): ReactNode {
     eff,
     setField,
     clearField,
+    resetToken,
+    reportInvalid,
     onDone,
     setRuleBusy,
     setShowAll,
@@ -1325,12 +1353,14 @@ function apply(ctx: ClientCtx): void {
     "lesson-loop-card: apply guard",
   );
   ctx.effect(() => {
+    const disposeShared = ensureCardUiCss();
     const tag = document.createElement("style");
     tag.id = "lesson-loop-card-css";
-    tag.textContent = `${CARD_CSS}\n${CARD_UI_CSS}`;
+    tag.textContent = CARD_CSS;
     document.head.append(tag);
     return () => {
       tag.remove();
+      disposeShared();
     };
   }, "lesson-loop-card: styles");
   // 本包的共享表单：条目 id == cordis.patch.yml 里的裸 id `lesson-loop`（0.2.1-alpha.2 里

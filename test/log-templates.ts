@@ -15,6 +15,7 @@ export const LOG_TEMPLATES = [
   "[lesson-loop] candidate ready for review:",
   "[lesson-loop] commands service unavailable — /lessons-digest not registered",
   "[lesson-loop] ctx.provide unavailable — lessonLoop service invisible to reporters",
+  "[lesson-loop] 检测到本插件已在同一作用域内装载：",
   "[lesson-loop] decay failed:",
   "[lesson-loop] decay:",
   "[lesson-loop] digest events payload is not an array",

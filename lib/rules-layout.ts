@@ -14,6 +14,7 @@ import { normalizeRuleCardRow, unknownArray } from "./lesson-store.ts";
 import type { RuleCard, RuleEvidence } from "./lesson-store.ts";
 import { PLUGIN_NAME } from "./prompt.ts";
 import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import { truncateCodePoints } from "@jayyuen66/dsh-plugin-shared/lib/text";
 
 /**
  * 规则库存身的设置命名空间 = 本包 profile **条目 id**（`lesson-loop`，见 cordis.patch.yml
@@ -68,26 +69,14 @@ export function cardsOfValue(value: unknown): CardsProjection {
   return { cards: out, droppedRows, corrupted };
 }
 
-/** 单条证据 detail 的字符上限（按码点计，见 truncateByCodePoints）。 */
+/** 单条证据 detail 的字符上限（按码点计，见 shared 的 truncateCodePoints）。 */
 export const MAX_EVIDENCE_DETAIL_CHARS = 400;
 /** 每规则保留的证据条数上限（只留最近这几条）。 */
 export const MAX_EVIDENCE_ENTRIES = 5;
 
-/** 按码点截断：detail 可能含代理对（emoji 等），按 UTF-16 码元切会把截断点落在
- *  代理对中间，写到磁盘成孤立代理项（非法 Unicode，读回即显示为替换符）。
- *  for..of 按码点迭代（每格 1-2 码元），上限按码点数计。 */
-function truncateByCodePoints(text: string, max: number): string {
-  let end = 0;
-  let counted = 0;
-  for (const char of text) {
-    if (counted >= max) {
-      break;
-    }
-    end += char.length;
-    counted += 1;
-  }
-  return text.slice(0, end);
-}
+// 按码点截断的实现已收进 shared 的 `@jayyuen66/dsh-plugin-shared/lib/text`：detail 可能含
+// 代理对（emoji 等），按 UTF-16 码元切会把截断点落在代理对中间，写到磁盘成孤立代理项
+// （非法 Unicode，读回即显示为替换符）。
 
 /** 单条证据的收敛：detail 超限时截断并补省略号，其余字段原样。 */
 function capEvidenceEntry(entry: unknown): unknown {
@@ -98,7 +87,7 @@ function capEvidenceEntry(entry: unknown): unknown {
   if (typeof detail !== "string") {
     return entry;
   }
-  const cappedText = truncateByCodePoints(detail, MAX_EVIDENCE_DETAIL_CHARS);
+  const cappedText = truncateCodePoints(detail, MAX_EVIDENCE_DETAIL_CHARS);
   return cappedText === detail ? entry : { ...entry, detail: `${cappedText}…` };
 }
 
@@ -154,7 +143,7 @@ export function capEvidence(cards: readonly RuleCard[]): RuleCard[] {
       .slice(-MAX_EVIDENCE_ENTRIES);
     const evidence: RuleEvidence[] = [];
     for (const row of kept) {
-      const cappedText = truncateByCodePoints(row.detail, MAX_EVIDENCE_DETAIL_CHARS);
+      const cappedText = truncateCodePoints(row.detail, MAX_EVIDENCE_DETAIL_CHARS);
       const cappedRow: RuleEvidence = {
         ts: row.ts,
         source: row.source,

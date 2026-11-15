@@ -182,6 +182,13 @@ function configRows(translator: Translate): RowView[] {
     clearField: (field: string): void => {
       ignoreWrite(field, undefined);
     },
+    // 越界那两位：本文件只读渲染产物、不驱动保存，所以给不改变任何状态的哑实现
+    // （数字框在合法值上不会调 reportInvalid，resetToken 只用于父值不变时清草稿）。
+    resetToken: 0,
+    reportInvalid: (field: string, invalid: boolean): void => {
+      void field;
+      void invalid;
+    },
   };
   const sections = [
     buildLoopSection(inputs),
@@ -507,15 +514,19 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
   it("register 两语 → bind 出 t → 槽位 payload 带 t；清理回收样式/locale/slot（表单是共享的，卡片不动它）", () => {
     const appended: FakeStyleTag[] = [];
     const removed: FakeStyleTag[] = [];
-    const styleTag: FakeStyleTag = {
-      id: "",
-      textContent: "",
-      remove: () => {
-        removed.push(styleTag);
-      },
-    };
     vi.stubGlobal("document", {
-      createElement: (): FakeStyleTag => styleTag,
+      querySelector: (selector: string): FakeStyleTag | null =>
+        appended.find((tag) => `#${tag.id}` === selector) ?? null,
+      createElement: (): FakeStyleTag => {
+        const tag: FakeStyleTag = {
+          id: "",
+          textContent: "",
+          remove: () => {
+            removed.push(tag);
+          },
+        };
+        return tag;
+      },
       head: {
         append: (tag: FakeStyleTag): void => {
           appended.push(tag);
@@ -699,8 +710,13 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
       ["locale:zh", "locale:en", "slot"],
       "清理逐项回收，一项不落，也不许多回收那张共享表单",
     );
-    assert.equal(appended.length, 1, "样式已注入");
-    assert.equal(removed.length, 1, "样式 disposer 已把它移除");
+    assert.equal(appended.length, 2, "共享样式与卡片自有样式各一枚");
+    assert.deepEqual(
+      appended.map((tag) => tag.id),
+      ["dsh-card-ui-css", "lesson-loop-card-css"],
+      "共享样式先注入，卡片差异样式随后",
+    );
+    assert.equal(removed.length, 2, "样式 disposer 已把两枚移除");
   });
 
   it("inject 声明含 locale 与 configForms（宿主据此把官方能力注进 client 半）", () => {

@@ -2,6 +2,28 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The deviations below are deliberate: version headings carry no release date (publish times are recorded by the registry — `npm view <package> time`), and a release may add sections beyond the standard six, such as `Not changed, deliberately`.
 
+## 0.1.13
+
+market 热挂与 bundle 层双路径装载时第二份 `apply` 整份让路（此前第二遍会把 prompt 段、Remote 服务、事件监听与衰减定时器各挂一份而不报错）；设置卡接「有字段越界就不许保存」那道门禁；shared 抬到 `^0.2.9`，输入框不再撑出容器、小节内补上纵向间距；宿主 peer 窗口抬到 `^0.2.2-rc.2`。默认配置与规则行为不变。
+
+### Added
+
+- **单实例锁**：`apply` 最前面用 shared 的 `claimInstance` 抢 `"@jayyuen66/dsh-lesson-loop/instance"`，抢不到就 `console.warn` 一行「本次装配让路，规则库与注入由在册的那一份提供」并直接返回。本包的失败形态**不抛错**（prompt 段落、Remote 服务、事件监听与衰减定时器都是各挂一份、互不冲突），所以重复是静默的：判定与写库都会跑两遍、教训上报翻倍。锁随在册那一份的 fiber 卸载自动释放。
+- **回归测试**：`test/host.test.ts` 新增「同一作用域第二次装配让路：不重复注册任何面、不抛错」；`test/client-card.test.ts` 的 `configRows()` 夹具补上 `resetToken: 0` 与哑实现的 `reportInvalid`；`test/publish-manifest.test.ts` 新增「用到的 shared 子路径在产物里值导入的宿主包，都在 peer 与 dev 里声明」——本地 shared 是伞根的源码链接，会掩盖 registry 装着时缺 peer 的解析失败。
+
+### Changed
+
+- **三处逐字重复收进 shared**：`lib/messages.ts` 的 `fill()` 换成 shared 的 `fillPlaceholders`（语义不变：缺值保留原文）；`lib/digest-prompt.ts` 的 `truncateCodePoints` 与 `lib/rules-layout.ts` 的 `truncateByCodePoints` 换成 shared 的 `lib/text` 里那一份（按码点预算截断，语义不变）。
+- **运行时依赖 shared 抬到 `^0.2.9`**；**宿主 peer 窗口 `^0.2.2-rc.1` → `^0.2.2-rc.2`**（四枚既有 `@deepseek-ai/dsh*` peer 与 `engines.dsh` 一起抬；devDependencies 在 0.1.11 已钉在 `0.2.2-rc.2`），并新增 `@deepseek-ai/dsh-output-retention` 为必需 peer（shared 的 `lib/text` 值导入它，peer 写 `^0.2.2-rc.2`、dev 精确钉 `0.2.2-rc.2`）。两份 README 的徽章、安装窗口与宿主包契约说明跟着改。
+
+### Fixed
+
+- **干净安装下 shared 的 `lib/text` 解析失败**：本版起本仓引用该子路径，而它值导入 `@deepseek-ai/dsh-output-retention`；本仓未声明，CI 的 `pnpm install --frozen-lockfile` 布局里 host.js 可链接性测试与 8 个测试套件全红（`ERR_MODULE_NOT_FOUND`），本地则因伞根把 shared 链到源码目录而全绿。现在该包进必需 peer 与精确 devDependency，`pnpm-lock.yaml` 同步重解。
+- **越界数字草稿会被静默丢掉**：`NumberField` 对越界草稿**不调 `onChange`**，于是它根本不进 `touched`，只看草稿差异的门禁会以为什么都没改。八个数字字段（`promoteThreshold` / `demoteThreshold` / `demoteMinSamples` / `demoteRatio` / `reviveThreshold` / `decayDays` / `maxLessonsBytes` / `maxStatementChars`，共用 `configNumber` 工厂）现在都接 `onInvalidChange` 上报，卡片据此灰掉保存并在保存条上点名「有字段超出范围，先修正或撤销后再保存。」；`resetToken` 在保存/撤销后把框里的非法草稿清回已提交值。
+- **越界时连撤销都点不动**：上一版的保存条只有一个按 `dirty` 算的 `disabled`，而越界草稿不进 `touched`，`dirty` 因此为假，保存与撤销一起灰掉。现在 `SaveBar` 分开算：保存被 `blocked` 拦下，撤销保持可点（撤销正是越界时的出路）。
+- **输入控件撑出容器**（shared 侧）：`.dsu-form` 整棵子树统一 `border-box`，否则 `.dsu-input` 的 `width:100%` 会连同左右 padding 一起撑出容器 26px。
+- **小节内相邻元素间距为 0**（shared 侧）：`.dsu-form .dsu-section>*+*` 给 10px，`.dsu-sectionHint` 4px，`.dsu-field` 之间仍 0。
+
 ## 0.1.12
 
 设置卡的下拉候选与说明浮层不再漂到浏览器最左边；shared 抬到 `^0.2.8`（含运行时几何自检），CI 的 action 钉版升到最新。规则卡与教训循环行为不变。

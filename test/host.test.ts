@@ -677,6 +677,30 @@ describe("host：lesson-loop 的宿主半", () => {
   });
 
   describe("服务供给", () => {
+    it("同一作用域第二次装配让路：不重复注册任何面、不抛错（market 热挂 + bundle 层双路径）", () => {
+      // 双路径：market 的热挂子树与本包的 bundle 层解析到同一份模块，却各起一个 fiber、
+      // 各跑一次 apply。第二份若照常装配，prompt 段 / Remote 服务 / 命令 / 定时器都会各挂一份
+      // ——判定与写库都跑两遍，而 `append`/`on` 这类注册口**不抛错**，重复因此是静默的。
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+        // 断言在下方
+      });
+      const ctx = makeCtx();
+      apply(ctx);
+      const providedAfterFirst = { ...ctx.provided };
+      const effectsAfterFirst = ctx.effects.length;
+      const commandAfterFirst = ctx.command;
+      assert.doesNotThrow(() => {
+        apply(ctx);
+      });
+      assert.deepEqual(ctx.provided, providedAfterFirst, "第二份不该再注册任何服务");
+      assert.equal(ctx.effects.length, effectsAfterFirst, "第二份不该再挂任何 effect");
+      assert.equal(ctx.command, commandAfterFirst, "第二份不该再注册命令");
+      const printed = warn.mock.calls.map(([line]) => String(line));
+      assert.equal(printed.length, 1, "让路时大声说明一次");
+      assert.match(printed[0] ?? "", /检测到本插件已在同一作用域内装载/u);
+      warn.mockRestore();
+    });
+
     it("apply 后 ctx.provide 挂上 lessonLoop 服务（report/rules/ruleAction/stats）", () => {
       const ctx = makeCtx();
       apply(ctx);

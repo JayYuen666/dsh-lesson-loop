@@ -85,6 +85,7 @@ import {
   messagesFor,
   resolveLocalePreference,
 } from "@jayyuen66/dsh-plugin-shared/lib/locale";
+import { claimInstance } from "@jayyuen66/dsh-plugin-shared/lib/instance-lock";
 import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
 
 // ── 守卫小件（泛型防御纵深，不用断言；session-rescue/client 同款）──────────
@@ -391,6 +392,13 @@ interface HostCtx {
    *  这是**官方给出的**读不到声明名时的规则，disposer 仍由官方签名交出（:43 `() => void`），
    *  本地不再重述。 */
   provide?: Context["provide"];
+  /** 注册口（单实例锁要用）。可选：本包其余部分从不碰它，缺了就是「能力缺席」，
+   *  锁按放行处理（见 shared 的 lib/instance-lock 头注释）。取值时**直接交对象本身**，
+   *  不要再包一层 `{ provide }` —— 包出来的箭头恒是函数，会让「没有注册口」伪装成
+   *  「有注册口但 provide 抛错」，让路判据据此误判而把整份插件关掉。 */
+  reflect?:
+    | { readonly provide?: ((name: string, value?: unknown) => unknown) | undefined }
+    | undefined;
   /** 挂页面策略用：`configure` 的 owner 必须显式传本插件 fiber（见 apply）。 */
   inject: (deps: readonly string[], callback: (child: InjectedCtx) => void) => unknown;
   /** 本插件 fiber：隐式注册后插件侧不再持有 scope，页面策略只认它。类型即官方
@@ -1594,6 +1602,22 @@ export function apply(ctx: Context, config: Config): void {
     throw new Error("[lesson-loop] host context contract violated");
   }
   const svc: HostCtx = ctx;
+
+  // 0. 单实例锁：market 的热挂子树（`mkt-*`，走 `file://…/host.js`）与 profile 的 bundle 层
+  //    解析到同一份模块，却各起一个 fiber、各跑一次 apply。第二份若照常装配，prompt 段落、
+  //    Remote 服务、事件监听与衰减定时器都会各挂一份——判定与写库都会跑两遍，且这种重复
+  //    **不抛错**。让路的那一份不提供任何东西，功能由先到的那一份承担。
+  if (
+    !claimInstance(
+      { get: (name: string): unknown => svc.get?.(name), reflect: svc.reflect },
+      "@jayyuen66/dsh-lesson-loop/instance",
+    )
+  ) {
+    console.warn(
+      "[lesson-loop] 检测到本插件已在同一作用域内装载：本次装配让路，规则库与注入由在册的那一份提供。",
+    );
+    return;
+  }
 
   // 命名空间与可编辑字段都是隐式的（宿主从条目 Config 反推，见 cordis.patch.yml），
   // apply 只声明页面策略那一位。

@@ -14,6 +14,7 @@
 // 角色文档里的日期是内容，两者都不在禁止名单内。
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { listDeclarations } from "../build-types.mjs";
@@ -340,8 +341,77 @@ describe("类型声明随包发布（build:types 的产物）", () => {
   });
 });
 
-/** 宿主 dsh 家族的包名前缀（本组三条判据都要按它筛，收常量）。 */
+/** 宿主 dsh 家族的包名前缀（本组判据按它筛，收常量）。 */
 const DSH_PREFIX = "@deepseek-ai/dsh-";
+
+/**
+ * 本仓运行期源码（`host.ts`、`lib/`、`src/`）里引用的 shared 子路径。
+ *
+ * 不扫 `build-*.mjs`（构建期）、`*.config.ts` 与 `types/`（生成物）：它们不进发布形态。
+ * @returns 去重并按字典序排好的子路径（如 `lib/text`）。
+ */
+async function sharedSubpathsUsedAtRuntime(): Promise<string[]> {
+  const sources = await collectSources(pkgDir, "");
+  const files = sources.filter(
+    (file) =>
+      file === "host.ts" ||
+      (file.endsWith(".ts") && (file.startsWith("lib/") || file.startsWith("src/"))),
+  );
+  const texts = await Promise.all(files.map((file) => readFile(path.join(pkgDir, file), "utf8")));
+  const pattern = /from\s*["']@jayyuen66\/dsh-plugin-shared\/(?<subpath>[^"']+)["']/gu;
+  const subpaths = new Set<string>();
+  for (const text of texts) {
+    for (const match of text.matchAll(pattern)) {
+      const { subpath } = match.groups ?? {};
+      if (subpath !== undefined) {
+        subpaths.add(subpath);
+      }
+    }
+  }
+  return [...subpaths].toSorted();
+}
+
+/**
+ * 收集一个产物文件里按模块说明符出现的 `@deepseek-ai/*` 值导入，并沿相对导入继续走。
+ *
+ * @param file - 已解析到磁盘的产物路径
+ * @param seen - 已访问的产物路径（相对导入会成环）
+ * @param out - 命中的宿主包名
+ */
+async function collectHostImports(
+  file: string,
+  seen: Set<string>,
+  out: Set<string>,
+): Promise<void> {
+  if (seen.has(file)) {
+    return;
+  }
+  seen.add(file);
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch {
+    // 相对说明符解析不到属于产物链接问题，由 build-host.test.ts 的可链接性门禁报。
+    return;
+  }
+  // 产物是压过的：`from"pkg"` 与 `import"pkg"` 都不带空格，`\s*\(?\s*` 一并认动态 import。
+  const specifierPattern = /(?:\bfrom|\bimport)\s*\(?\s*["'](?<specifier>[^"']+)["']/gu;
+  const specifiers = [...text.matchAll(specifierPattern)].flatMap((match) => {
+    const { specifier } = match.groups ?? {};
+    return specifier === undefined ? [] : [specifier];
+  });
+  for (const specifier of specifiers) {
+    if (specifier.startsWith("@deepseek-ai/")) {
+      out.add(specifier);
+    }
+  }
+  const relatives = specifiers.filter((specifier) => specifier.startsWith("."));
+  await Promise.all(
+    relatives.map((specifier) =>
+      collectHostImports(path.resolve(path.dirname(file), specifier), seen, out),
+    ),
+  );
+}
 
 describe("宿主依赖的版本形状（升级防线）", () => {
   it("@deepseek-ai/* 一律不进 dependencies：装出去会在宿主进程里物化第二份", async () => {
@@ -356,9 +426,11 @@ describe("宿主依赖的版本形状（升级防线）", () => {
     // 本包的构建、类型检查与覆盖率门禁在此之前全部照绿，判据只能落在 manifest 面上。
     //
     // 分流规则以**构建产物**为准而不是源码：源码里的 `import type` 会被编译抹掉，只有
-    // host.js/client.js 里真的按包名引用外部包的那些才需要宿主在运行期在场。当前三枚
-    // （`schemastery` 默认导入、`dsh-brand` 与 `dsh-home-paths` 具名导入）都是值导入，
-    // 因此进 peer 且不标 optional；只被类型引用的留在 dev，编译期解析得到、运行期不相干。
+    // host.js/client.js 里真的按包名引用外部包的那些才需要宿主在运行期在场。当前五枚
+    // （`schemastery` 默认导入、`dsh-brand` 与 `dsh-home-paths` 具名导入、
+    // `dsh-typert-protocol` 的 `TypertRemoteService`、以及 shared 的 `lib/text` 值导入的
+    // `dsh-output-retention`）都是值导入，因此进 peer 且不标 optional；只被类型引用的留在
+    // dev，编译期解析得到、运行期不相干。
     const { manifest } = await readSurface();
     const leaked = Object.keys(manifest.dependencies ?? {}).filter((name) =>
       name.startsWith("@deepseek-ai/"),
@@ -408,6 +480,38 @@ describe("宿主依赖的版本形状（升级防线）", () => {
       ([name, range]) => name.startsWith(DSH_PREFIX) && range !== bare,
     );
     expect(offPolicy, "这些 dsh-* peer 与裸 dsh 不是同一条范围").toStrictEqual([]);
+  });
+
+  it("用到的 shared 子路径在产物里值导入的宿主包，都在 peer 与 dev 里声明", async () => {
+    // 为什么单列一条：本地 node_modules 里的 shared 是伞根的源码链接，它对自己 devDependencies
+    // 里的宿主包解析得到，于是「少声明一枚」在本地全绿；CI 与真实 profile 装的是 registry 上
+    // 那份，shared 的 dist 一旦 import 一个没声明的宿主包，就是 ERR_MODULE_NOT_FOUND。
+    // 判据因此落在 manifest 声明面：把本仓运行期真正用到的子路径解析到产物，抽出其中的
+    // @deepseek-ai/* 值导入，逐个要求 peer 与 dev 两处都有。
+    const { manifest } = await readSurface();
+    const require = createRequire(import.meta.url);
+    const subpaths = await sharedSubpathsUsedAtRuntime();
+    const entries = subpaths.map((subpath) =>
+      require.resolve(`@jayyuen66/dsh-plugin-shared/${subpath}`),
+    );
+    const hostImports = new Set<string>();
+    const seen = new Set<string>();
+    await Promise.all(entries.map((entry) => collectHostImports(entry, seen, hostImports)));
+    expect(hostImports.size, "没扫到任何宿主值导入：判据自己先空转了").toBeGreaterThan(0);
+    const missingPeer = [...hostImports].filter(
+      (name) => typeof manifest.peerDependencies?.[name] !== "string",
+    );
+    const missingDev = [...hostImports].filter(
+      (name) => typeof manifest.devDependencies?.[name] !== "string",
+    );
+    expect(
+      missingPeer,
+      "这些宿主值导入不在 peerDependencies：干净安装下 shared 的产物解析不到",
+    ).toStrictEqual([]);
+    expect(
+      missingDev,
+      "这些宿主值导入不在 devDependencies：本地与 CI 的测试环境装不到",
+    ).toStrictEqual([]);
   });
 });
 
