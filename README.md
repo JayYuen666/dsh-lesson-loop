@@ -46,6 +46,7 @@
 - [ Known boundaries](#-known-boundaries)
 - [ FAQ](#-faq)
 - [ Development](#-development)
+- [ Feedback](#feedback)
 - [ License](#-license)
 
 ## <img src="https://api.iconify.design/lucide/shield.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> What it does
@@ -98,7 +99,7 @@ If your profile pins `@jayyuen66/dsh-plugin-shared` with a pnpm `overrides` entr
 
 ## <img src="https://api.iconify.design/lucide/plug.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> Enabling it in dsh
 
-- `dsh.bundle.patch` points at `cordis.patch.yml`, which carries a single `- id: lesson-loop` entry with `name: "@jayyuen66/dsh-lesson-loop"`. What makes the host scan the client half is the **bare package name**. The card components are bundled into `client.js` (only `react` / `zod` stay external to the host's module table), so the card does not depend on a second package being loaded.
+- `dsh.bundle.patch` points at `cordis.patch.yml`, which carries a `- id: dsh-plugin-shared` supplier row (keep it enabled; disabling it removes the cards' shared component supply) plus the `- id: lesson-loop` entry with `name: "@jayyuen66/dsh-lesson-loop"`. What makes the host scan the client half is the **bare package name**. The card components come from the shared client row, externalized as `@jayyuen66/dsh-plugin-shared/client`; the host module table provides `react`, `zod` and that shared row.
 - **One entry, one `Config`.** The settings namespace is the entry id, so switches, thresholds and the `rules` array share one section and one revision. `rules` carries `.loose()`, the read side checks the raw shape through `describe().user` (unreadable means it refuses to write rather than overwriting), and every write is one CAS commit with re-read and replay.
 - `settings` is the only plugin-level hard dependency. `timer` / `commands` / `systemPrompt` / `llm` are optional: a missing one removes that capability, the plugin still loads.
 - The card's data plane is installed unconditionally on the apply fiber, so it exists even on a host whose web layer arrives late.
@@ -206,6 +207,12 @@ pnpm run check   # typecheck → lint → client build → host build → types 
 - `test/` splits by the class of defect a stub cannot see: unit tests drive the store and the pure helpers; `test/integration/` drives a real cordis and loader, so service hand-out, sibling `inject` resolution, activation order and bulkhead isolation are measured rather than mocked.
 - Two artifact gates: `test/build-host.test.ts` holds the cross-package imports external as bare specifiers, `test/dist-size.test.ts` a size budget, so an inlined dependency cannot pass unnoticed. `test/publish-manifest.test.ts` guards the published shape — entry targets covered by `files`, no source file as an entry point, host packages absent from `dependencies`, `dsh-*` pins exact and uniform, no dates in comments or documents.
 - Coverage thresholds are 100% across four metrics, so a new branch needs a case that reaches it.
+
+## Feedback
+
+Issues and pull requests are welcome: [https://github.com/JayYuen666/dsh-lesson-loop/issues](https://github.com/JayYuen666/dsh-lesson-loop/issues).
+
+If a plugin fails to boot, include the dsh host version, the profile install shape, and the browser console line. The `missed the module table` line is especially useful: it tells us whether the shared client row was materialized.
 
 ## <img src="https://api.iconify.design/lucide/scale.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> License
 

@@ -2,6 +2,10 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The deviations below are deliberate: version headings carry no release date (publish times are recorded by the registry — `npm view <package> time`), and a release may add sections beyond the standard six, such as `Not changed, deliberately`.
 
+## 0.1.14
+
+将 `@jayyuen66/dsh-plugin-shared` 抬到 `^0.2.10`，设置卡吸底保存条的旧固定 id 冲突与底色随 shared 修复。client bundle 随之重建并改回外置形态：`@jayyuen66/dsh-plugin-shared/client` 经 manifest 的 `dsh.client.external` 声明、由 `cordis.patch.yml` 新增的固定 id `dsh-plugin-shared` 供应行装载（须保持开启），并开启 minify，产物 26,664 B——0.1.10 收回外置针对的「外置请求落空」（issue #2）随 shared 0.2.10 的固定 id 供应契约闭合。两份 README 与 docs/DETAIL 增加反馈入口。规则库与默认配置不变。
+
 ## 0.1.13
 
 market 热挂与 bundle 层双路径装载时第二份 `apply` 整份让路（此前第二遍会把 prompt 段、Remote 服务、事件监听与衰减定时器各挂一份而不报错）；设置卡接「有字段越界就不许保存」那道门禁；shared 抬到 `^0.2.9`，输入框不再撑出容器、小节内补上纵向间距；宿主 peer 窗口抬到 `^0.2.2-rc.2`。默认配置与规则行为不变。

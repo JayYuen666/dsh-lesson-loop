@@ -15,8 +15,9 @@
   `@jayyuen66/dsh-plugin-shared/lib/*`。`test/build-host.test.ts` 逐条断言这些说明符仍在，
   并断言官方的 `brandString` 函数体没被内联——内联即"把别人的代码打进本包产物"，那才是需要随包
   分发上游许可文本的情形。
-- `client.js` 由 `build-client.mjs` 产出，`react` 显式外部化（`external: ["react"]`），产物
-  按宿主注入的模块加载器取用 React，**不复制** React 代码。
+- `client.js` 由 `build-client.mjs` 产出，external 清单 = 官方 `PLATFORM_MODULES` 基座 ∪
+  本包 `dsh.client.external`（当前一枚：`@jayyuen66/dsh-plugin-shared/client`），产物按宿主
+  注入的模块加载器取用 React 与 shared 的卡片组件，**不复制**它们的实现。
 - 类型上 `types/` 由 `build-types.mjs` 从本包 TS 源码 emit，只引用第三方包的**类型说明符**
   （`import type … from "@deepseek-ai/…"`），不含上游实现代码。
 

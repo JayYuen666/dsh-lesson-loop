@@ -46,6 +46,7 @@
 - [ 已知边界](#-已知边界)
 - [ 常见问题](#-常见问题)
 - [ 开发](#-开发)
+- [ 反馈](#反馈)
 - [ 许可](#-许可)
 
 ## <img src="https://api.iconify.design/lucide/shield.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 它做什么
@@ -98,7 +99,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 ## <img src="https://api.iconify.design/lucide/plug.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 在 dsh 里启用
 
-- `dsh.bundle.patch` 指向 `cordis.patch.yml`，里面只有一条 `- id: lesson-loop`，带 `name: "@jayyuen66/dsh-lesson-loop"`。让宿主去扫描 client 半的是**裸包名**。卡片组件直接打进 `client.js`（只有 `react` / `zod` 外置给宿主模块表），卡片不依赖第二份包被装载。
+- `dsh.bundle.patch` 指向 `cordis.patch.yml`，里面有一条 `- id: dsh-plugin-shared` 供应行（必须保持开启；停用后卡片会失去 shared 组件供应），再加一条 `- id: lesson-loop`、`name: "@jayyuen66/dsh-lesson-loop"`。让宿主去扫描 client 半的是**裸包名**。卡片组件来自 shared 的客户端行，以 `@jayyuen66/dsh-plugin-shared/client` 外置；宿主模块表提供 `react`、`zod` 与这条 shared 供应。
 - **一个条目，一份 `Config`。** 设置命名空间就是条目 id，于是开关、阈值与 `rules` 数组共用同一段、同一枚 revision。`rules` 带了 `.loose()`，读侧经 `describe().user` 检查原文形状（读不懂就拒写，而不是覆写），每次写都是一次 CAS 提交加重读重放。
 - `settings` 是唯一插件级硬依赖。`timer` / `commands` / `systemPrompt` / `llm` 可选：缺一个只让对应能力消失，插件照常装载。
 - 卡片的数据那一栏在 apply fiber 上无条件安装，所以即使宿主的 web 层到得晚，它也在。
@@ -206,6 +207,12 @@ pnpm run check   # 类型检查 → lint → client 构建 → host 构建 → �
 - `test/` 按「桩看不见的那类缺陷」分层：单元测试驱动存储与纯函数；`test/integration/` 驱动真实的 cordis 与 loader，于是服务交出、兄弟条目 `inject` 的解析、激活顺序与舱壁隔离都是量出来的，不是打桩模拟的。
 - 两道产物门：`test/build-host.test.ts` 让跨包导入保持为外部裸说明符，`test/dist-size.test.ts` 守住体积预算，于是被内联的依赖不会悄悄过关。`test/publish-manifest.test.ts` 守住发布形态——入口目标都被 `files` 覆盖、没有源文件当入口、`dependencies` 里没有宿主包、`dsh-*` 钉版精确且统一、注释与文档里没有日期。
 - 覆盖率阈值是四项指标都 100%，所以新加一个分支就要有一条能走到它的用例。
+
+## 反馈
+
+欢迎提 issue 和 PR：[https://github.com/JayYuen666/dsh-lesson-loop/issues](https://github.com/JayYuen666/dsh-lesson-loop/issues)。
+
+插件启动失败时，请附上 dsh 宿主版本、profile 安装形态和浏览器控制台原文。`missed the module table` 这一行尤其有用：它能直接说明 shared 客户端供应行有没有被物化。
 
 ## <img src="https://api.iconify.design/lucide/scale.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> 许可
 

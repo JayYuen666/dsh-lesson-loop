@@ -25,9 +25,9 @@ const BUDGETS: readonly (readonly [string, number])[] = [
   // 约 25% 浮动：正常演进不该立刻改预算，只有真正超了才按实测重定）。
   ["host.js", 204_000],
   // 规则读取接口迁到官方 Typert Remote 后，客户端多了一枚 descriptor/读取器（约 6 KB）。
-  // 设置卡迁到 @jayyuen66/dsh-plugin-shared/lib/card-ui 后，卡片样式与组件逻辑随包进
-  // client.js（实测增加约 9 KB），预算按迁移后的实量重定。
-  ["client.js", 80_000],
+  // shared 客户端行改为 external 并开启 minify 后实测 26,664 B；shared card-ui 的字节
+  // 不再计入本产物，按实测 × 1.25 取整重定。
+  ["client.js", 34_000],
 ];
 
 /**

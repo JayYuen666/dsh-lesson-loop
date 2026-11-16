@@ -75,7 +75,7 @@ function shapeOf(value) {
   return typeof value;
 }
 
-/** 本包 `dsh.client.external` 声明的基座之外请求（缺省 = 只有基座，本包当前如此）。
+/** 本包 `dsh.client.external` 声明的基座之外请求（缺省 = 只有基座）。
  *  官方规则是"精确串匹配、不归一"（tsdown.client.ts 的 requestedExternals 注释），
  *  故这里原样收：不裁剪、不排序、不合并重复。
  * @param {unknown} [manifest] - 包清单；缺省读本仓 package.json
@@ -138,6 +138,7 @@ export async function buildClient() {
     root,
     rolldown,
     externals: clientExternals(),
+    minify: true,
     header: `${GENERATED_PREFIX} — edit src/*.ts, then run \`node build-client.mjs\`.`,
   });
 }

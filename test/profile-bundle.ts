@@ -159,7 +159,7 @@ export function entryIdFromPatchYml(yml: string): string {
     .map((line) => /^\s*-\s+id:\s*(?<value>.*?)\s*$/u.exec(line)?.groups?.["value"])
     .filter((value): value is string => value !== undefined)
     .map((value) => yamlScalar(value));
-  const ownIds = ids;
+  const ownIds = ids.filter((id) => id !== "dsh-plugin-shared");
   assert.ok(ownIds.length > 0, "cordis.patch.yml 里没有本包的 `- id:` 条目");
   assert.equal(
     new Set(ownIds).size,
@@ -174,7 +174,9 @@ export function entryIdFromPatchYml(yml: string): string {
 function patchEntryId(): string {
   const file = path.join(PKG_DIR, "cordis.patch.yml");
   assert.ok(existsSync(file), `读不到 ${file}`);
-  return entryIdFromPatchYml(readFileSync(file, "utf8"));
+  const yml = readFileSync(file, "utf8");
+  assert.match(yml, /^\s*-\s+id:\s*dsh-plugin-shared\s*$/mu, "shared 供应行必须使用固定 id");
+  return entryIdFromPatchYml(yml);
 }
 
 /** 转义字符串里的正则元字符（标识符可含 `$`，直接拼进 pattern 会变成行尾锚点）。 */
@@ -191,7 +193,7 @@ function escapeRegExp(text: string): string {
  */
 export function constLiteral(text: string, name: string, depth = 0): string {
   const pattern = new RegExp(
-    `const\\s+${escapeRegExp(name)}\\s*=\\s*(?:"(?<dq>[^"]*)"|'(?<sq>[^']*)'|(?<alias>[A-Za-z_$][\\w$]*))(?=\\s*(?:[;},\\n]|$))`,
+    `const\\s+${escapeRegExp(name)}\\s*=\\s*(?:"(?<dq>[^"]*)"|'(?<sq>[^']*)'|\`(?<tq>[^\`]*)\`|(?<alias>[A-Za-z_$][\\w$]*))(?=\\s*(?:[;},\\n]|$))`,
     "u",
   );
   const matched = pattern.exec(text);
@@ -203,7 +205,7 @@ export function constLiteral(text: string, name: string, depth = 0): string {
     assert.ok(depth < 2, `产物里 const ${name} 的引用链超过两层，漂移针读不动`);
     return constLiteral(text, alias, depth + 1);
   }
-  const value = groupOf("dq") || groupOf("sq");
+  const value = groupOf("dq") || groupOf("sq") || groupOf("tq");
   assert.notEqual(value, "", `产物里找不到 const ${name} = "…" 的字面量声明`);
   return value;
 }
@@ -287,10 +289,11 @@ interface RawFieldValue {
 
 /** `key:` 的原始值正文（字面量或标识符）；值不是这两种形态时回 undefined。 */
 function fieldValueAfter(text: string, at: number): RawFieldValue | undefined {
-  const matched = /^\s*(?:"(?<dq>[^"]*)"|'(?<sq>[^']*)'|(?<ident>[A-Za-z_$][\w$]*))/u.exec(
-    text.slice(at),
-  );
-  const literal = matched?.groups?.["dq"] ?? matched?.groups?.["sq"];
+  const matched =
+    /^\s*(?:"(?<dq>[^"]*)"|'(?<sq>[^']*)'|`(?<tq>[^`]*)`|(?<ident>[A-Za-z_$][\w$]*))/u.exec(
+      text.slice(at),
+    );
+  const literal = matched?.groups?.["dq"] ?? matched?.groups?.["sq"] ?? matched?.groups?.["tq"];
   const ident = matched?.groups?.["ident"];
   let result: RawFieldValue | undefined;
   if (literal !== undefined && literal !== "") {
@@ -336,7 +339,7 @@ function topLevelField(objectText: string, field: string): RawFieldValue | undef
  *  导出供本文件的守卫用例直接喂夹具（真实产物那条路经 bundleSlotKeyFacts）。 */
 export function registeredSlotKey(text: string): string {
   // marker 按正则找（name 与值之间的空白、引号形态都容忍——产物压缩/换引号不该让针误报）。
-  const markerMatch = /name:\s*["']plugins\.bundle\.config["']/u.exec(text);
+  const markerMatch = /name:\s*["'`]plugins\.bundle\.config["'`]/u.exec(text);
   assert.notEqual(markerMatch, null, "产物里没有 plugins.bundle.config 的注册");
   const marker = markerMatch?.index ?? 0;
   // 窗口取**整个注册对象**：从最近的 register( 之后第一个 `{` 起按深度找配对的 `}`。
@@ -361,7 +364,7 @@ export function registeredSlotKey(text: string): string {
  *  字面量值限定不含引号（`.*` 是贪婪的：`get("a" + "b")` 会被拼成一个假值）；既非
  *  字面量也非标识符的实参响亮失败，产物漂移检查不许拿拼接出来的假 id 去比对。 */
 function entryIdOfArgument(text: string, arg: string): string {
-  const inline = /^(?<q>["'])(?<value>[^"']*)\k<q>$/u.exec(arg)?.groups?.["value"];
+  const inline = /^(?<q>["'`])(?<value>[^"'`]*)\k<q>$/u.exec(arg)?.groups?.["value"];
   if (inline !== undefined) {
     return inline;
   }

@@ -68,8 +68,8 @@ describe("buildClient", () => {
   // `packages/client/tsdown.client.ts` 的 `clientExternals()`——算的是「基座 ∪ 本包
   // dsh.client.external」，注释明写 "The shell baseline is implicit for every dynamic bundle"。
   // 这枚针是**抄写核对**：官方基座加一枚，或本包开始声明 external 时，这里先红，逼人回去看唯一来源。
-  // shared 的 `./client` 已收回内联（dsh-ocr-review 仓 issue #2：外置的供应方要靠另一份包
-  // 被装载成模块表条目才兑现，传递依赖安装形状下宿主可能不排进启动图），不再出现在这份清单里。
+  // shared 的 `./client` 由 manifest 的 dsh.client.external 追加到基座；cordis.patch.yml
+  // 另有一条固定 id `dsh-plugin-shared` 的供应行把它装载成模块表条目。
   it("external = 官方 PLATFORM_MODULES 基座", () => {
     assert.deepEqual(clientExternals(), [
       "react",
@@ -83,6 +83,7 @@ describe("buildClient", () => {
       "@deepseek-ai/dsh-client-ui-slots",
       "@deepseek-ai/dsh-client-ui-primitives",
       "@deepseek-ai/dsh-client-ui-dockkit",
+      "@jayyuen66/dsh-plugin-shared/client",
     ]);
   });
 
@@ -99,15 +100,11 @@ describe("buildClient", () => {
     );
   });
 
-  it("本包 manifest 不声明 external（卡片组件内联，不依赖第二份包被装载）", () => {
+  it("本包 manifest 声明 shared 客户端行为 external", () => {
     const manifest = JSON.parse(
       readFileSync(new URL("../package.json", import.meta.url), "utf8"),
     ) as { dsh?: { client?: { external?: unknown } } };
-    assert.equal(
-      manifest.dsh?.client?.external,
-      undefined,
-      "dsh.client.external 声明回流 = 又把产物押在另一份包的模块表条目上（dsh-ocr-review 仓 issue #2）",
-    );
+    assert.deepEqual(manifest.dsh?.client?.external, ["@jayyuen66/dsh-plugin-shared/client"]);
   });
 
   it("基座里的 react 仍走模块表：bundle 只 require，不内联一份 React 副本", async () => {

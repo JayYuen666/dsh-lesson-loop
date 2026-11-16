@@ -25,3 +25,9 @@ The evidence comes from other plugins over the shared lesson bus — danger guar
 ## Further detail
 
 The rule-store layout, the JSONL fuse that keeps a corrupt line from poisoning the store, and the digest prompt are in the package README (`README.md` / `README.zh-CN.md`).
+
+## Feedback
+
+Issues and pull requests are welcome: [https://github.com/JayYuen666/dsh-lesson-loop/issues](https://github.com/JayYuen666/dsh-lesson-loop/issues).
+
+If a plugin fails to boot, include the dsh host version, the profile install shape, and the browser console line. The `missed the module table` line is especially useful: it tells us whether the shared client row was materialized.
