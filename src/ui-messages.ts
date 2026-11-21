@@ -50,6 +50,8 @@ export interface UiMessages {
 
   // ── 运行时配置行（settings 命名空间 `lesson-loop` 的开关与阈值）────────
   readonly loopSection: string;
+  /// 表单小节标题旁的字段计数徽章（{count} 为字段数）。
+  readonly fieldCount: string;
   readonly promotionSection: string;
   readonly capacitySection: string;
   /** 数字输入里的单位后缀。 */
@@ -206,6 +208,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     actionFailed: "操作失败",
 
     loopSection: "闭环",
+    fieldCount: "{count} 字段",
     promotionSection: "晋升与衰减",
     capacitySection: "容量",
     unitTimes: "次",
@@ -291,6 +294,7 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     actionFailed: "action failed",
 
     loopSection: "Loop",
+    fieldCount: "{count} fields",
     promotionSection: "Promotion and decay",
     capacitySection: "Capacity",
     unitTimes: "times",

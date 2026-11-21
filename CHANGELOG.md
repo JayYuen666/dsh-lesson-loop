@@ -2,6 +2,10 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The deviations below are deliberate: version headings carry no release date (publish times are recorded by the registry — `npm view <package> time`), and a release may add sections beyond the standard six, such as `Not changed, deliberately`.
 
+## 0.1.15
+
+宿主依赖线抬到 `0.2.2-rc.5`：devDependencies 全族精确钉 rc.5，`engines.dsh` 与 dsh 家族 peer 同一条窗口，两份 README 的支持窗口徽章同步。rules-reader 的 `RemoteHost` / `isRemoteMounter` 收编 shared `./lib/typert-client`（七仓逐字副本的正主）。shared 经 catalog 抬到 `^0.2.12`——收编的子路径随 shared 0.2.12 发布，`pnpm-lock.yaml` 经 `pnpm install --lockfile-only` 重解到 registry 现量。devDependencies 补 `react-dom`（`^19.3.0`，与 react 相邻）：shared 0.2.12 的 card-ui 经 `createPortal` 引 `react-dom`，本仓客户端测试经 ESM 链解析到它（与 danger-guard / dir-prep / session-rescue 的既有供应同形）。规则库、默认配置与门禁不变。
+
 ## 0.1.14
 
 将 `@jayyuen66/dsh-plugin-shared` 抬到 `^0.2.10`，设置卡吸底保存条的旧固定 id 冲突与底色随 shared 修复。client bundle 随之重建并改回外置形态：`@jayyuen66/dsh-plugin-shared/client` 经 manifest 的 `dsh.client.external` 声明、由 `cordis.patch.yml` 新增的固定 id `dsh-plugin-shared` 供应行装载（须保持开启），并开启 minify，产物 26,664 B——0.1.10 收回外置针对的「外置请求落空」（issue #2）随 shared 0.2.10 的固定 id 供应契约闭合。两份 README 与 docs/DETAIL 增加反馈入口。规则库与默认配置不变。

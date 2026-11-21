@@ -41,7 +41,9 @@ import type { LocaleNs, Translate, UiMessages } from "./ui-messages.ts";
 import { createRulesReader } from "./rules-reader.ts";
 import type { RulesReader } from "./rules-reader.ts";
 import {
+  Callout,
   CardForm,
+  FieldTwoCol,
   NumberField,
   SaveBar,
   Section,
@@ -213,24 +215,16 @@ function parseStatsValue(parsed: unknown): StatsPayload {
  * `.llc-actions` 那条）。
  */
 const ACTIONS_ROW_CLASS = "llc-actions";
+/** 规则卡动作行的小号按钮（sonarjs 重复字面量门禁收成常量）。 */
+const RULE_BTN_CLASS = "dsu-btn dsu-btnSm";
 
 const CARD_CSS = [
-  ".llc-hint{font-size:12px;color:var(--dsw-alias-label-tertiary,#8a8f99);line-height:1.5;margin-top:2px}",
   ".llc-digest-hint{margin-top:8px}",
   ".llc-section{margin:10px 0 4px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#5c626e)}",
   ".llc-rule{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-primary,inherit)}",
   ".llc-rule-meta{color:var(--dsw-alias-label-tertiary,#8a8f99);margin-top:4px}",
   ".llc-statement{white-space:pre-wrap;word-break:break-word}",
   ".llc-rule-sig{color:var(--dsw-alias-label-tertiary,#8a8f99);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px;word-break:break-all;font-size:12px}",
-  ".llc-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}",
-  ".llc-btn{appearance:none;font:inherit;font-size:12px;cursor:pointer;border-radius:6px;padding:4px 10px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1,transparent);color:var(--dsw-alias-label-primary,inherit)}",
-  ".llc-btn-primary{background:var(--dsw-alias-brand-primary,#e07856);border-color:var(--dsw-alias-brand-primary,#e07856);color:var(--dsw-alias-label-primary-foreground,#fff)}",
-  ".llc-input{width:100%;box-sizing:border-box;font:inherit;font-size:12px;color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-bg-layer-1,transparent);border:1px solid var(--dsw-alias-border-l2,transparent);border-radius:8px;padding:6px 8px;margin-top:6px}",
-  ".llc-empty{color:var(--dsw-alias-label-tertiary,#8a8f99);font-size:12px;padding:6px 0}",
-  ".llc-err{color:#c4483f;font-size:12px;padding:6px 0;white-space:pre-wrap}",
-  ".llc-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#e07856);outline-offset:1px}",
-  ".llc-btn:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed)}",
-  ".llc-btn:disabled{opacity:.5;cursor:not-allowed}",
 ].join("\n");
 
 // ── 端点数据类型 ─────────────────────────────────────────────────────────
@@ -428,7 +422,7 @@ function armedActionsRow(deps: RuleActionsProps): ReactNode {
       "button",
       {
         type: "button",
-        className: "llc-btn",
+        className: RULE_BTN_CLASS,
         disabled: busy,
         onClick: () => {
           void act("demote");
@@ -440,7 +434,7 @@ function armedActionsRow(deps: RuleActionsProps): ReactNode {
       "button",
       {
         type: "button",
-        className: "llc-btn",
+        className: RULE_BTN_CLASS,
         disabled: busy,
         onClick: () => {
           void act("archive");
@@ -461,7 +455,7 @@ function candidateActionsRow(deps: RuleActionsProps): ReactNode {
       "button",
       {
         type: "button",
-        className: "llc-btn llc-btn-primary",
+        className: `${RULE_BTN_CLASS} dsu-btnPrimary`,
         disabled: busy,
         onClick: () => {
           if (editing) {
@@ -477,7 +471,7 @@ function candidateActionsRow(deps: RuleActionsProps): ReactNode {
       "button",
       {
         type: "button",
-        className: "llc-btn",
+        className: RULE_BTN_CLASS,
         disabled: busy,
         onClick: () => {
           void act("reject");
@@ -489,7 +483,7 @@ function candidateActionsRow(deps: RuleActionsProps): ReactNode {
       "button",
       {
         type: "button",
-        className: "llc-btn",
+        className: RULE_BTN_CLASS,
         disabled: busy,
         onClick: () => {
           void act("archive");
@@ -510,7 +504,7 @@ function retiredActionsRow(deps: RuleActionsProps): ReactNode {
       "button",
       {
         type: "button",
-        className: "llc-btn",
+        className: RULE_BTN_CLASS,
         disabled: busy,
         onClick: () => {
           void act("revive");
@@ -525,7 +519,7 @@ function retiredActionsRow(deps: RuleActionsProps): ReactNode {
 function statementEditorRow(deps: RuleActionsProps): ReactNode {
   const { draft, setDraft } = deps;
   return createElement("textarea", {
-    className: "llc-input",
+    className: "dsu-input dsu-textarea",
     rows: 3,
     value: draft,
     onChange: (event: { target: { value: string } }) => {
@@ -716,11 +710,11 @@ function configNumber(inputs: ConfigInputs, spec: NumberSpec): ReactNode {
   });
 }
 
-/** 闭环小节：四个总开关。 */
+/** 闭环小节：四个总开关（计数徽章随字段增减维护）。 */
 function buildLoopSection(inputs: ConfigInputs): ReactNode {
   return createElement(
     Section,
-    { title: inputs.t("loopSection") },
+    { title: inputs.t("loopSection"), count: inputs.t("fieldCount", { count: "4" }) },
     configToggle(inputs, { field: "enabled", label: "enabledLabel", hint: "enabledHint" }),
     configToggle(inputs, {
       field: "reportEnabled",
@@ -740,89 +734,106 @@ function buildLoopSection(inputs: ConfigInputs): ReactNode {
   );
 }
 
-/** 晋升与衰减小节：升/降级阈值、证据样本、复发率、复活阈值、观察窗口。 */
+/** 晋升与衰减小节：升/降级阈值、证据样本、复发率、复活阈值、观察窗口。
+ *  数字两两成对（设计稿的双列数字排布）：阈值一对、样本与比率一对、复活与观察一对。 */
 function buildPromotionSection(inputs: ConfigInputs): ReactNode {
   return createElement(
     Section,
-    { title: inputs.t("promotionSection") },
-    configNumber(inputs, {
-      field: "promoteThreshold",
-      label: "promoteThresholdLabel",
-      hint: "promoteThresholdHint",
-      min: 1,
-      max: 20,
-      step: 1,
-      unit: "unitTimes",
-    }),
-    configNumber(inputs, {
-      field: "demoteThreshold",
-      label: "demoteThresholdLabel",
-      hint: "demoteThresholdHint",
-      min: 1,
-      max: 50,
-      step: 1,
-      unit: "unitTimes",
-    }),
-    configNumber(inputs, {
-      field: "demoteMinSamples",
-      label: "demoteMinSamplesLabel",
-      hint: "demoteMinSamplesHint",
-      min: 1,
-      max: 100,
-      step: 1,
-    }),
-    configNumber(inputs, {
-      field: "demoteRatio",
-      label: "demoteRatioLabel",
-      hint: "demoteRatioHint",
-      min: 0.05,
-      max: 1,
-      step: 0.05,
-    }),
-    configNumber(inputs, {
-      field: "reviveThreshold",
-      label: "reviveThresholdLabel",
-      hint: "reviveThresholdHint",
-      min: 1,
-      max: 20,
-      step: 1,
-      unit: "unitTimes",
-    }),
-    configNumber(inputs, {
-      field: "decayDays",
-      label: "decayDaysLabel",
-      hint: "decayDaysHint",
-      min: 1,
-      max: 365,
-      step: 1,
-      unit: "unitDays",
-    }),
+    { title: inputs.t("promotionSection"), count: inputs.t("fieldCount", { count: "6" }) },
+    createElement(
+      FieldTwoCol,
+      null,
+      configNumber(inputs, {
+        field: "promoteThreshold",
+        label: "promoteThresholdLabel",
+        hint: "promoteThresholdHint",
+        min: 1,
+        max: 20,
+        step: 1,
+        unit: "unitTimes",
+      }),
+      configNumber(inputs, {
+        field: "demoteThreshold",
+        label: "demoteThresholdLabel",
+        hint: "demoteThresholdHint",
+        min: 1,
+        max: 50,
+        step: 1,
+        unit: "unitTimes",
+      }),
+    ),
+    createElement(
+      FieldTwoCol,
+      null,
+      configNumber(inputs, {
+        field: "demoteMinSamples",
+        label: "demoteMinSamplesLabel",
+        hint: "demoteMinSamplesHint",
+        min: 1,
+        max: 100,
+        step: 1,
+      }),
+      configNumber(inputs, {
+        field: "demoteRatio",
+        label: "demoteRatioLabel",
+        hint: "demoteRatioHint",
+        min: 0.05,
+        max: 1,
+        step: 0.05,
+      }),
+    ),
+    createElement(
+      FieldTwoCol,
+      null,
+      configNumber(inputs, {
+        field: "reviveThreshold",
+        label: "reviveThresholdLabel",
+        hint: "reviveThresholdHint",
+        min: 1,
+        max: 20,
+        step: 1,
+        unit: "unitTimes",
+      }),
+      configNumber(inputs, {
+        field: "decayDays",
+        label: "decayDaysLabel",
+        hint: "decayDaysHint",
+        min: 1,
+        max: 365,
+        step: 1,
+        unit: "unitDays",
+      }),
+    ),
   );
 }
 
-/** 容量小节：events.jsonl 磁盘保险丝与规则正文上限。 */
+/** 容量小节：events.jsonl 磁盘保险丝与规则正文上限（一对双列）。 */
 function buildCapacitySection(inputs: ConfigInputs): ReactNode {
   return createElement(
     Section,
-    { title: inputs.t("capacitySection") },
-    configNumber(inputs, {
-      field: "maxLessonsBytes",
-      label: "maxLessonsBytesLabel",
-      hint: "maxLessonsBytesHint",
-      min: 0,
-      max: 1_073_741_824,
-      step: 1,
-      unit: "unitBytes",
-    }),
-    configNumber(inputs, {
-      field: "maxStatementChars",
-      label: "maxStatementCharsLabel",
-      hint: "maxStatementCharsHint",
-      min: 1,
-      max: 100_000,
-      step: 1,
-      unit: "unitChars",
-    }),
+    { title: inputs.t("capacitySection"), count: inputs.t("fieldCount", { count: "2" }) },
+    createElement(
+      FieldTwoCol,
+      null,
+      configNumber(inputs, {
+        field: "maxLessonsBytes",
+        label: "maxLessonsBytesLabel",
+        hint: "maxLessonsBytesHint",
+        min: 0,
+        max: 1_073_741_824,
+        step: 1,
+        unit: "unitBytes",
+      }),
+      configNumber(inputs, {
+        field: "maxStatementChars",
+        label: "maxStatementCharsLabel",
+        hint: "maxStatementCharsHint",
+        min: 1,
+        max: 100_000,
+        step: 1,
+        unit: "unitChars",
+      }),
+    ),
   );
 }
 
@@ -938,7 +949,7 @@ function renderRuleSection(
           "button",
           {
             type: "button",
-            className: "llc-btn",
+            className: RULE_BTN_CLASS,
             onClick: () => {
               view.onShowMore(key);
             },
@@ -951,7 +962,7 @@ function renderRuleSection(
   // 切片在 shown ≥ list.length 时原样返回整表：不需要"要不要截断"的分支。
   const body =
     list.length === 0
-      ? createElement("div", { className: "llc-empty" }, emptyLabel)
+      ? createElement("p", { className: "dsu-hint" }, emptyLabel)
       : createElement(
           "div",
           null,
@@ -985,7 +996,7 @@ function renderRetiredBlock(view: CardView): ReactNode {
           "button",
           {
             type: "button",
-            className: "llc-btn",
+            className: RULE_BTN_CLASS,
             onClick: () => {
               view.setShowAll(!showAll);
             },
@@ -1038,9 +1049,7 @@ function renderCardBody(view: CardView): ReactNode {
     CardForm,
     null,
     createElement(StatusBar, { items: chips }),
-    view.statsError === null
-      ? null
-      : createElement("div", { className: "llc-err" }, view.statsError),
+    view.statsError === null ? null : createElement(Callout, { tone: "err" }, view.statsError),
     buildLoopSection(inputs),
     buildPromotionSection(inputs),
     buildCapacitySection(inputs),
@@ -1049,7 +1058,7 @@ function renderCardBody(view: CardView): ReactNode {
     renderRuleSection(view, "demoted", demotedTitle, view.groups.demoted),
     renderRuleSection(view, "armed", armedTitle, view.groups.armed),
     retiredToggle,
-    createElement("div", { className: "llc-hint llc-digest-hint" }, hintLabel),
+    createElement("p", { className: "dsu-hint llc-digest-hint" }, hintLabel),
   );
 }
 

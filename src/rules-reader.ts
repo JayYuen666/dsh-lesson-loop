@@ -21,6 +21,15 @@ import type {
   TypertCodec,
 } from "@deepseek-ai/dsh-typert-protocol";
 import { isRecord } from "@jayyuen66/dsh-plugin-shared/client";
+// 值导入与类型导入合并成一条（inline type specifier）：TS 7.0.2 在本文件把
+// 「同模块的分立 value import + import type」解析成 TS2307（trace 里成功、检查器仍丢绑定，
+// rtk 同款形态无恙，唯本文件触发）；import/consistent-type-specifier-style 要求分立，
+// 两条规则互斥，此处定向豁免 lint 一侧并留档。
+import {
+  isRemoteMounter,
+  type RemoteHost,
+  type RemoteMounter,
+} from "@jayyuen66/dsh-plugin-shared/lib/typert-client";
 import { z } from "zod";
 
 import { RULES_BUNDLE_PACKAGE, RULES_REMOTE_NAMESPACE } from "../lib/rules-shape.ts";
@@ -32,6 +41,11 @@ import type {
   RulesRequest,
   RulesResult,
 } from "../lib/rules-shape.ts";
+
+/** 客户端上下文里本模块用到的那一位：**显式读取**一个可选服务（见文件头为什么不用
+ *  inject）。正主在 shared `./lib/typert-client`（含 isRemoteMounter，七份逐字副本收编）。
+ *  再导出放在 import 块之后：夹在中间会让后续 import 被判「不在文件顶部」。 */
+export type { RemoteHost } from "@jayyuen66/dsh-plugin-shared/lib/typert-client";
 
 /** 网关给命名空间注册的**服务键**：`remote.<namespace>`。它在 `$mount` 完成之后才存在，
  *  所以只能在挂载后按这个键去读，而不是提前 inject。 */
@@ -167,19 +181,6 @@ export const RULES_DESCRIPTORS: readonly InvocationDescriptor[] = [
   },
 ];
 
-/** 客户端上下文里本模块用到的那一位：**显式读取**一个可选服务（见文件头为什么不用 inject）。 */
-export interface RemoteHost {
-  get?: (name: string, strict?: boolean) => unknown;
-}
-
-/** 官方网关的客户端宿主服务：本卡只用 `$mount` 一位（挂载一枚手写贡献）。 */
-interface RemoteMounter {
-  $mount: (contribution: {
-    package: string;
-    descriptors: readonly InvocationDescriptor[];
-  }) => Promise<unknown>;
-}
-
 /** 挂载后由网关提供的命名空间宿主服务。方法名在此文件里有**四份手写副本**：本接口、
  *  isRulesNamespace 的逐名守卫、RULES_DESCRIPTORS 的 method 位、以及 createRulesReader
  *  返回类型里的 ns.xxx() 调用——任何一份与宿主实际方法名分叉，先红的是 descriptor 对质
@@ -210,10 +211,6 @@ function unwrapRemote<Value>(result: RemoteResult<Value>): Value {
   }
   return result.value;
 }
-
-/** 这个值能当远程通道用吗（只核我们要调的那一位；服务来自别的实现或版本时保守当作没有）。 */
-const isRemoteMounter = (value: unknown): value is RemoteMounter =>
-  isRecord(value) && typeof value["$mount"] === "function";
 
 /** 同上：命名空间服务（挂载之后才有，缺它说明网关没认这枚贡献）。 */
 const isRulesNamespace = (value: unknown): value is RulesNamespace =>

@@ -175,6 +175,40 @@ function ignoreWrite(field: string, value: unknown): void {
   void value;
 }
 
+/** 字段元素 props → 配置行视图（长说明落 detail 位时同一张表照读）。 */
+function rowOf(entry: { field?: string; label?: string; hint?: string; detail?: string }): RowView {
+  return {
+    field: entry.field ?? "",
+    label: entry.label ?? "",
+    hint: entry.hint ?? entry.detail ?? "",
+  };
+}
+
+/** 单个字段元素（或双列栅格）→ 配置行视图。双列栅格（FieldTwoCol）把字段再包一层：
+ *  栅格元素自己没有 field，真正字段的 props 在它 children 数组里，下探一层摊平后
+ *  与单列小节同一张表。 */
+function rowViewsOf(child: unknown): RowView[] {
+  const { props } = child as {
+    props: {
+      field?: string;
+      label?: string;
+      hint?: string;
+      detail?: string;
+      children?: unknown;
+    };
+  };
+  const nested = Array.isArray(props.children) ? (props.children as unknown[]) : null;
+  if (props.field === undefined && nested !== null) {
+    return nested.map((inner) =>
+      rowOf(
+        (inner as { props: { field: string; label: string; hint?: string; detail?: string } })
+          .props,
+      ),
+    );
+  }
+  return [rowOf(props)];
+}
+
 /** 配置行取值：不挂载，直接读三个小节 createElement 产物的 props。 */
 function configRows(translator: Translate): RowView[] {
   const inputs = {
@@ -205,10 +239,7 @@ function configRows(translator: Translate): RowView[] {
     const { children } = (section as { props: { children: unknown } }).props;
     const list = Array.isArray(children) ? children : [children];
     for (const child of list) {
-      const { props } = child as {
-        props: { field: string; label: string; hint?: string; detail?: string };
-      };
-      out.push({ field: props.field, label: props.label, hint: props.hint ?? props.detail ?? "" });
+      out.push(...rowViewsOf(child));
     }
   }
   return out;
