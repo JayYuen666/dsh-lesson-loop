@@ -43,12 +43,15 @@ import type { RulesReader } from "./rules-reader.ts";
 import {
   Callout,
   CardForm,
+  EmptyState,
   FieldTwoCol,
+  KpiGrid,
+  KpiTile,
   NumberField,
   SaveBar,
   Section,
-  StatusBar,
-  ToggleField,
+  ToggleCell,
+  ToggleGrid,
   diffTouched,
   ensureCardUiCss,
   fieldOf,
@@ -659,7 +662,7 @@ interface ToggleSpec {
 }
 
 function configToggle(inputs: ConfigInputs, spec: ToggleSpec): ReactNode {
-  return createElement(ToggleField, {
+  return createElement(ToggleCell, {
     label: inputs.t(spec.label),
     ...splitHint(inputs.t(spec.hint)),
     field: spec.field,
@@ -715,22 +718,26 @@ function buildLoopSection(inputs: ConfigInputs): ReactNode {
   return createElement(
     Section,
     { title: inputs.t("loopSection"), count: inputs.t("fieldCount", { count: "4" }) },
-    configToggle(inputs, { field: "enabled", label: "enabledLabel", hint: "enabledHint" }),
-    configToggle(inputs, {
-      field: "reportEnabled",
-      label: "reportEnabledLabel",
-      hint: "reportEnabledHint",
-    }),
-    configToggle(inputs, {
-      field: "injectEnabled",
-      label: "injectEnabledLabel",
-      hint: "injectEnabledHint",
-    }),
-    configToggle(inputs, {
-      field: "sectionEnabled",
-      label: "sectionEnabledLabel",
-      hint: "sectionEnabledHint",
-    }),
+    createElement(
+      ToggleGrid,
+      null,
+      configToggle(inputs, { field: "enabled", label: "enabledLabel", hint: "enabledHint" }),
+      configToggle(inputs, {
+        field: "reportEnabled",
+        label: "reportEnabledLabel",
+        hint: "reportEnabledHint",
+      }),
+      configToggle(inputs, {
+        field: "injectEnabled",
+        label: "injectEnabledLabel",
+        hint: "injectEnabledHint",
+      }),
+      configToggle(inputs, {
+        field: "sectionEnabled",
+        label: "sectionEnabledLabel",
+        hint: "sectionEnabledHint",
+      }),
+    ),
   );
 }
 
@@ -892,6 +899,8 @@ interface CardView {
   onShowMore: (key: GroupKey) => void;
   /** 未到达时保持 undefined，由状态 chips 显式占位。 */
   lessonsCount: number | undefined;
+  /** stats 是否已成功读过一次：决定 KPI 用「…」还是真量、空态是否成立。 */
+  statsLoaded: boolean;
   eff: (field: string) => unknown;
   setField: (field: string, value: SettingsValue) => void;
   clearField: (field: string) => void;
@@ -1025,11 +1034,50 @@ function renderCardBody(view: CardView): ReactNode {
     resetToken: view.resetToken,
     reportInvalid: view.reportInvalid,
   };
-  const chips = [
-    t("chipCandidates", { count: view.groups.candidates.length }),
-    t("chipArmed", { count: view.groups.armed.length }),
-    t("chipLessons", { count: view.lessonsCount ?? "…" }),
-  ];
+  const candidatesTile = createElement(KpiTile, {
+    label: t("kpiCandidates"),
+    value: view.statsLoaded ? view.groups.candidates.length : "…",
+    ...(view.statsLoaded ? { count: view.groups.candidates.length } : {}),
+  });
+  const armedTile = createElement(KpiTile, {
+    label: t("kpiArmed"),
+    value: view.statsLoaded ? view.groups.armed.length : "…",
+    ...(view.statsLoaded ? { count: view.groups.armed.length } : {}),
+  });
+  const lessonsTile = createElement(KpiTile, {
+    label: t("kpiLessons"),
+    value: view.lessonsCount ?? "…",
+    ...(view.lessonsCount === undefined ? {} : { count: view.lessonsCount }),
+  });
+  const chips = createElement(KpiGrid, null, candidatesTile, armedTile, lessonsTile);
+  const totalRules =
+    view.groups.candidates.length +
+    view.groups.demoted.length +
+    view.groups.armed.length +
+    view.groups.retired.length;
+  // 数据面三态分开画：读取中不摆三条「暂无」，读失败不拿「空库」冒充结论。
+  // 只有真的读到空库才由块级 EmptyState 接管；有旧数据时即使新一轮读失败也继续显示旧数据 +
+  // 错误条（轮询失败不该把卡片清空）。
+  let rulesArea: ReactNode;
+  if (!view.statsLoaded) {
+    rulesArea =
+      view.statsError === null
+        ? createElement("p", { className: "dsu-hint" }, t("rulesLoading"))
+        : null;
+  } else if (totalRules === 0) {
+    rulesArea = createElement(
+      EmptyState,
+      { plain: true, title: t("rulesEmptyTitle") },
+      t("rulesEmptyNote"),
+    );
+  } else {
+    rulesArea = [
+      renderRuleSection(view, "candidates", candidatesTitle, view.groups.candidates),
+      renderRuleSection(view, "demoted", demotedTitle, view.groups.demoted),
+      renderRuleSection(view, "armed", armedTitle, view.groups.armed),
+      retiredToggle,
+    ];
+  }
   const saveBar = createElement(SaveBar, {
     dirty: view.dirty,
     blocked: view.blocked,
@@ -1048,16 +1096,13 @@ function renderCardBody(view: CardView): ReactNode {
   return createElement(
     CardForm,
     null,
-    createElement(StatusBar, { items: chips }),
+    chips,
     view.statsError === null ? null : createElement(Callout, { tone: "err" }, view.statsError),
     buildLoopSection(inputs),
     buildPromotionSection(inputs),
     buildCapacitySection(inputs),
     saveBar,
-    renderRuleSection(view, "candidates", candidatesTitle, view.groups.candidates),
-    renderRuleSection(view, "demoted", demotedTitle, view.groups.demoted),
-    renderRuleSection(view, "armed", armedTitle, view.groups.armed),
-    retiredToggle,
+    rulesArea,
     createElement("p", { className: "dsu-hint llc-digest-hint" }, hintLabel),
   );
 }
@@ -1216,6 +1261,7 @@ function LlcCard(props: LlcCardProps): ReactNode {
     shownOf: (key) => shownCounts[key],
     onShowMore,
     lessonsCount: stats?.lessonsCount,
+    statsLoaded: stats !== null,
     eff,
     setField,
     clearField,

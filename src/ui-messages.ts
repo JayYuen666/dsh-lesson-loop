@@ -22,6 +22,9 @@ export interface UiMessages {
   readonly chipCandidates: string;
   readonly chipArmed: string;
   readonly chipLessons: string;
+  readonly kpiCandidates: string;
+  readonly kpiArmed: string;
+  readonly kpiLessons: string;
   /** 作用域只读（非 loopback 页面）时的状态条文本。 */
   readonly statusReadOnly: string;
   /** 有未保存改动时的状态条文本。 */
@@ -99,6 +102,11 @@ export interface UiMessages {
   readonly loadMore: string;
   /** 分组为空时的占位。 */
   readonly emptyGroup: string;
+  /** stats 尚未到达时的行级占位（不把「暂无」当成空库结论）。 */
+  readonly rulesLoading: string;
+  /** 规则库整体为空的块级空态：标题与下一步说明。 */
+  readonly rulesEmptyTitle: string;
+  readonly rulesEmptyNote: string;
   /** 观察次数 + 建卡日期（{count} {day}）。 */
   readonly metaObservations: string;
   /** armed 的三计数（{violation} {suppressed} {samples}）。 */
@@ -194,6 +202,9 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     chipCandidates: "候选 {count}",
     chipArmed: "生效 {count}",
     chipLessons: "教训 {count}",
+    kpiCandidates: "候选规则",
+    kpiArmed: "已生效规则",
+    kpiLessons: "累计教训",
     statusReadOnly: "当前作用域只读",
     statusDirty: "有未保存的修改，点「保存」生效",
     statusClean: "无未保存的修改",
@@ -257,6 +268,10 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     hideRetired: "收起已拒绝/归档",
     loadMore: "加载更多（还有 {count} 条）",
     emptyGroup: "暂无",
+    rulesLoading: "正在读取规则库…",
+    rulesEmptyTitle: "还没有规则记录",
+    rulesEmptyNote:
+      "当 Agent 反复遇到同一类失败证据、累计到晋升门槛后，候选规则会出现在这里；也可以先让 Agent 多跑几轮，或在上方调整晋升门槛。",
     metaObservations: "观察 {count} 次 · {day}",
     metaArmed: "复发 {violation} / 遵守 {suppressed} / 暴露 {samples}",
     metaUndeterminable:
@@ -279,6 +294,9 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     chipCandidates: "Candidates {count}",
     chipArmed: "Armed {count}",
     chipLessons: "Lessons {count}",
+    kpiCandidates: "Candidate rules",
+    kpiArmed: "Armed rules",
+    kpiLessons: "Lessons",
     statusReadOnly: "This scope is read-only",
     statusDirty: "Unsaved changes — press Save to apply",
     statusClean: "No unsaved changes",
@@ -348,6 +366,10 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     hideRetired: "Hide rejected / archived",
     loadMore: "Load more ({count} remaining)",
     emptyGroup: "none",
+    rulesLoading: "Loading the rule library…",
+    rulesEmptyTitle: "No rules yet",
+    rulesEmptyNote:
+      "Once the Agent keeps hitting the same kind of failure evidence and reaches the promotion threshold, candidate rules will appear here. Let it run a few more turns, or adjust the promotion threshold above.",
     metaObservations: "{count} observations · {day}",
     metaArmed: "{violation} violations / {suppressed} followed / {samples} exposed",
     metaUndeterminable:

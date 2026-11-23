@@ -271,10 +271,10 @@ const moreButtonsOf = (tree: unknown, count: number): NodeProps[] =>
       typeof props.onClick === "function" && textOf(props.children) === tZh("loadMore", { count }),
   );
 
-/** 卡片顶部状态 chips 那一行的文本（共享 StatusBar 的锚点）。 */
+/** 卡片顶部 KPI 瓦片那一行的文本（共享 KpiGrid 的锚点）。 */
 const descOf = (tree: unknown): string => {
-  const bar = allProps(tree).find((props) => props.className === "dsu-statusbar");
-  assert.ok(bar !== undefined, "卡面必须有状态 chips");
+  const bar = allProps(tree).find((props) => props.className === "dsu-kpiGrid");
+  assert.ok(bar !== undefined, "卡面必须有 KPI 瓦片");
   return textOf(bar.children);
 };
 
@@ -443,12 +443,43 @@ describe("client 数据那一栏：stats 拉取与回包呈现", () => {
     const text = card.text();
     assert.ok(text.includes(UI_MESSAGES.zh.statsUnavailable), "错误条要说本卡的话");
     assert.equal(text.includes("Unexpected token"), false, "解析异常原文不许进 UI");
+    // 读失败不是「空库」：不许摆三条「暂无」，KPI 也不能先报 0。
+    assert.equal(
+      allProps(card.tree()).some(
+        (props) =>
+          typeof props.className === "string" && props.className.split(" ").includes("dsu-empty"),
+      ),
+      false,
+    );
+    assert.equal(text.includes(UI_MESSAGES.zh.emptyGroup), false, "读失败不冒充空库");
+    assert.ok(descOf(card.tree()).includes("…"), "未读到时 KPI 用占位，不报 0");
     assert.match(
       error.mock.calls.map(String).join("\n"),
       /stats request failed/u,
       "原文只进日志，供排查",
     );
     error.mockRestore();
+  });
+
+  it("stats 真读到了空库 → 一个块级 EmptyState，而不是三条「暂无」", async () => {
+    const stub = fetchStubOf(async () => jsonResponse(statsBody({ rules: [], lessonsCount: 0 })));
+    vi.stubGlobal("fetch", stub.fetch);
+    const card = mount(
+      LlcCard as never,
+      cardProps(READY, async () => true),
+    );
+    await card.settle();
+    const text = card.text();
+    assert.ok(text.includes(UI_MESSAGES.zh.rulesEmptyTitle), "空态标题要说清楚为什么空");
+    assert.ok(text.includes(UI_MESSAGES.zh.rulesEmptyNote), "空态要给出下一步");
+    assert.equal(
+      allProps(card.tree()).filter(
+        (props) =>
+          typeof props.className === "string" && props.className.split(" ").includes("dsu-empty"),
+      ).length,
+      1,
+    );
+    assert.equal(text.includes(UI_MESSAGES.zh.emptyGroup), false, "整库为空时不重复三遍「暂无」");
   });
 
   it("防御路径：stats 载荷带 ok:false 时出错误条（当前宿主恒回 ok:true，这条守着换实现）", async () => {

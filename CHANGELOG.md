@@ -2,6 +2,10 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The deviations below are deliberate: version headings carry no release date (publish times are recorded by the registry — `npm view <package> time`), and a release may add sections beyond the standard six, such as `Not changed, deliberately`.
 
+## 0.1.16
+
+宿主基线切到 `dsh 0.2.3-alpha.2`（Node `^24.22.3 || >=26.13.1`），devDependencies 与两份 README 的支持窗口同步；shared 经 catalog 抬到 `^0.2.13`。设置卡随 shared 的 v3 视觉层更新。规则库、默认配置与门禁不变。
+
 ## 0.1.15
 
 宿主依赖线抬到 `0.2.2-rc.5`：devDependencies 全族精确钉 rc.5，`engines.dsh` 与 dsh 家族 peer 同一条窗口，两份 README 的支持窗口徽章同步。rules-reader 的 `RemoteHost` / `isRemoteMounter` 收编 shared `./lib/typert-client`（七仓逐字副本的正主）。shared 经 catalog 抬到 `^0.2.12`——收编的子路径随 shared 0.2.12 发布，`pnpm-lock.yaml` 经 `pnpm install --lockfile-only` 重解到 registry 现量。devDependencies 补 `react-dom`（`^19.3.0`，与 react 相邻）：shared 0.2.12 的 card-ui 经 `createPortal` 引 `react-dom`，本仓客户端测试经 ESM 链解析到它（与 danger-guard / dir-prep / session-rescue 的既有供应同形）。规则库、默认配置与门禁不变。

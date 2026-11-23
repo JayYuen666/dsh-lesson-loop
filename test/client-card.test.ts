@@ -432,20 +432,13 @@ function ruleText(translator: Translate, row: RuleCardView): string {
   );
 }
 
-/** 卡片 外壳 真正吃进去的字典键（这些串必须出现在渲染文本里）。 */
-const SHELL_KEYS = [
-  "digestHint",
-  "sectionCandidates",
-  "sectionDemoted",
-  "sectionArmed",
-  "emptyGroup",
-  "save",
-  "revert",
-  "statusClean",
-] as const;
+/** 卡片 外壳 真正吃进去的字典键（这些串必须出现在渲染文本里）。
+ *  规则分节标题与空组占位依赖 stats 数据，归 client-data 的数据面用例；
+ *  这里只钉「没有 stats 时外壳也必须画出来」的那一层。 */
+const SHELL_KEYS = ["digestHint", "rulesLoading", "save", "revert", "statusClean"] as const;
 
 describe("整卡渲染（两语，直读 createElement 产物）", () => {
-  it("zh：卡片 外壳 把标题/11 条配置行/四段评审标题/保存条/蒸馏提示全渲染出来", () => {
+  it("zh：卡片外壳把标题/11 条配置行/保存条/蒸馏提示与加载提示全渲染出来", () => {
     const text = cardText(tZh);
     for (const key of SHELL_KEYS) {
       assert.ok(text.includes(UI_MESSAGES.zh[key]), `${key} 该出现在中文卡面上`);

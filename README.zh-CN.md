@@ -11,8 +11,8 @@
   <a href="https://www.npmjs.com/package/@jayyuen66/dsh-lesson-loop"><img src="https://img.shields.io/npm/d18m/@jayyuen66/dsh-lesson-loop?style=flat-square" alt="npm downloads (total)" /></a>
   <a href="https://github.com/JayYuen666/dsh-lesson-loop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/JayYuen666/dsh-lesson-loop/ci.yml?branch=main&style=flat-square&label=ci" alt="ci" /></a>
   <img src="https://img.shields.io/badge/license-MIT-4c1?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/node-%3E%3D24.9-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
-  <img src="https://img.shields.io/badge/dsh-%5E0.2.2--rc.5-658EFF?style=flat-square" alt="dsh" />
+  <img src="https://img.shields.io/badge/node-%5E24.22.3%7C%7C%3E%3D26.13.1-4c1?style=flat-square&logo=nodedotjs&logoColor=white" alt="node" />
+  <img src="https://img.shields.io/badge/dsh-%5E0.2.3--alpha.2-658EFF?style=flat-square" alt="dsh" />
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/powered_by_dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white" alt="powered by dsh" /></a>
 </p>
 
@@ -73,7 +73,7 @@ dsh plugin --profile web add @jayyuen66/dsh-lesson-loop
 
 卸载用 `dsh plugin --profile web remove @jayyuen66/dsh-lesson-loop`。本包在公共 npm registry 上，所以安装不需要凭据。
 
-- **Node.js `>= 24.9`、宿主 `dsh` 在滚动的 `^0.2.2-rc.5` 窗口上。** 插件自己的下限是 `engines.node`（`>=24.9.0`），这一档取自宿主：`0.2.2` 系列从 `alpha.2` 起每一版宿主都声明 Node `>=24.9.0`，写得更低等于承诺一个宿主起不来的运行环境。宿主读取的版本要求是 `engines.dsh`（`^0.2.2-rc.5`），而且它**单独决定**——这个字段在时，`evaluatePluginCompatibility` 从不看 `@deepseek-ai/dsh*` 这批 peer。按装载门判定谓词（`app-boot` 的 `satisfies`，带 `includePrerelease: true`）逐版本推得：`0.2.0-rc.2`、`0.2.1-rc.5`、`0.2.2-alpha.3`、`0.2.2-rc.1` 与 `0.2.2-rc.2` 到 `0.2.2-rc.4` 被拒，`0.2.2-rc.5` 到 `0.2.2` 通过，`0.3.0` 被拒。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
+- **Node.js `^24.22.3 || >=26.13.1`、宿主 `dsh` 在滚动的 `^0.2.3-alpha.2` 窗口上。** 插件自己的下限是 `engines.node`（`^24.22.3 || >=26.13.1`），这一档逐字取自宿主：`0.2.3` 线从 `alpha.2` 起每一版宿主都声明这条范围（Node 25 不在其中），写别的范围等于承诺一个宿主起不来的运行环境。宿主读取的版本要求是 `engines.dsh`（`^0.2.3-alpha.2`），而且它**单独决定**——这个字段在时，`evaluatePluginCompatibility` 从不看 `@deepseek-ai/dsh*` 这批 peer。按装载门判定谓词（`app-boot` 的 `satisfies`，带 `includePrerelease: true`）逐版本推得：`0.2.0-rc.2`、`0.2.1-rc.5`、`0.2.2-alpha.3`、`0.2.2-rc.1` 与 `0.2.2-rc.2` 到 `0.2.2-rc.4` 被拒，`0.2.3-alpha.2` 与更晚的 `0.2.x` 通过，`0.3.0` 及以后被拒。支持窗口是滚动的：本包在发布时把窗口内的每个已发布宿主版本逐版取证，窗口滚动后重新取证，不把这一句里的版本号当长期承诺。
 - **按约定，`dependencies` 下不放任何 `@deepseek-ai/*`。** profile 以 `nodeLinker: hoisted` 与 `autoInstallPeers: false` 安装，那里放一个宿主包就会变成真实的第二份副本；`@deepseek-ai/dsh-tools` 用普通 `Symbol` 给调度器做键，于是那个 profile 里**每一次原生工具调用都抛错**，而构建、类型检查与覆盖率一直全绿。按值导入的宿主包——`host.js` 的 `schemastery`、`@deepseek-ai/dsh-brand` 与 `@deepseek-ai/dsh-home-paths`，Remote 命名空间的 `@deepseek-ai/dsh-typert-protocol`，以及 shared 的 `lib/text` 值导入的 `@deepseek-ai/dsh-output-retention`——都是必需 peer，并在 `devDependencies` 里按同一个精确钉版再写一份，好让打包器把它们外部化，而不是内联官方函数体；`test/publish-manifest.test.ts` 把这两半都钉住（含本仓用到的 shared 子路径产物里的值导入面）。产物由 `prepack` 重建，从不提交。
 
 ### <img src="https://api.iconify.design/lucide/arrow-down-to-line.svg?color=%23658EFF&height=22" height="22" width="22" align="absmiddle" alt="" /> shared 的版本下限
