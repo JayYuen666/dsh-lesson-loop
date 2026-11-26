@@ -16,6 +16,7 @@ import type { ReactNode } from "react";
 import { z } from "zod";
 import type { Context } from "@deepseek-ai/cordis";
 import { RULES_BUNDLE_PACKAGE } from "../lib/rules-shape.ts";
+import type { RuleEvidenceView } from "../lib/rules-shape.ts";
 import type { BuiltInLocaleId } from "@deepseek-ai/dsh-client-locale/client";
 import type { LocaleDictOf } from "@deepseek-ai/dsh-client-ui-slots";
 import type { SlotRegistry } from "@deepseek-ai/dsh-client-ui-renderer/client";
@@ -228,6 +229,10 @@ const CARD_CSS = [
   ".llc-rule-meta{color:var(--dsw-alias-label-tertiary,#8a8f99);margin-top:4px}",
   ".llc-statement{white-space:pre-wrap;word-break:break-word}",
   ".llc-rule-sig{color:var(--dsw-alias-label-tertiary,#8a8f99);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px;word-break:break-all;font-size:12px}",
+  ".llc-evidence{margin-top:6px;padding-left:8px;border-left:2px solid var(--dsw-alias-border-l2)}",
+  ".llc-evidence-item{margin:4px 0;color:var(--dsw-alias-label-secondary,#5c626e)}",
+  ".llc-evidence-detail{white-space:pre-wrap;word-break:break-word;color:var(--dsw-alias-label-primary,inherit)}",
+  ".llc-danger{color:var(--dsw-alias-label-error,#c4314b)}",
 ].join("\n");
 
 // ── 端点数据类型 ─────────────────────────────────────────────────────────
@@ -402,6 +407,8 @@ interface RuleActionLabels {
   reject: string;
   revive: string;
   confirm: string;
+  delete: string;
+  deleteConfirm: string;
 }
 
 /** 三种状态的规则卡共用的动作行输入：状态位与草稿在 RuleItem 里，动作口是它的 `act`。 */
@@ -413,6 +420,9 @@ interface RuleActionsProps {
   act: (action: string, statement?: string) => Promise<void>;
   setEditing: (next: boolean) => void;
   setDraft: (next: string) => void;
+  /** 「彻底删除」的二次确认位：第一次点击只把按钮换成确认态，第二次才发请求。 */
+  deleteArmed: boolean;
+  armDelete: (next: boolean) => void;
 }
 
 /** armed 卡的动作行：降级与归档（它已在生效，没有"确认升格"那一步）。 */
@@ -497,9 +507,9 @@ function candidateActionsRow(deps: RuleActionsProps): ReactNode {
   );
 }
 
-/** rejected / archived 卡的动作行：只有一条"转回候选重审"。 */
+/** rejected / archived 卡的动作行："转回候选重审" + "彻底删除"（后者两段式确认）。 */
 function retiredActionsRow(deps: RuleActionsProps): ReactNode {
-  const { busy, labels, act } = deps;
+  const { busy, labels, act, deleteArmed, armDelete } = deps;
   return createElement(
     "div",
     { className: ACTIONS_ROW_CLASS },
@@ -510,10 +520,29 @@ function retiredActionsRow(deps: RuleActionsProps): ReactNode {
         className: RULE_BTN_CLASS,
         disabled: busy,
         onClick: () => {
+          armDelete(false);
           void act("revive");
         },
       },
       labels.revive,
+    ),
+    createElement(
+      "button",
+      {
+        type: "button",
+        className: `${RULE_BTN_CLASS} llc-danger`,
+        disabled: busy,
+        onClick: () => {
+          // 第一击只进确认态（按钮文案随之变），第二击才真的发请求；cancel 由用户点别的
+          // 动作或刷新自动清掉（刷新会重挂组件，state 归零）。
+          if (!deleteArmed) {
+            armDelete(true);
+            return;
+          }
+          void act("delete");
+        },
+      },
+      deleteArmed ? labels.deleteConfirm : labels.delete,
     ),
   );
 }
@@ -531,14 +560,67 @@ function statementEditorRow(deps: RuleActionsProps): ReactNode {
   });
 }
 
+/**
+ * 证据时间线（最新在前）。`nextCursor !== null` 时给"加载更多"；空列表配一句说明，
+ * 而不是留白——空证据本身就是信息（卡是蒸馏/人工建的，还没有现场命中）。
+ */
+function evidencePanel(
+  t: Translate,
+  entries: readonly RuleEvidenceView[],
+  nextCursor: number | null,
+  busy: boolean,
+  loadMore: (cursor: number) => Promise<void>,
+): ReactNode {
+  const rows =
+    entries.length === 0
+      ? [createElement("div", { key: "empty", className: "llc-evidence-item" }, t("evidenceEmpty"))]
+      : entries.map((entry, index) =>
+          createElement(
+            "div",
+            { key: `${String(entry.ts)}-${String(index)}`, className: "llc-evidence-item" },
+            createElement("div", null, `${fmtDay(entry.ts)} · ${entry.source}`),
+            createElement("div", { className: "llc-evidence-detail" }, entry.detail),
+          ),
+        );
+  return createElement(
+    "div",
+    { className: "llc-evidence" },
+    ...rows,
+    nextCursor === null
+      ? null
+      : createElement(
+          "button",
+          {
+            type: "button",
+            className: RULE_BTN_CLASS,
+            disabled: busy,
+            onClick: () => {
+              void loadMore(nextCursor);
+            },
+          },
+          t("evidenceMore"),
+        ),
+  );
+}
+
 /** 单条规则卡：状态着色 + 动作按钮（arm 带 statement 改写框）。 */
 function RuleItem(props: RuleItemProps): ReactNode {
   const { t, rule } = props;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(rule.statement);
+  // 证据时间线：默认收起，展开时按 cursor 分页取（证据全量落在库里，卡片每次只看一页）。
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoaded, setDetailLoaded] = useState(false);
+  const [detail, setDetail] = useState<readonly RuleEvidenceView[]>([]);
+  const [nextCursor, setNextCursor] = useState<number | null>(null);
+  const [detailBusy, setDetailBusy] = useState(false);
+  // 「彻底删除」两段式确认。
+  const [deleteArmed, setDeleteArmed] = useState(false);
   // 同 tick 的第二次触发（双击/键盘+点击，在 busy 渲染生效前到达）不许发出第二笔请求：
   // ref 在同步路径上就能拦住，不用等下一轮渲染把按钮置灰。
   const inflight = useRef(false);
+  // 证据分页另一枚闸门（与动作那枚分开：两者互不阻塞，但各自同 tick 只能有一笔在飞）。
+  const detailInflight = useRef(false);
   // 宿主侧会改写 statement（归并继承人工正文、arm/edit）：非编辑态让草稿跟随最新值，
   // 否则确认升格会把过期草稿盖回宿主。编辑态不跟（用户正在改的就是草稿）。
   useEffect(() => {
@@ -569,6 +651,58 @@ function RuleItem(props: RuleItemProps): ReactNode {
       props.onDone(false, t("actionFailed"));
     }
   };
+  /**
+   * 取一页证据。`cursor === undefined` = 首屏；否则是"加载更多"。
+   * 远程通道缺席/请求失败都只出可见错误条（证据是辅助信息，不阻断卡片的其它动作）。
+   *
+   * 宿主把 400/404/500 当成**数据回执**（`{ ok: false, error, status }`）交回来，不走异常，
+   * 所以这里必须自己按 `ok` 分流：旧写法直接读 `reply.evidence` 会在失败时拿到 undefined，
+   * 渲染期炸在 `entries.length` 上。
+   */
+  const fetchDetail = async (cursor?: number): Promise<void> => {
+    const reader = props.rulesRemote;
+    if (reader === undefined) {
+      props.onDone(false, t("evidenceUnavailable"));
+      return;
+    }
+    // 证据分页自己的同步闸门：`detailBusy` 要等下一轮渲染才生效，同一 tick 的第二次触发
+    // （连点"加载更多"）会把同一页请求两遍、拼进列表两遍。
+    if (detailInflight.current) {
+      return;
+    }
+    detailInflight.current = true;
+    setDetailBusy(true);
+    try {
+      const reply = await reader.ruleDetail(rule.id, cursor);
+      if (!reply.ok) {
+        // 失败不置 `detailLoaded`：置了以后收起再展开不会再试一次，一次瞬时失败会被
+        // 钉成该卡片生命周期内的永久空白。
+        props.onDone(false, reply.error);
+        return;
+      }
+      setDetail((prev) => (cursor === undefined ? reply.evidence : [...prev, ...reply.evidence]));
+      setNextCursor(reply.nextCursor);
+      setDetailLoaded(true);
+    } catch (error) {
+      console.error("[lesson-loop] rule detail failed:", error);
+      props.onDone(false, t("evidenceFailed"));
+    } finally {
+      detailInflight.current = false;
+      setDetailBusy(false);
+    }
+  };
+
+  const toggleDetail = (): void => {
+    if (detailOpen) {
+      setDetailOpen(false);
+      return;
+    }
+    setDetailOpen(true);
+    if (!detailLoaded) {
+      void fetchDetail();
+    }
+  };
+
   const meta = ruleMetaLines(t, rule).join(" · ");
   // 按钮文案先取成变量：嵌进多层 createElement 里再调 t() 会超 max-nested-calls 上限。
   const labels: RuleActionLabels = {
@@ -577,6 +711,8 @@ function RuleItem(props: RuleItemProps): ReactNode {
     reject: rule.status === "demoted" ? t("btnReject") : t("btnDismiss"),
     revive: t("btnRevive"),
     confirm: t(editing ? "btnArmConfirmEditing" : "btnArmConfirm"),
+    delete: t("btnDelete"),
+    deleteConfirm: t("btnDeleteConfirm"),
   };
   const actions: RuleActionsProps = {
     busy: props.busy,
@@ -586,7 +722,15 @@ function RuleItem(props: RuleItemProps): ReactNode {
     act,
     setEditing,
     setDraft,
+    deleteArmed,
+    armDelete: setDeleteArmed,
   };
+  // 证据按钮单独建一层（再嵌进行容器就是四层 createElement，超过 max-nested-calls 的闸门）。
+  const evidenceButton = createElement(
+    "button",
+    { type: "button", className: RULE_BTN_CLASS, disabled: detailBusy, onClick: toggleDetail },
+    t("btnEvidence"),
+  );
   return createElement(
     "div",
     { className: "llc-rule" },
@@ -598,6 +742,8 @@ function RuleItem(props: RuleItemProps): ReactNode {
       ? null
       : createElement("div", { className: "llc-rule-sig" }, rule.signature),
     createElement("div", { className: "llc-rule-meta" }, meta),
+    createElement("div", { className: ACTIONS_ROW_CLASS }, evidenceButton),
+    detailOpen ? evidencePanel(t, detail, nextCursor, detailBusy, fetchDetail) : null,
     rule.status === "armed" ? armedActionsRow(actions) : null,
     rule.status === "candidate" || rule.status === "demoted" ? candidateActionsRow(actions) : null,
     rule.status === "rejected" || rule.status === "archived" ? retiredActionsRow(actions) : null,
@@ -814,7 +960,7 @@ function buildPromotionSection(inputs: ConfigInputs): ReactNode {
   );
 }
 
-/** 容量小节：events.jsonl 磁盘保险丝与规则正文上限（一对双列）。 */
+/** 容量小节：教训流水磁盘上限与规则正文上限（一对双列）。 */
 function buildCapacitySection(inputs: ConfigInputs): ReactNode {
   return createElement(
     Section,
@@ -841,6 +987,31 @@ function buildCapacitySection(inputs: ConfigInputs): ReactNode {
         unit: "unitChars",
       }),
     ),
+  );
+}
+
+/** 证据读取小节：页大小单项。和其余配置行一起放在规则区之前——它是配置项，
+ *  规则区是条件渲染的数据面；数字框的草稿/重置钩子必须先于条件块落位，测试的无 DOM
+ *  钩子运行时也才能按稳定次序展开（生产 React 的子组件边界不受此影响，但没必要为
+ *  测试留一条特殊路径）。
+ *
+ *  这一格必须走共享 `NumberField`：旧的自定义"非受控 input + key=文本"在每次合法输入后
+ *  换 key 重挂 `<input>`，焦点随之丢失（从 20 改成 100 得点三次），而且没有
+ *  `resetToken`/`onInvalidChange`，越界草稿不上报保存门禁、保存/撤销后也不会清回。
+ *  `NumberField` 的 draft/`resetToken`/`onInvalidChange` 是这三个问题的同一套解。 */
+function buildEvidenceSection(inputs: ConfigInputs): ReactNode {
+  return createElement(
+    Section,
+    { title: inputs.t("evidenceSection"), count: inputs.t("fieldCount", { count: "1" }) },
+    configNumber(inputs, {
+      field: "evidencePageSize",
+      label: "evidencePageSizeLabel",
+      hint: "evidencePageSizeHint",
+      min: 5,
+      max: 100,
+      step: 1,
+      unit: "unitRows",
+    }),
   );
 }
 
@@ -1101,6 +1272,7 @@ function renderCardBody(view: CardView): ReactNode {
     buildLoopSection(inputs),
     buildPromotionSection(inputs),
     buildCapacitySection(inputs),
+    buildEvidenceSection(inputs),
     saveBar,
     rulesArea,
     createElement("p", { className: "dsu-hint llc-digest-hint" }, hintLabel),
@@ -1185,10 +1357,8 @@ function LlcCard(props: LlcCardProps): ReactNode {
     setShownCounts((prev) => ({ ...prev, [key]: prev[key] + RULES_PAGE_SIZE }));
   };
 
-  // 挂载即拉取。卡片组件保持「零直接 React hook」的形态（测试架直调组件函数读
-  // createElement 产物，不存在 dispatcher），拉取逻辑提为模块层 reloadStats(reader, sink)，
-  // effect 与 save/onDone 直接调它——组件里既无 hook 也无不稳定闭包，exhaustive-deps
-  // 的依赖全落在挂载期稳定位上。
+  // 挂载即拉取。拉取逻辑提为模块层 reloadStats(reader, sink)：卡片这里只留这一条
+  // 挂载 effect（以及 shared useInvalidFields 那一组），不为拉取另造一套 hook 状态机。
   // `reader` 来自 apply 期一次构造的读取器，跨渲染身份稳定。
   const reader = props.rulesRemote;
   useEffect(() => {
@@ -1487,4 +1657,5 @@ export {
   buildLoopSection,
   buildPromotionSection,
   buildCapacitySection,
+  buildEvidenceSection,
 };

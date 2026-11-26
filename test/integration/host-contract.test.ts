@@ -21,7 +21,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { Context } from "@deepseek-ai/cordis";
 import { Loader } from "@deepseek-ai/cordis-plugin-loader";
-import { RULES_FIELD, SETTINGS_NAMESPACE } from "../../lib/rules-layout.ts";
+import { LessonDb } from "../../lib/lesson-db.ts";
 import { makeSettingsProvider } from "../rules-fake.ts";
 
 const PKG_ROOT = path.resolve(import.meta.dirname, "../..");
@@ -34,7 +34,7 @@ const FIXTURE_CONSUMER = path.join(FIXTURE_DIR, "consumer.js");
 const ENTRY_ID = "lesson-loop";
 const SIBLING_ID = "contract-sibling";
 const CONSUMER_ID = "contract-consumer";
-const EVENTS_REL = path.join("cache", ENTRY_ID, "events.jsonl");
+const DB_REL = path.join("data", ENTRY_ID, "lesson-loop.db");
 
 /** `FiberState` 是 const enum（运行时擦除），只能按发布 d.ts 的数值比对。 */
 const ST = { PENDING: 0, ACTIVE: 2, FAILED: 3 } as const;
@@ -183,6 +183,8 @@ describe("真实 cordis 装载情况：lesson-loop 的服务契约", () => {
   let scratch: string;
   let origDshHome: string | undefined;
   let live: TestCtx | undefined;
+  /** 测试侧另开的只读连接：afterEach 必须先关它再删临时目录（Windows 上打开的文件删不掉）。 */
+  let readDb: LessonDb | null = null;
 
   beforeAll(async () => {
     await mkdir(path.join(FIXTURE_DIR, "lib"), { recursive: true });
@@ -225,7 +227,9 @@ describe("真实 cordis 装载情况：lesson-loop 的服务契约", () => {
       await Promise.all(Array.from(live.loader.entries(), (item) => disposeFiber(item)));
       live = undefined;
     }
-    rmSync(scratch, { recursive: true, force: true });
+    readDb?.close();
+    readDb = null;
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     if (origDshHome === undefined) {
       delete process.env["DSH_HOME"];
     } else {
@@ -278,7 +282,7 @@ describe("真实 cordis 装载情况：lesson-loop 的服务契约", () => {
         detail: "exit=1",
       });
       expect(receipt.ok).toBe(true);
-      expect(existsSync(path.join(scratch, EVENTS_REL)), "上报须落进真实 cache").toBe(true);
+      expect(existsSync(path.join(scratch, DB_REL)), "上报须落进真实的库文件").toBe(true);
     },
   );
 
@@ -353,8 +357,10 @@ describe("真实 cordis 装载情况：lesson-loop 的服务契约", () => {
       expect(receipt.ok).toBe(true);
       // 卡写进的是这份装载里 provide 出去的那枚 settings 假件：真实注入子 fiber 走的官方
       // scoped 解析，mock ctx 那份 describe/update 盖不到。
-      const cards = inst.provider.peek(SETTINGS_NAMESPACE)?.[RULES_FIELD];
-      expect(Array.isArray(cards) ? cards.length : 0, "达阈值即入库").toBe(1);
+      const db = LessonDb.open({ path: path.join(scratch, DB_REL) });
+      readDb = db;
+      expect(db, "库须能打开").not.toBeNull();
+      expect(db?.rulesCount(), "达阈值即入库").toBe(1);
     },
   );
 });

@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ReactNode } from "react";
+import { createElement } from "react";
 import { LlcCard } from "../src/client-entry.ts";
 import type { CardSnapshot, RuleCardView } from "../src/client-entry.ts";
 import { UI_MESSAGES } from "../src/ui-messages.ts";
@@ -25,17 +26,28 @@ type Props = Record<string, unknown>;
  *  ⚠ setter 身份必须**跨渲染稳定**（React 的保证）：卡片把 setStats/setStatsError 放进
  *  useEffect 的 deps，每次渲染换一枚新闭包会让 effect 每轮重跑 → 拉取→setState→重渲
  *  无限自激（这条链真挂过：worker 被 SIGABRT 杀掉）。 */
+interface HookScope {
+  /** 每个 hook 序号一个槽（useState 的值与 setter / useEffect 的 deps 与 cleanup）。 */
+  values: unknown[];
+  /** useRef 的槽与 useState 分开存：ref 槽里是恒定的盒对象，不会与任何 useState
+   *  的值形态（字符串/数字）撞在同一个序号上。 */
+  refs: ({ current: unknown } | undefined)[];
+  setters: (((next: unknown) => void) | undefined)[];
+  deps: (readonly unknown[] | undefined)[];
+  cleanups: ((() => void) | undefined)[];
+  cursor: number;
+}
+
 const runtime = vi.hoisted(() => {
   const box = {
-    /** 每个 hook 序号一个槽（useState 的值与 setter / useEffect 的 deps 与 cleanup）。 */
-    values: [] as unknown[],
-    /** useRef 的槽与 useState 分开存：ref 槽里是恒定的盒对象，不会与任何 useState
-     *  的值形态（字符串/数字）撞在同一个序号上。 */
-    refs: [] as ({ current: unknown } | undefined)[],
-    setters: [] as (((next: unknown) => void) | undefined)[],
-    deps: [] as (readonly unknown[] | undefined)[],
-    cleanups: [] as ((() => void) | undefined)[],
-    cursor: 0,
+    /** 每个函数组件实例一份 hook 槽：React 的 hook 状态属于组件，不是整棵树的全局槽。
+     *  旧的扁平数组把 RuleItem / NumberField / InfoTip 的 hook 混在一条游标上，条件区一
+     *  变化后面的字段就会串槽；这也是旧实现刻意绕开共享 NumberField 的原因。 */
+    scopes: new Map<string, HookScope>(),
+    /** 当前正在展开的函数组件；只有它里面的 hook 调用能落槽。 */
+    active: null as HookScope | null,
+    /** 组件展开期间被 setState 标脏：等这一轮树展开完再重渲，不能在半途重入。 */
+    dirty: false as boolean,
     renders: 0,
     rerender: undefined as (() => void) | undefined,
   };
@@ -53,29 +65,51 @@ const stubHooks = vi.hoisted(() => ({
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   const { box } = runtime;
+  const activeScope = (): HookScope => {
+    if (box.active === null) {
+      throw new Error("hook called outside a function component");
+    }
+    return box.active;
+  };
   const useState = <State>(
     initial: State | (() => State),
   ): [State, (next: State | ((prev: State) => State)) => void] => {
-    const index = box.cursor;
-    box.cursor += 1;
-    if (!(index in box.values)) {
-      box.values[index] = typeof initial === "function" ? (initial as () => State)() : initial;
-      box.setters[index] = (next: unknown): void => {
-        const previous = box.values[index] as State;
-        box.values[index] =
+    const scope = activeScope();
+    const index = scope.cursor;
+    scope.cursor += 1;
+    if (!(index in scope.values)) {
+      scope.values[index] = typeof initial === "function" ? (initial as () => State)() : initial;
+      scope.setters[index] = (next: unknown): void => {
+        const previous = scope.values[index] as State;
+        const nextValue =
           typeof next === "function" ? (next as (prev: State) => State)(previous) : next;
+        // React 的 bailout：Object.is 相等时不重渲。NumberField 挂载时会把
+        // onInvalidChange(false) 转给 useInvalidFields，后者返回同一个 Set；这里若照样
+        // 立刻重渲，会在组件展开途中重入整棵树（shared 的 draft/effect 链会被打断）。
+        if (Object.is(nextValue, previous)) {
+          return;
+        }
+        scope.values[index] = nextValue;
+        // 组件展开途中只标脏，等根树铺完再重渲。shared NumberField 的 effect 会在挂载时
+        // 调 onInvalidChange(false)，父卡的 useInvalidFields 随即 setState；若这里立刻
+        // 重入 draw，外层组件还没展开完，active 会被子树的 draw 清掉。
+        if (box.active !== null) {
+          box.dirty = true;
+          return;
+        }
         box.rerender?.();
       };
     }
     return [
-      box.values[index] as State,
-      box.setters[index] as (next: State | ((prev: State) => State)) => void,
+      scope.values[index] as State,
+      scope.setters[index] as (next: State | ((prev: State) => State)) => void,
     ];
   };
   const useEffect = (effect: () => (() => void) | undefined, deps?: readonly unknown[]): void => {
-    const index = box.cursor;
-    box.cursor += 1;
-    const prev = box.deps[index];
+    const scope = activeScope();
+    const index = scope.cursor;
+    scope.cursor += 1;
+    const prev = scope.deps[index];
     const stable =
       prev !== undefined &&
       deps !== undefined &&
@@ -84,20 +118,21 @@ vi.mock("react", async (importOriginal) => {
     if (stable) {
       return;
     }
-    box.deps[index] = deps === undefined ? undefined : [...deps];
-    const cleanup = box.cleanups[index];
+    scope.deps[index] = deps === undefined ? undefined : [...deps];
+    const cleanup = scope.cleanups[index];
     if (cleanup !== undefined) {
       cleanup();
     }
-    box.cleanups[index] = effect();
+    scope.cleanups[index] = effect();
   };
   const useRef = <RefValue>(initial: RefValue): { current: RefValue } => {
-    const index = box.cursor;
-    box.cursor += 1;
-    if (!(index in box.refs)) {
-      box.refs[index] = { current: initial };
+    const scope = activeScope();
+    const index = scope.cursor;
+    scope.cursor += 1;
+    if (!(index in scope.refs)) {
+      scope.refs[index] = { current: initial };
     }
-    return box.refs[index] as { current: RefValue };
+    return scope.refs[index] as { current: RefValue };
   };
   // 共享字段组件的 DOM id 生成位：本测试架不挂 DOM，一枚常量 id 就够建立 label↔control 关联。
   const patched = { ...actual, useState, useEffect, useRef, ...stubHooks };
@@ -154,21 +189,51 @@ function expectItem<Item>(value: Item | undefined, message: string): Item {
 /** 把 `createElement(ToggleRow, …)` 这类元素替换成它自己的输出，递归往下。
  *
  *  不这么做树里只剩宿主元素（"div"），子组件（配置行、规则卡）的文本与控件一个都取不到，
- *  而它们恰恰是本层要验的。展开顺序 = React 的渲染顺序（深度优先），故 hook 槽位次序与
- *  真实渲染一致。 */
-function expand(node: unknown): unknown {
+ *  而它们恰恰是本层要验的。展开顺序 = React 的渲染顺序（深度优先）。
+ *
+ *  `path` 是组件实例的稳定身份：同一路径在重渲时复用同一份 hook 槽，数组里的兄弟按
+ *  React key（缺省按下标）区分。不能像旧实现那样让整棵树共享一枚游标——条件渲染的
+ *  RuleItem 一出现，后面的 NumberField/InfoTip 就会拿到别人的 hook 状态（表现为
+ *  输入框自己打开说明浮层、保存后草稿不清、证据面板把数组当别的类型读）。 */
+/** 数组兄弟的路径段：有 React key 用 key，否则用下标（与 React 的 keyed reconcile 同序）。 */
+function pathKeyOf(child: unknown, index: number): string {
+  const key: unknown =
+    typeof child === "object" && child !== null ? Reflect.get(child, "key") : undefined;
+  return typeof key === "string" || typeof key === "number" ? String(key) : String(index);
+}
+
+function expand(node: unknown, path: string): unknown {
   if (Array.isArray(node)) {
-    return node.map((child: unknown) => expand(child));
+    return node.map((child: unknown, index: number) =>
+      expand(child, `${path}/${pathKeyOf(child, index)}`),
+    );
   }
   if (typeof node !== "object" || node === null) {
     return node;
   }
   const type: unknown = Reflect.get(node, "type");
   if (typeof type === "function") {
-    return expand(Reflect.apply(type, undefined, [fieldOf(node, "props")]));
+    const name = typeof type.name === "string" && type.name !== "" ? type.name : "component";
+    const key = `${path}:${name}`;
+    let scope = runtime.box.scopes.get(key);
+    if (scope === undefined) {
+      scope = { values: [], refs: [], setters: [], deps: [], cleanups: [], cursor: 0 };
+      runtime.box.scopes.set(key, scope);
+    }
+    const previous = runtime.box.active;
+    runtime.box.active = scope;
+    scope.cursor = 0;
+    try {
+      return expand(Reflect.apply(type, undefined, [fieldOf(node, "props")]), `${key}/render`);
+    } finally {
+      runtime.box.active = previous;
+    }
   }
   const props = propsOf(node);
-  return { type, props: { ...props, children: expand(props?.children) } };
+  return {
+    type,
+    props: { ...props, children: expand(props?.children, `${path}/children`) },
+  };
 }
 
 /** 渲染树的文本（树已展开成宿主元素，只吃字符串与数字子节点）。 */
@@ -217,13 +282,21 @@ function controlOf(tree: unknown, field: string): NodeProps {
 function mount(component: (props: never) => ReactNode, props: Props): Mounted {
   let current: ReactNode = null;
   const draw = (): void => {
-    runtime.box.renders += 1;
-    // 渲染次数上限：effect↔setState 自激时立刻红，而不是把 worker 拖到 OOM（见运行时注释）。
-    if (runtime.box.renders > 200) {
-      throw new Error("render loop: 200 renders without settling — effect/setter identity drifted");
-    }
-    runtime.box.cursor = 0;
-    current = expand(component(props as never)) as ReactNode;
+    runtime.box.active = null;
+    // 组件展开期间 setState 只标 dirty（见 useState setter）：这里把标脏的下一轮跑完再退出，
+    // 等价于 React 把一次事件里的多次 setState 合并成一次提交。200 轮上限防 effect 自激。
+    let repeat: boolean;
+    do {
+      runtime.box.renders += 1;
+      if (runtime.box.renders > 200) {
+        throw new Error(
+          "render loop: 200 renders without settling — effect/setter identity drifted",
+        );
+      }
+      runtime.box.dirty = false;
+      current = expand(createElement(component, props as never), "root") as ReactNode;
+      ({ dirty: repeat } = runtime.box);
+    } while (repeat);
   };
   runtime.box.rerender = draw;
   draw();
@@ -239,11 +312,9 @@ function mount(component: (props: never) => ReactNode, props: Props): Mounted {
 
 /** 清空 hook 槽与渲染计数（上一条用例的槽位不能漏进下一条）。 */
 function resetHooks(): void {
-  runtime.box.values = [];
-  runtime.box.setters = [];
-  runtime.box.deps = [];
-  runtime.box.cleanups = [];
-  runtime.box.cursor = 0;
+  runtime.box.scopes.clear();
+  runtime.box.active = null;
+  runtime.box.dirty = false;
   runtime.box.renders = 0;
   runtime.box.rerender = undefined;
 }
@@ -361,6 +432,7 @@ function readerFromFetch(): RulesReader {
     },
     rules: async () => ({ ok: true, rules: [] }),
     lessons: async () => ({ ok: true, count: 0, lessons: [] }),
+    ruleDetail: async () => ({ ok: true, id: "", evidence: [], nextCursor: null }),
     ruleAction: async (id, action, statement) => {
       const res = await fetch(ACTION_CALL, {
         method: "POST",
@@ -387,7 +459,7 @@ function cardProps(
 const READY: CardSnapshot = {
   status: "ready",
   writable: true,
-  value: { enabled: true },
+  value: { enabled: true, evidencePageSize: 20 },
   revision: 7,
 };
 
@@ -567,6 +639,44 @@ describe("client 数据那一栏：数值字段的同一容忍度", () => {
     assert.ok(
       descOf(card.tree()).includes("…"),
       '空白串按漂移处理（Number("  ") 是 0，收下就等于虚报「0 条教训」）',
+    );
+  });
+});
+
+describe("client 数据那一栏：证据页大小字段", () => {
+  beforeEach(resetHooks);
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("越界草稿上报保存门禁，撤销后清回已提交值", async () => {
+    vi.stubGlobal("fetch", fetchStubOf(async () => jsonResponse(statsBody())).fetch);
+    const card = mount(
+      LlcCard as never,
+      cardProps(READY, async () => true),
+    );
+    await card.settle();
+
+    // 先制造一个合法草稿，让保存按钮从 disabled 转成 enabled；随后把证据页大小
+    // 输成低于 5 的越界值，NumberField 不应把它写进 touched，而应经 reportInvalid
+    // 把整张卡拦住。旧自定义 input 两条都做不到。
+    (controlOf(card.tree(), "enabled").onClick as () => void)();
+    assert.equal(controlOf(card.tree(), "save").disabled, false, "前置：合法草稿让保存可用");
+    const evidence = controlOf(card.tree(), "evidencePageSize");
+    (evidence.onChange as (event: { target: { value: string } }) => void)({
+      target: { value: "3" },
+    });
+    await card.settle();
+    assert.equal(controlOf(card.tree(), "save").disabled, true, "越界草稿必须拦住保存");
+    assert.equal(controlOf(card.tree(), "evidencePageSize").value, "3", "越界草稿留在框里");
+
+    (controlOf(card.tree(), "discard").onClick as () => void)();
+    await card.settle();
+    assert.equal(
+      controlOf(card.tree(), "evidencePageSize").value,
+      "20",
+      "撤销后必须回到快照里的已提交值，不能把非法草稿留在框里",
     );
   });
 });

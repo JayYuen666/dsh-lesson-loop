@@ -26,7 +26,7 @@
 
 import { afterEach, afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -34,7 +34,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as flushAsync } from "node:timers/promises";
 
 import { buildHost } from "../../build-host.mjs";
-import { RULES_FIELD, SETTINGS_NAMESPACE } from "../../lib/rules-layout.ts";
+import { LESSON_DB_FILE, LessonDb } from "../../lib/lesson-db.ts";
+import type { LessonRecord, RuleCard } from "../../lib/lesson-store.ts";
 import { makeSettingsProvider } from "../rules-fake.ts";
 import type { SettingsProviderFake } from "../rules-fake.ts";
 
@@ -42,6 +43,16 @@ const CORDIS_ENTRY = createRequire(import.meta.url).resolve("@deepseek-ai/cordis
 const LOADER_ENTRY = createRequire(import.meta.url).resolve("@deepseek-ai/cordis-plugin-loader");
 const PKG_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const HOST_TS = path.join(PKG_ROOT, "host.ts");
+
+/** 测试侧打开过的连接：afterEach 必须先 close 再删临时目录（Windows 上打开的文件删不掉）。 */
+const testDbs: LessonDb[] = [];
+
+/** 关闭本用例打开的全部测试侧连接；close 幂等。 */
+function closeTestDbs(): void {
+  for (const db of testDbs.splice(0)) {
+    db.close();
+  }
+}
 
 const FIXTURE_DIR = path.join(PKG_ROOT, ".tmp");
 const FIXTURE_PKG = path.join(FIXTURE_DIR, "pkg");
@@ -52,8 +63,8 @@ const FIXTURE_SIBLING = path.join(FIXTURE_PKG, "sibling.js");
 
 /** 设置命名空间 = 条目 id = host.ts 的 PLUGIN_NAME（0.2.1-alpha.2：注册是隐式的）。 */
 const SWITCH_NS = "lesson-loop";
-/** cacheFile("events.jsonl") 的展开式：dshHomePath("cache", "lesson-loop", name)。 */
-const EVENTS_REL = path.join("cache", SWITCH_NS, "events.jsonl");
+/** 库文件位置：dshPath("data", "lesson-loop", LESSON_DB_FILE)。 */
+const DB_REL = path.join("data", SWITCH_NS, LESSON_DB_FILE);
 
 // quality-gate 上报的形状三件套（本文件自己照抄它的字段构造，见 gateFailurePayload 注记）：
 // 建载荷与读回事件流水/条目段两头都用这几枚，都是测试侧字面量，不指生产常量。
@@ -114,7 +125,7 @@ interface BusReportInput {
 interface Mount {
   ctx: TestCtx;
   provider: SettingsProviderFake;
-  eventsPath: string;
+  dbPath: string;
 }
 
 /** cordis 的 `FiberState` 是 `const enum`（运行时擦除），只能按发布 d.ts 的数值比对。 */
@@ -212,7 +223,7 @@ async function mount(
   return {
     ctx,
     provider,
-    eventsPath: path.join(process.env["DSH_HOME"] ?? "", EVENTS_REL),
+    dbPath: path.join(process.env["DSH_HOME"] ?? "", DB_REL),
   };
 }
 
@@ -227,19 +238,26 @@ async function setEntryConfig(inst: Mount, config: Record<string, unknown>): Pro
   await flushAsync(0);
 }
 
-/** 读事件流水（cache/lesson-loop/events.jsonl）：逐行 JSON.parse，跳过空行。 */
-function loadEvents(file: string): Record<string, unknown>[] {
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
+/** 只读打开同一个库文件：落盘判定的读口（插件写进去的字节，测试侧另一连接读回来）。 */
+function openDb(): LessonDb {
+  const db = LessonDb.open({ path: path.join(process.env["DSH_HOME"] ?? "", DB_REL) });
+  if (db === null) {
+    throw new Error("lesson-loop.db 打不开：本用例要求库已落盘");
+  }
+  testDbs.push(db);
+  return db;
 }
 
-/** 从 settings 假件里取真正落进 `lesson-loop` 条目段的卡（读的是文档原文，不是解析值）。 */
-function persistedRuleCards(provider: SettingsProviderFake): Record<string, unknown>[] {
-  const section = provider.peek(SETTINGS_NAMESPACE);
-  const rules = section?.[RULES_FIELD];
-  return Array.isArray(rules) ? (rules as Record<string, unknown>[]) : [];
+/** 读教训流水（库里的 lessons 表），按写入序。 */
+function loadLessons(): LessonRecord[] {
+  return openDb().readLessons();
+}
+
+/** 读规则卡（库里的 rules 表；坏行会退 usable:false，这里按可用性断言）。 */
+function persistedRuleCards(): readonly RuleCard[] {
+  const read = openDb().rules.load();
+  expect(read.usable, "库里的规则行必须读得懂").toBe(true);
+  return read.cards;
 }
 
 describe("真实 Loader 装载 lesson-loop host：quality-gate门禁失败上报的写到磁盘判定", () => {
@@ -272,12 +290,13 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate门禁失败上报
   afterEach(async () => {
     await live?.fiber?.dispose();
     live = undefined;
+    closeTestDbs();
     if (origDshHome === undefined) {
       delete process.env["DSH_HOME"];
     } else {
       process.env["DSH_HOME"] = origDshHome;
     }
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   afterAll(async () => {
@@ -305,20 +324,20 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate门禁失败上报
       // 断言①：单条上报落事件流水，逐字段对（source/category/signature）。
       const first = await bus.report(gateFailurePayload(7));
       expect(first.ok, "单次上报回执 ok:true").toBe(true);
-      expect(existsSync(inst.eventsPath), "cache/lesson-loop/events.jsonl 应落盘").toBe(true);
-      const rows = loadEvents(inst.eventsPath);
-      const hit = rows.find((row) => row["source"] === SOURCE_QUALITY_GATE);
-      expect(hit, "events.jsonl 应含这条上报").toBeDefined();
-      expect(hit?.["category"]).toBe(CATEGORY_GATE_FAILURE);
-      expect(hit?.["signature"], "事件流水存的是 reportProblemToBus 的原始签名").toBe(
+      expect(existsSync(inst.dbPath), "data/lesson-loop/lesson-loop.db 应落盘").toBe(true);
+      const rows = loadLessons();
+      const hit = rows.find((row) => row.source === SOURCE_QUALITY_GATE);
+      expect(hit, "库里应含这条上报").toBeDefined();
+      expect(hit?.category).toBe(CATEGORY_GATE_FAILURE);
+      expect(hit?.signature, "流水存的是 reportProblemToBus 的原始签名").toBe(
         SIGNATURE_GATE_COMMAND,
       );
-      expect(hit?.["sessionId"]).toBe("session-gate-1");
-      expect(hit?.["turn"]).toBe(7);
-      expect(hit?.["detail"]).toContain("TS2322");
-      expect(hit?.["project"]).toBeTypeOf("string");
+      expect(hit?.sessionId).toBe("session-gate-1");
+      expect(hit?.turn).toBe(7);
+      expect(hit?.detail).toContain("TS2322");
+      expect(hit?.project).toBeTypeOf("string");
 
-      // 断言③：反复上报达 promoteThreshold（默认 3）→ 规则卡写进条目段的 rules，回执 ok:true。
+      // 断言③：反复上报达 promoteThreshold（默认 3）→ 规则卡写进库的 rules 表，回执 ok:true。
       const second = await bus.report(gateFailurePayload(8));
       expect(second.ok).toBe(true);
       expect(second.ready, "occurrences=2 < 3 → 未达阈值，不催审").not.toBe(true);
@@ -326,17 +345,14 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate门禁失败上报
       expect(third.ok, "第三次上报回执 ok:true").toBe(true);
       expect(third.ready, "occurrences=3 达阈值 → 候选卡 ready").toBe(true);
 
-      const card = persistedRuleCards(inst.provider).find(
+      const card = persistedRuleCards().find(
         (item) =>
-          item["signature"] === SIGNATURE_GATE_COMMAND &&
-          item["category"] === CATEGORY_GATE_FAILURE,
+          item.signature === SIGNATURE_GATE_COMMAND && item.category === CATEGORY_GATE_FAILURE,
       );
-      expect(card, "条目段 lesson-loop 的 rules 里应真的写进了这张候选卡").toBeDefined();
-      expect(card?.["status"]).toBe("candidate");
-      expect(card?.["occurrences"]).toBe(3);
-      expect(
-        loadEvents(inst.eventsPath).filter((row) => row["source"] === SOURCE_QUALITY_GATE),
-      ).toHaveLength(3);
+      expect(card, "库里应真的写进了这张候选卡").toBeDefined();
+      expect(card?.status).toBe("candidate");
+      expect(card?.occurrences).toBe(3);
+      expect(loadLessons().filter((row) => row.source === SOURCE_QUALITY_GATE)).toHaveLength(3);
     },
   );
 
@@ -360,15 +376,11 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate门禁失败上报
       const third = await bus.report(gateFailurePayload(3));
       expect(first.ok && second.ok && third.ok, "三次上报回执均 ok:true").toBe(true);
       expect(third.ready, "occurrences=3 达阈值 → ready").toBe(true);
-      expect(existsSync(inst.eventsPath)).toBe(true);
-      expect(
-        loadEvents(inst.eventsPath).filter((row) => row["source"] === SOURCE_QUALITY_GATE),
-      ).toHaveLength(3);
-      const card = persistedRuleCards(inst.provider).find(
-        (item) => item["signature"] === SIGNATURE_GATE_COMMAND,
-      );
-      expect(card, "发布产物同样把卡片写进条目段 lesson-loop 的 rules").toBeDefined();
-      expect(card?.["occurrences"]).toBe(3);
+      expect(existsSync(inst.dbPath)).toBe(true);
+      expect(loadLessons().filter((row) => row.source === SOURCE_QUALITY_GATE)).toHaveLength(3);
+      const card = persistedRuleCards().find((item) => item.signature === SIGNATURE_GATE_COMMAND);
+      expect(card, "发布产物同样把卡片写进库").toBeDefined();
+      expect(card?.occurrences).toBe(3);
     },
   );
 
@@ -388,7 +400,7 @@ describe("真实 Loader 装载 lesson-loop host：quality-gate门禁失败上报
       const after = inst.ctx.get("lessonLoop") as BusService;
       const receipt = await after.report(gateFailurePayload(1));
       expect(receipt).toStrictEqual({ ok: false, reason: "disabled" });
-      expect(existsSync(inst.eventsPath), "关闭态不许创建 events.jsonl").toBe(false);
+      expect(loadLessons(), "关闭态不许写入教训流水").toStrictEqual([]);
 
       // 全为 volatile 的 config 变化走 loader 的 `_commitVolatile` 就地提交，不重挂载条目。
       // 改回重挂载的话这两条会红，而卡片"写完立刻生效"就换成了另一套取值规则。

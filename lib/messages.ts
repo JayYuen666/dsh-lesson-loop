@@ -36,6 +36,11 @@ export interface LessonLoopMessages {
   // ── 常驻 systemPrompt 段 ────────────────────────────────────────────────
   /** 闭环存在感段全文（项目无关，注入模型）。 */
   readonly sectionText: string;
+  /** 段文本变更时宿主追加的说明（空白会被省略，即不产生通知）。必须是"这份替换前面那份"的语气：
+   *  它紧贴在段被改写/清空之后出现。 */
+  readonly sectionReplacement: string;
+  /** 段注销且没有可见注册时宿主追加的说明（必须非空，缺省是写死节名的英文句）。 */
+  readonly sectionRetirement: string;
 
   // ── 会话开始注入的 armed 规则摘要帧（agent.inject）─────────────────────
   /** 摘要帧抬头。 */
@@ -48,6 +53,8 @@ export interface LessonLoopMessages {
   readonly armedNoTrigger: string;
   /** 条数超上限、只列了最近几条时的帧尾说明（{total} {shown}）。 */
   readonly digestOmitted: string;
+  /** 本会话已有旧的摘要帧、这次要追加新一轮时的替换说明（插在新帧抬头之前）。 */
+  readonly digestReplacesEarlier: string;
 
   // ── 新起草规则卡的正文模板（draftStatement，起草即回注给模型）───────────
   // 模板里的 `{signature}` 是本包自己嵌的占位（数据原文），路径/命令原样落进去。
@@ -152,13 +159,21 @@ export interface LessonLoopMessages {
   /** 白名单外的动作（{action} 原样回显，便于定位是谁发的）。 */
   readonly errUnknownAction: string;
   readonly errRuleNotFound: string;
+  /** 请求没带规则 id（400）：与"给了 id 但查无此卡"是两件事，文案必须分开。 */
+  readonly errRuleIdRequired: string;
+  /** 证据分页的 cursor 不是非负整数（400）：静默归 0 会让用户"莫名回到第一页"。 */
+  readonly errRuleCursorInvalid: string;
   /** 落库失败（拒写 / CAS 冲突耗尽）——库里还是旧状态，必须与"已生效"分开讲。 */
   readonly errRulePersistFailed: string;
   readonly errRuleActionFailed: string;
+  /** 彻底删除只对已归档/已拒绝的卡开放；库未动。 */
+  readonly errRuleDeleteNotAllowed: string;
   /** 读取接口兜底：统计 / 规则列表 / 事件流水读失败时下发的话（成功码 `ok:true` 时用不到）。 */
   readonly errStatsUnavailable: string;
   readonly errRulesUnavailable: string;
   readonly errLessonsUnavailable: string;
+  /** 证据分页读失败：与规则列表读失败分开讲，否则分不清是哪一面出问题。 */
+  readonly errRuleDetailUnavailable: string;
 }
 
 /**
@@ -188,6 +203,14 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
       "- 用户可用 /lessons-digest 把本会话人工差评即时蒸馏为教训。",
     ].join("\n"),
 
+    // 宿主把 replacement 当作**变更前的说明**原样追加在段正文之前（admission.ts 的
+    // appendSection：notice 先入、section.text 后入），而且**段文本变空时也照用**——
+    // 关闭 enabled / sectionEnabled 时正文是空串，此刻若文案承诺"以这份为准"，读到的
+    // 就是一个不存在的"这份"。所以文案必须同时说清两种收场。
+    sectionReplacement:
+      "先前的 lesson-loop 常驻说明已由本节取代；本节为空即表示该说明已停用，不再适用。",
+    sectionRetirement: "lesson-loop 的常驻说明已撤回，不再适用。",
+
     digestHeading:
       "[lesson-loop] 本项目经验规则（人工确认生效；执行中请主动遵守，违反会被度量统计）：",
     digestRuleLine: "{index}. {statement}（{day} 生效{metrics}）",
@@ -195,6 +218,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     armedNoTrigger: "，armed 后在场 {samples} 次会话但未触发（尚无可判定证据）",
     digestOmitted:
       "（本项目共 {total} 条生效规则，此处只列最近 {shown} 条；更早的未列出，可在本包设置卡的规则评审页归档或降级）",
+    digestReplacesEarlier:
+      "以下内容替换先前注入的 lesson-loop 经验规则（先前那份对应的项目/目录已不再适用）。",
 
     statementFactgateStable:
       "编辑文件之前，必须先成功 read 该文件，并做项目级引用检索（grep/glob/zg_search 覆盖引用面）确认改动波及面（调用方/依赖方/测试），再动手。",
@@ -263,11 +288,15 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
     errStatementTooLong: "规则正文超过长度上限，未写入；可在设置卡调整「规则正文上限」后重试",
     errUnknownAction: "未知操作：{action}",
     errRuleNotFound: "找不到该规则",
+    errRuleIdRequired: "请求里没带规则 id",
+    errRuleCursorInvalid: "证据分页的 cursor 必须是非负整数",
     errRulePersistFailed: "规则库拒绝了这次写入，改动未生效，请重试",
     errRuleActionFailed: "规则操作失败",
+    errRuleDeleteNotAllowed: "只有已归档或已拒绝的规则可以彻底删除；先归档再删除",
     errStatsUnavailable: "读不到统计：宿主侧读面出错，请重试",
     errRulesUnavailable: "读不到规则列表：宿主侧读面出错，请重试",
     errLessonsUnavailable: "读不到事件流水：宿主侧读面出错，请重试",
+    errRuleDetailUnavailable: "读不到规则证据：宿主侧读面出错，请重试",
   },
   en: {
     sectionText: [
@@ -278,6 +307,12 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
       "- The user can run /lessons-digest to distill this session's negative feedback into lessons.",
     ].join("\n"),
 
+    // 同 zh：宿主的 replacement 通知在段正文变空（开关关闭）时仍然发出，文案不能承诺
+    // "以这份为准"——那一刻没有"这份"。
+    sectionReplacement:
+      "The earlier lesson-loop standing instructions are superseded by this section; an empty section means those instructions are disabled and no longer apply.",
+    sectionRetirement: "The lesson-loop standing instructions were retired and no longer apply.",
+
     digestHeading:
       "[lesson-loop] Experience rules for this project (human-confirmed; follow them while working — violations are measured):",
     digestRuleLine: "{index}. {statement} (armed on {day}{metrics})",
@@ -287,6 +322,8 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
       ", present in {samples} sessions since arming but never triggered (no evidence to judge yet)",
     digestOmitted:
       "({total} rules are armed for this project; only the newest {shown} are listed here — the older ones are omitted and can be archived or demoted on this package's rule-review card)",
+    digestReplacesEarlier:
+      "The following supersedes the experience rules injected earlier (the project/directory they described no longer applies).",
 
     statementFactgateStable:
       "Before editing a file, read it successfully first and run a project-wide reference search (grep/glob/zg_search over the referencing surface) to confirm the blast radius — call sites, dependents, tests — before touching anything.",
@@ -365,10 +402,15 @@ export const MESSAGES: MessagesCatalog<LessonLoopMessages> = {
       "the rule statement exceeds the length limit and was not written; adjust the statement-length setting in this card and retry",
     errUnknownAction: "unknown action: {action}",
     errRuleNotFound: "rule not found",
+    errRuleIdRequired: "the request carried no rule id",
+    errRuleCursorInvalid: "the evidence cursor must be a non-negative integer",
     errRulePersistFailed: "The rule library refused this write — nothing was applied, retry",
     errRuleActionFailed: "rule action failed",
+    errRuleDeleteNotAllowed:
+      "only archived or rejected rules can be deleted permanently — archive it first",
     errStatsUnavailable: "stats unavailable: the host read path failed — retry",
     errRulesUnavailable: "rule list unavailable: the host read path failed — retry",
     errLessonsUnavailable: "event stream unavailable: the host read path failed — retry",
+    errRuleDetailUnavailable: "rule evidence unavailable: the host read path failed — retry",
   },
 };

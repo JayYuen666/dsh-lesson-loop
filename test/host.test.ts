@@ -3,20 +3,22 @@
 // 命令 / 衰减定时器。
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
 import assert from "node:assert/strict";
-import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setImmediate as flushAsync } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import plugin, { cacheFile, isSettingsProvider } from "../host.ts";
-import { LessonStore, PERSIST_FAILED, deriveProject } from "../lib/lesson-store.ts";
+import plugin, { cacheFile } from "../host.ts";
+import { DatabaseSync } from "node:sqlite";
+import { LESSON_DB_FILE, LedgerConsumedElsewhereError, LessonDb } from "../lib/lesson-db.ts";
+import { LessonStore, deriveProject } from "../lib/lesson-store.ts";
 import type {
   LessonRecord,
   ReportReceipt,
   RuleActionResult,
   RuleCard,
 } from "../lib/lesson-store.ts";
-import { RULES_FIELD, SETTINGS_NAMESPACE, cardsOfValue } from "../lib/rules-layout.ts";
+import { RULES_FIELD, SETTINGS_NAMESPACE } from "../lib/rules-layout.ts";
 import { MESSAGES, fill } from "../lib/messages.ts";
 import { UI_MESSAGES } from "../src/ui-messages.ts";
 import { loggedText } from "./setup-logs.ts";
@@ -26,6 +28,12 @@ import type { LlmService } from "../lib/digest.ts";
 
 let scratch: string;
 let origDshHome: string | undefined;
+
+/** 本条文件打开过的测试侧连接：afterEach 必须先 close 再删目录。
+ *  Windows 上仍打开的 SQLite 连接锁着库文件与 WAL/SHM，`rmSync` 会报 EPERM。 */
+const openedDbs: LessonDb[] = [];
+/** 本条文件创建过的假 ctx：afterEach 调它们的 effect disposer，让插件按真实卸载路径关库。 */
+const liveContexts: FakeCtx[] = [];
 
 // ── mock ctx ─────────────────────────────────────────────────────────────
 
@@ -76,7 +84,7 @@ interface FakeCtx {
   /** 交进 apply 的那份 Config：volatile 字段是读穿假件的引用，非 volatile 是普通值。 */
   config: Record<string, unknown>;
   services: Record<string, unknown>;
-  handlers: Record<string, ((payload: unknown, ...rest: unknown[]) => void)[]>;
+  handlers: Record<string, ((payload: unknown, ...rest: unknown[]) => unknown)[]>;
   provided: Record<string, unknown>;
   /** 官方 Disposable 允许异步（fiber.d.ts:41 注释：异步 disposer 由卸载 await）。 */
   effects: (() => unknown)[];
@@ -90,8 +98,17 @@ interface FakeCtx {
   section: {
     name: string;
     order: number;
+    /** 0.2.2-rc.5 起的段通知两枚：宿主在**装配**时把它们贴到变更/退役通知上
+     *  （packages/core/system-prompt/src/index.ts:93-104）。 */
+    replacement?: string;
+    retirement?: string;
     text: string | ((context: unknown) => string);
   } | null;
+  /** 段注册次数：语言偏好变化时本包会"先撤再注册"一次（两枚通知文案随注册被捕获）。 */
+  sectionRegistrations: number;
+  /** 活着的 agent，按 session id 索引：`session/event` 的处理器只拿到 Session，
+   *  要经官方 `ctx.agents.get(id)` 取回 Agent 面（注入只能发生在 Agent 上）。 */
+  liveAgents: Map<string, unknown>;
   timerCallbacks: (() => void)[];
   /** 与 timerCallbacks 同序登记的毫秒数（decayIntervalMs 走配置就得在这里看得见）。 */
   timerMs: number[];
@@ -101,7 +118,7 @@ interface FakeCtx {
    *  packages/settings/settings/src/index.ts:305-306），所以装载期读规则库只有等
    *  `fiber.await()` 结算这一条路（host.ts 的 startBootMigrations）。假件里"结算"就是一个
    *  微任务边界：apply 期间同步读仍看不到行，await 之后的读取才落到 ACTIVE 语义上。 */
-  fiber: { id: string; await: () => Promise<void> };
+  fiber: { id: string; await: () => Promise<void>; state?: number };
   /** settings.configure 的调用记录（页面策略断言用）。 */
   configureCalls: ConfigureCall[];
   /** ctx.inject 收到的依赖清单（页面策略挂在哪个子上下文上，靠它核对）。 */
@@ -128,7 +145,7 @@ interface FakeCtx {
   /** 观察租约的释放次数。 */
   disposeCalls: number;
   inject: (deps: readonly string[], attach: (child: unknown) => void) => void;
-  on: (event: string, handler: (payload: unknown, ...rest: unknown[]) => void) => void;
+  on: (event: string, handler: (payload: unknown, ...rest: unknown[]) => unknown) => void;
   effect: (fn: () => (() => void) | undefined) => void;
 }
 
@@ -165,6 +182,23 @@ function liveConfigRefs(read: (key: string) => unknown): Record<string, unknown>
   );
 }
 
+/** 登记 effect 的 disposer，并让它只在第一次调用时真正执行：
+ *  用例中途已手动卸载过的 effect，afterEach 的兜底清理再调一次也不会重放副作用。 */
+function trackEffect(ctx: FakeCtx, factory: () => (() => unknown) | undefined): void {
+  const disposer = factory();
+  if (typeof disposer !== "function") {
+    return;
+  }
+  let settled = false;
+  ctx.effects.push((): unknown => {
+    if (settled) {
+      return null;
+    }
+    settled = true;
+    return disposer();
+  });
+}
+
 function makeCtx(
   over: {
     /** 行级 config 的等价物：直接落进条目段的那一层原文（缺省字段由 schema 默认填）。 */
@@ -172,21 +206,31 @@ function makeCtx(
     services?: Record<string, unknown>;
     /** 规则库的存量行（装载期迁移与"另一进程已写过"的场景都从这里注入）。 */
     rules?: readonly (RuleCard | Record<string, unknown>)[];
+    /** 旧 `config.rules` 的原文替身（坏形状用例用；缺省 = over.rules 的数组）。 */
+    rawRules?: unknown;
+    /** 老 patch 里压根没有 `rules:` 这一键：config 上不挂该字段（新装用户的常态）。 */
+    omitRawRules?: boolean;
     /** 官方 locale 命名空间的初值（describe() 里 ns==='locale' 那条的 value）；
      *  缺省 = 未注册 → 中文。装载后翻动 `ctx.localeValue` 即可模拟换语言。 */
     locale?: Record<string, unknown> | null;
   } = {},
 ): FakeCtx {
   const initialRules = over.rules ?? [];
-  // 0.2.1-alpha.2：一个条目一段——开关与 rules 数组同处 `lesson-loop` 段（假件按真实导出的
-  // Config 解析，默认值与 .loose() 因此都与宿主同源）。
+  const rawRules = over.rawRules === undefined ? [...initialRules] : over.rawRules;
+  const configRules = over.omitRawRules === true ? {} : { [RULES_FIELD]: rawRules };
+  // 假件的设置段仍带一份 rules 原文：它模拟的是"老 profile 文档里还在"的那一段，
+  // 插件的规则读取已改走 SQLite，迁移源则从 apply 的 config（未声明键透传）里取。
   const rulesProvider = makeSettingsProvider({
     [SETTINGS_NAMESPACE]: { [RULES_FIELD]: [...initialRules], ...over.value },
   });
   const ctx: FakeCtx = {
     // 假件文档里的那一层原文（同一引用：翻它 = 翻条目段，下一次读即生效）。
     value: rulesProvider.peek(SETTINGS_NAMESPACE) ?? {},
-    config: liveConfigRefs((key) => rulesProvider.resolvedOf(SETTINGS_NAMESPACE)[key]),
+    config: {
+      ...liveConfigRefs((key) => rulesProvider.resolvedOf(SETTINGS_NAMESPACE)[key]),
+      // 字段已从 schema 摘除，但宿主对未声明键透传：迁移只读这一段原文。
+      ...configRules,
+    },
     services: over.services ?? {},
     // 蒸馏事件流的默认交付：空表（个别用例往里塞 feedback 事件）。
     sessionEvents: [],
@@ -208,14 +252,21 @@ function makeCtx(
     section: null as null | {
       name: string;
       order: number;
+      replacement?: string;
+      retirement?: string;
       text: string | ((context: unknown) => string);
     },
+    sectionRegistrations: 0,
+    liveAgents: new Map<string, unknown>(),
     timerCallbacks: [] as (() => void)[],
     timerMs: [] as number[],
     fiber: {
       id: "lesson-loop-fiber",
       // 一微任务即"结算"：apply 内的同步读仍落在未 ACTIVE 的语义上（与真宿主一致）。
       await: () => Promise.resolve(),
+      // 迁移只在 ACTIVE 后触发；替身在这一层按"已结算"给状态（真宿主的时序由
+      // test/integration/activation-order.test.ts 单独钉）。
+      state: 2,
     },
     configureCalls: [],
     injectDeps: [],
@@ -272,10 +323,21 @@ function makeCtx(
         // "卸载 → 四条路由全部注销"那条断言就失去了观测点（旧实现把路由效应挂在父 ctx 上，
         // disposer 自然在清单里；改挂子 ctx 后若子上下文丢弃 disposer，注销语义就成了空话）。
         effect(factory: () => (() => unknown) | undefined) {
-          const disposer = factory();
-          if (typeof disposer === "function") {
-            ctx.effects.push(disposer);
-          }
+          trackEffect(ctx, factory);
+        },
+        // 子上下文上的 `on`：真宿主里 listener 归这条 inject 子 fiber 所有、返回值是撤除
+        // 函数（vendor/cordis/src/events.ts:296-315）。假件必须同形，否则"effect 重跑留下
+        // 旧监听"这个缺陷在单测里根本观测不到——父 ctx 的 `on` 不返回东西。
+        on(event: string, handler: (payload: unknown) => void) {
+          const list = ctx.handlers[event] ?? [];
+          ctx.handlers[event] = list;
+          list.push(handler);
+          return (): void => {
+            const at = list.indexOf(handler);
+            if (at !== -1) {
+              list.splice(at, 1);
+            }
+          };
         },
       });
     },
@@ -283,10 +345,7 @@ function makeCtx(
       (ctx.handlers[event] ??= []).push(handler);
     },
     effect(fn: () => (() => unknown) | undefined) {
-      const disposer = fn();
-      if (typeof disposer === "function") {
-        ctx.effects.push(disposer);
-      }
+      trackEffect(ctx, fn);
     },
   };
   // 默认宿主服务（测试按需覆盖 services 字段）
@@ -302,11 +361,26 @@ function makeCtx(
     },
   };
   ctx.services["systemPrompt"] = {
-    section(desc: { name: string; order: number; text: string }) {
+    section(desc: {
+      name: string;
+      order: number;
+      replacement?: string;
+      retirement?: string;
+      text: string | ((context: unknown) => string);
+    }) {
       ctx.section = desc;
+      ctx.sectionRegistrations += 1;
       return () => {
-        // 测试 ctx：systemPrompt 段无收尾资源
+        // 撤下当前注册：重注册是"先 dispose 再 section"，故这里清空槽位，
+        // 让"重注册之后槽里是新那份"这件事可观测。
+        ctx.section = null;
       };
+    },
+  };
+  // 官方 agent 注册表（`ctx.agents`）：`session/event` 的处理器要按 session id 取活 Agent。
+  ctx.services["agents"] = {
+    get(id: unknown) {
+      return ctx.liveAgents.get(String(id));
     },
   };
   ctx.services["timer"] = {
@@ -341,6 +415,7 @@ function makeCtx(
       };
     },
   };
+  liveContexts.push(ctx);
   return ctx;
 }
 
@@ -382,10 +457,6 @@ const TEST_HOME_DIR = path.resolve("/home/tester");
 /** 门禁命令的另一种形态：gate-failure 签名夹具（与 pnpm check 同位、不同值）。 */
 const SIGNATURE_CARGO_TEST = "cargo test";
 
-/** 规则库段落的存量行注入用（makeCtx({rules}) 与持久化断言都读它）。 */
-const rulesOf = (ctx: FakeCtx): RuleCard[] =>
-  cardsOfValue(ctx.rulesProvider.peek(SETTINGS_NAMESPACE)).cards;
-
 /** lessonLoop 宿主服务的动作名（与 host 的 ruleAction 参数同集）。 */
 type ActionName = "arm" | "reject" | "demote" | "archive" | "edit" | "revive";
 
@@ -405,10 +476,110 @@ function loopService(ctx: FakeCtx): LoopService {
   return svc as LoopService;
 }
 
-/** 触发官方 agent/created（0.1.6-alpha.2 载荷 {agent, source, signal}）。 */
-function fireCreated(ctx: FakeCtx, agent: unknown): void {
-  assert.ok(ctx.handlers["agent/created"]?.[0], "agent/created 未接线");
-  ctx.handlers["agent/created"][0]({ agent });
+/** 打开并登记测试侧连接；open 失败返回 null 时没有句柄可登记。 */
+function openDb(options: Parameters<typeof LessonDb.open>[0]): LessonDb | null {
+  const db = LessonDb.open(options);
+  if (db !== null) {
+    openedDbs.push(db);
+  }
+  return db;
+}
+
+/** 关闭本条用例打开的全部连接；close 幂等，用例内已手动关闭的再关一次无副作用。 */
+function closeOpenedDbs(): void {
+  for (const db of openedDbs.splice(0)) {
+    db.close();
+  }
+}
+
+/** 规则库的当前内容（走服务读取口：规则库主介质已换成 SQLite，不再读设置段）。 */
+function rulesOf(ctx: FakeCtx): RuleCard[] {
+  return loopService(ctx).rules();
+}
+
+/** 卸载之后"到底写进库没有"只能另开一条连接问：退出清算那条释放器在收尾时关闭了本插件的
+ *  连接（`DatabaseSync` 不关就一直占着 WAL 的读快照），此后 `svc.rules()` 读到的是端口
+ *  失败折成的空库——拿它断言等于把"库已关"读成"什么都没写"。 */
+function cardsOnDisk(): RuleCard[] {
+  const db = openDb({
+    path: path.join(scratch, "data", PLUGIN_ID_FIXTURE, LESSON_DB_FILE),
+  });
+  assert.notEqual(db, null, "库须能打开");
+  if (db === null) {
+    return [];
+  }
+  const read = db.rules.load();
+  db.close();
+  return [...read.cards];
+}
+
+/** 触发官方 agent/created（0.1.6-alpha.2 载荷 {agent, source, signal}）。
+ *  注入已改成幂等对账（读事件流 + 比对上一条），监听器交回 Promise 由宿主 await
+ *  （packages/core/agent/src/index.ts:562-582 的 `await ctx.serial(...)`），
+ *  所以这里也 await——不 await 就等于测"注入发生在首个回合之后"。 */
+async function fireCreated(ctx: FakeCtx, agent: unknown): Promise<void> {
+  const session = (agent as { session?: { id?: unknown } } | undefined)?.session;
+  if (typeof session?.id === "string") {
+    ctx.liveAgents.set(session.id, agent);
+  }
+  const handlers = ctx.handlers["agent/created"] ?? [];
+  assert.ok(handlers.length > 0, "agent/created 未接线");
+  for (const handler of handlers) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- 宿主按序 await 每个监听器（ctx.serial 语义）
+    await handler({ agent });
+  }
+}
+
+/**
+ * 事件类型与来源标识的字面量（测试里多处造事件，sonarjs 的重复字面量由常量收口）。
+ * 真源是 host.ts 的 `WORKSPACE_ROOT_CHANGE` / `COMPACTION_END` 与 `LESSON_SOURCE_KIND`；
+ * 这里刻意写字符串而不 import：测试要能抓住"源码把事件名改掉"这类漂移。
+ */
+const EVENT_USER_MESSAGE = "user/message";
+const EVENT_WORKSPACE_ROOT_CHANGE = "workspace-root/change";
+const EVENT_COMPACTION_END = "compaction/end";
+const LESSON_SOURCE_KIND_FIXTURE = "plugin:lesson-loop";
+
+/** 注入消息的正文（`agent.inject` 的载荷形状：`{source, content:[{type,text}]}`）。 */
+function injectedText(message: unknown): string {
+  return (message as { content: { text: string }[] }).content[0]!.text;
+}
+
+/** 造一条本包注入的 `user/message` 事件（source.kind 取本包自有 producer 名）。 */
+function ownMessageEvent(seq: number, text: string): Record<string, unknown> {
+  return {
+    type: EVENT_USER_MESSAGE,
+    seq,
+    time: 1,
+    data: {
+      id: `m${seq}`,
+      role: "user",
+      content: [{ type: "text", text }],
+      source: { kind: LESSON_SOURCE_KIND_FIXTURE },
+    },
+  };
+}
+
+/** 取出本包那份摘要的正文：先真注入一次，再把这条正文当作"历史里那份"。 */
+async function injectedDigest(ctx: FakeCtx): Promise<string> {
+  const injected: unknown[] = [];
+  await fireCreated(ctx, {
+    inject: (message: unknown) => injected.push(message),
+    session: { id: "s1", header: { cwd: GATE_PROJECT_CWD } },
+  });
+  const text = (injected[0] as { content?: { text?: string }[] } | undefined)?.content?.[0]?.text;
+  assert.equal(typeof text, "string", "第一次注入没发生");
+  return text!;
+}
+
+/** 触发官方 session/event（载荷 `(session, event)`，packages/core/session/src/index.ts:85）。
+ *  处理器同步起链，调用方按需 `await flushAsync()`。 */
+function fireSessionEvent(ctx: FakeCtx, session: unknown, event: unknown): void {
+  const handlers = ctx.handlers["session/event"] ?? [];
+  assert.ok(handlers.length > 0, "session/event 未接线");
+  for (const handler of handlers) {
+    handler(session, event);
+  }
 }
 
 /** 触发 session/disposed。 */
@@ -438,11 +609,16 @@ async function armedRule(ctx: FakeCtx, over: Record<string, unknown> = {}): Prom
     detail: "门禁失败一次",
     ...over,
   });
-  const id = receipt.candidate?.id;
+  // 规则库已跨上下文共享（SQLite 单库）：同一签名再次上报时命中的是既有卡，
+  // 回执给 violationOf 而不是 candidate。已有 armed 卡就直接用它的 id。
+  const id = receipt.candidate?.id ?? receipt.violationOf?.id;
   if (id === undefined) {
     throw new Error("候选卡缺失");
   }
-  assert.equal(await svc.ruleAction(id, "arm"), "persisted");
+  const rule = svc.rules().find((row) => row.id === id);
+  if (rule?.status !== "armed") {
+    assert.equal(await svc.ruleAction(id, "arm"), "persisted");
+  }
   return id;
 }
 
@@ -536,14 +712,6 @@ function configIssues(value: unknown): readonly unknown[] | undefined {
   return result.issues;
 }
 
-/** 按 cordis 的同一条路解析一份行 config，取某个 volatile 字段的当前值。 */
-function resolvedFieldOf(section: unknown, key: string): unknown {
-  const result = plugin.Config["~standard"].validate(section) as {
-    value?: Record<string, { get: () => unknown }>;
-  };
-  return result.value?.[key]?.get();
-}
-
 /** Config schema 的字段节点（读 meta/type/dict 用，不复制 schema 结构）。 */
 interface SchemaNode {
   type?: string;
@@ -612,7 +780,7 @@ function isThenable(value: unknown): boolean {
   return "then" in value && typeof value["then"] === "function";
 }
 
-/** 设置卡该能编辑的字段：12 项开关/阈值 + 规则库那枚数组，一个都不该漏。 */
+/** 设置卡该能编辑的字段：12 项开关/阈值 + 证据页大小，一个都不该漏。 */
 /** 字段化的三枚部署值：在 Config 上但**不标** volatile ⇒ 不进设置卡。 */
 const DEPLOYMENT_FIELDS = ["digestTimeoutMs", "decayIntervalMs", "maxInjectedRules"];
 
@@ -622,13 +790,13 @@ const EDITABLE_FIELDS = [
   "demoteRatio",
   "demoteThreshold",
   "enabled",
+  "evidencePageSize",
   "injectEnabled",
   "maxLessonsBytes",
   "maxStatementChars",
   "promoteThreshold",
   "reportEnabled",
   "reviveThreshold",
-  "rules",
   "sectionEnabled",
 ];
 
@@ -667,7 +835,16 @@ describe("host：lesson-loop 的宿主半", () => {
     process.env["DSH_HOME"] = scratch;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // 插件按真实卸载路径收尾：exit disposer 会清算会话并关掉 SQLite 连接。
+    // 假 ctx 不会自己跑 fiber 的卸载钩子，所以这里替测试把每条 effect disposer 调一遍；
+    // 用例中途已经手动卸载过的 effect 由 trackEffect 去重。
+    const disposals: unknown[] = [];
+    for (const ctx of liveContexts.splice(0)) {
+      disposals.push(...ctx.effects.splice(0).map((dispose) => dispose()));
+    }
+    await Promise.all(disposals);
+    closeOpenedDbs();
     // 兜底：任何一条断言先炸也不把 prototype spy 漏给下一条（各测试内不再手写 restore）。
     vi.restoreAllMocks();
     if (origDshHome === undefined) {
@@ -675,7 +852,7 @@ describe("host：lesson-loop 的宿主半", () => {
     } else {
       process.env["DSH_HOME"] = origDshHome;
     }
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   describe("服务供给", () => {
@@ -804,14 +981,14 @@ describe("host：lesson-loop 的宿主半", () => {
       };
       const r1 = await svc.report({ ...lesson, detail: "d1" });
       assert.equal(r1.ok, true);
-      assert.ok(existsSync(cacheFile(EVENTS_FILE_NAME)), "events.jsonl 未落盘");
+      assert.ok(svc.recentLessons().length > 0, "教训必须落进规则库（events.jsonl 已退役）");
       assert.equal(r1.candidate?.occurrences, 1);
       assert.equal(r1.ready, false);
       await svc.report({ ...lesson, detail: "d2" });
       const r3 = await svc.report({ ...lesson, detail: "d3" });
       assert.equal(r3.ready, true);
-      // detail 全量在盘（不截断）
-      const raw = readFileSync(cacheFile(EVENTS_FILE_NAME), "utf8");
+      // detail 全量在库（不截断）
+      const raw = JSON.stringify(svc.recentLessons());
       assert.ok(raw.includes("d3"));
     });
 
@@ -864,7 +1041,7 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(svc.rules()[0]?.suppressed, 0);
       // 另一会话：经过规则场景（pass 信号）→ 收尾计 suppressed
       // agent/created 载荷 {agent, source, signal}（事件契约修正后）。
-      fireCreated(ctx, { session: { id: "s2", header: { cwd } } });
+      await fireCreated(ctx, { session: { id: "s2", header: { cwd } } });
       svc.pass({
         category: CATEGORY_GATE_FAILURE,
         cwd,
@@ -921,14 +1098,361 @@ describe("host：lesson-loop 的宿主半", () => {
         detail: "f",
       });
       assert.equal(await svc.ruleAction(first.candidate!.id, "arm"), "persisted");
-      fireCreated(ctx, { session: { id: "s9", header: { cwd } } });
+      await fireCreated(ctx, { session: { id: "s9", header: { cwd } } });
       // headless/CLI 进程退出时 Cordis 先卸载插件：session/disposed 永远不来，
       // 不就地清算就会把这条暴露度观察整批丢掉（度量恒 0 → 规则永远不可判定）。
       // 异步 disposer 由卸载 await（cordis fiber.d.ts:38-41「they may be async, in which
       // case unloading awaits them」）→ 这里 await 全部释放器，观测点从"给一次宏任务"
-      // 升级成"退出清算真的写完了"。
+      // 升级成"退出清算真的写完了"。清算写完那条释放器顺手关闭连接，故读数改走新连接。
       await Promise.all(ctx.effects.map((dispose) => dispose()));
-      assert.equal(svc.rules()[0]?.samples, 1, "退出清算必须补记这条 samples");
+      assert.equal(cardsOnDisk()[0]?.samples, 1, "退出清算必须补记这条 samples");
+    });
+
+    it("退出清算把内存桶与台账合并：同一 pass 只计一次 suppressed", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const sessionId = "s-exit-pass";
+      await armedRule(ctx);
+      await fireCreated(ctx, { session: { id: sessionId, header: { cwd } } });
+      svc.pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId,
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      // 不触发 session/disposed，直接走卸载位；旧实现会先按内存桶计一次，再用
+      // settleLedgerRemnants 按台账补一次。合并后只允许一次。
+      await Promise.all(ctx.effects.map((dispose) => dispose()));
+      await flushAsync();
+      assert.equal(cardsOnDisk()[0]?.suppressed, 1, "同一 pass 不得被内存与台账各计一次");
+      const db = openDb({
+        path: path.join(scratch, "data", PLUGIN_ID_FIXTURE, LESSON_DB_FILE),
+      });
+      assert.deepEqual(db?.pendingLedger(sessionId), [], "清算后台账行必须落定");
+    });
+
+    it("pass 现场建台账：dispose 走同事务落定，规则计数与 settled_at 不分裂", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const ruleId = await armedRule(ctx);
+      const sessionId = "s-pass-only";
+      // 没有 agent/created 预种：pass 自己经 bucketOf + noteLedger 建出内存桶与台账行。
+      svc.pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId,
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      fireDisposed(ctx, { id: sessionId, header: { cwd } });
+      await flushAsync();
+      assert.equal(svc.rules().find((rule) => rule.id === ruleId)?.suppressed, 1);
+      const db = openDb({
+        path: path.join(scratch, "data", PLUGIN_ID_FIXTURE, LESSON_DB_FILE),
+      });
+      assert.deepEqual(
+        db?.pendingLedger(sessionId),
+        [],
+        "有实际 writes 的清算必须在 saveRules 事务里一起打上 settled_at",
+      );
+    });
+
+    it("report 早于 watch 建立时，台账里的违规仍抑制该项目的 exposure", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const ruleId = await armedRule(ctx);
+      const sessionId = "s-report-first";
+      await svc.report({
+        source: SOURCE_QUALITY_GATE,
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId,
+        signature: SIGNATURE_GATE_COMMAND,
+        detail: "violation before watch",
+      });
+      // 先报违规、后建立 watch：内存桶里没有这条 violated，只有库台账有。
+      await fireCreated(ctx, { session: { id: sessionId, header: { cwd } } });
+      fireDisposed(ctx, { id: sessionId });
+      await flushAsync();
+      const card = svc.rules().find((rule) => rule.id === ruleId);
+      assert.equal(card?.samples, 0, "违规规则既不记 samples，也不能被内存空桶洗成 exposure");
+    });
+
+    it("进程重启后启动扫描会主动补算 pending 台账", async () => {
+      const first = makeCtx();
+      apply(first);
+      const svc1 = loopService(first);
+      const cwd = GATE_PROJECT_CWD;
+      await armedRule(first);
+      await fireCreated(first, { session: { id: "s-crash", header: { cwd } } });
+      svc1.pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId: "s-crash",
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      // 模拟崩溃：不触发 session/disposed、不卸载插件；新进程用同一个 DSH_HOME 重新装载。
+      const second = makeCtx();
+      apply(second);
+      const svc2 = loopService(second);
+      await flushAsync();
+      await flushAsync();
+      assert.equal(
+        svc2.rules().find((rule) => rule.category === CATEGORY_GATE_FAILURE)?.suppressed,
+        1,
+        "重启后的启动扫描必须把 pending pass 补成 suppressed",
+      );
+      const db = openDb({
+        path: path.join(scratch, "data", PLUGIN_ID_FIXTURE, LESSON_DB_FILE),
+      });
+      assert.deepEqual(db?.pendingLedger("s-crash"), [], "补算成功后 pending 必须清空");
+    });
+
+    it("启动补算扫描失败 → 记日志、不阻断装载", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {
+        // 断言在下方
+      });
+      vi.spyOn(LessonDb.prototype, "pendingLedgerAll").mockImplementation(() => {
+        throw new Error("扫描炸了");
+      });
+      const ctx = makeCtx();
+      apply(ctx);
+      await flushAsync();
+      await flushAsync();
+      assert.match(String(error.mock.calls[0]?.[0]), /ledger recovery scan failed: 扫描炸了/u);
+      // 扫描失败只影响补算这一腿：插件其余面照常装配。
+      assert.equal(typeof loopService(ctx).report, "function");
+    });
+
+    it("库打不开时退出清算只走内存条目，不因缺库报错", async () => {
+      vi.spyOn(LessonDb, "open").mockReturnValue(null);
+      const ended = vi.spyOn(LessonStore.prototype, "sessionEnded").mockResolvedValue(true);
+      const ctx = makeCtx();
+      apply(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      fireDisposed(ctx, { id: "s-no-db", header: { cwd } });
+      await flushAsync();
+      assert.equal(ended.mock.calls.length, 1, "缺库时仍要清算内存条目");
+      assert.equal(ended.mock.calls[0]?.[0], deriveProject(cwd), "无台账可读时按 header 项目兜底");
+    });
+
+    it("台账读失败 → 内存桶照常清算，并尽力补打 settled_at", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {
+        // 断言在下方
+      });
+      const pending = vi.spyOn(LessonDb.prototype, "pendingLedger").mockImplementation(() => {
+        throw new Error("台账读炸了");
+      });
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const sessionId = "s-ledger-read-fail";
+      const ruleId = await armedRule(ctx);
+      svc.pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId,
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      fireDisposed(ctx, { id: sessionId, header: { cwd } });
+      await flushAsync();
+      assert.equal(
+        svc.rules().find((rule) => rule.id === ruleId)?.suppressed,
+        1,
+        "台账读坏不能连累内存桶这一份清算",
+      );
+      assert.match(String(error.mock.calls[0]?.[0]), /ledger read failed: 台账读炸了/u);
+      pending.mockRestore();
+      const db = openDb({
+        path: path.join(scratch, "data", PLUGIN_ID_FIXTURE, LESSON_DB_FILE),
+      });
+      assert.deepEqual(
+        db?.pendingLedger(sessionId),
+        [],
+        "读面失败时仍要在写成功后尽力补打 settled_at，避免下一轮补算重复计 suppressed",
+      );
+    });
+
+    it("没有台账行时内存桶的 pass 仍能结清，不把写失败误判成已消费", async () => {
+      const note = vi.spyOn(LessonDb.prototype, "noteLedger").mockImplementation(() => {
+        // 模拟排队写失败：库里没有这一场的行，但内存桶已经记下 pass。
+      });
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const sessionId = "s-no-ledger-row";
+      const ruleId = await armedRule(ctx);
+      svc.pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId,
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      fireDisposed(ctx, { id: sessionId, header: { cwd } });
+      await flushAsync();
+      assert.equal(
+        svc.rules().find((rule) => rule.id === ruleId)?.suppressed,
+        1,
+        "行不存在时这一笔来自内存桶，必须允许新建空行结清",
+      );
+      note.mockRestore();
+    });
+
+    it("台账行已落定且队列空 → 内存桶不再重写，按已消费即成功收口", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const sessionId = "s-ledger-already-settled";
+      const ruleId = await armedRule(ctx);
+      svc.pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId,
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      // 另一条连接把这笔 pass 取走：行留着，队列空且 settled_at 已打；内存桶仍在本进程。
+      const db = openDb({
+        path: path.join(scratch, "data", PLUGIN_ID_FIXTURE, LESSON_DB_FILE),
+      });
+      db?.settleLedgerNow(sessionId, deriveProject(cwd), { violated: [], passed: [ruleId] }, true);
+      db?.close();
+      fireDisposed(ctx, { id: sessionId, header: { cwd } });
+      await flushAsync();
+      assert.equal(
+        svc.rules().find((rule) => rule.id === ruleId)?.suppressed,
+        0,
+        "已落定行不能再把内存桶里的旧 id 计一遍",
+      );
+    });
+
+    it("有台账行时把 markLedgerSettledNow 交给 sessionEnded 的 onPersisted（同事务落定）", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const sessionId = "s-on-persisted";
+      await armedRule(ctx);
+      await fireCreated(ctx, { session: { id: sessionId, header: { cwd } } });
+      svc.pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId,
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      let callback: (() => void) | undefined;
+      vi.spyOn(LessonStore.prototype, "sessionEnded").mockImplementation(async (...args) => {
+        const { 5: onPersisted } = args as unknown as { 5?: () => void };
+        callback = onPersisted;
+        onPersisted?.();
+        return true;
+      });
+      fireDisposed(ctx, { id: sessionId, header: { cwd } });
+      await flushAsync();
+      assert.equal(typeof callback, "function", "有台账行时必须挂同事务落定钩子");
+      const db = openDb({
+        path: path.join(scratch, "data", PLUGIN_ID_FIXTURE, LESSON_DB_FILE),
+      });
+      assert.deepEqual(db?.pendingLedger(sessionId), [], "钩子执行后台账行必须落定");
+    });
+
+    it("没有计数要写时事后补打台账：被别处取走不算失败（计数已由它落地）", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const sessionId = "s-drain-consumed";
+      await armedRule(ctx);
+      svc.pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId,
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      // save 提前返回（没有要写的规则计数）时不回调钩子，落定落到 drainLedger 那一腿。
+      vi.spyOn(LessonStore.prototype, "sessionEnded").mockResolvedValue(true);
+      vi.spyOn(LessonDb.prototype, "settleLedgerNow").mockImplementation(() => {
+        throw new LedgerConsumedElsewhereError(sessionId, deriveProject(cwd));
+      });
+      const error = vi.spyOn(console, "error").mockImplementation(() => {
+        // 断言在下方
+      });
+      fireDisposed(ctx, { id: sessionId, header: { cwd } });
+      await flushAsync();
+      assert.equal(
+        error.mock.calls.some((call) => String(call[0]).includes("ledger settle failed")),
+        false,
+        "被别处取走时计数已经落地，这一轮不许记成失败",
+      );
+    });
+
+    it("事后补打台账真出错 → 记 settle failed、不把卸载带炸", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const svc = loopService(ctx);
+      const cwd = GATE_PROJECT_CWD;
+      const sessionId = "s-drain-throw";
+      await armedRule(ctx);
+      svc.pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId,
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      vi.spyOn(LessonStore.prototype, "sessionEnded").mockResolvedValue(true);
+      vi.spyOn(LessonDb.prototype, "settleLedgerNow").mockImplementation(() => {
+        throw new Error("台账补打炸了");
+      });
+      const error = vi.spyOn(console, "error").mockImplementation(() => {
+        // 断言在下方
+      });
+      fireDisposed(ctx, { id: sessionId, header: { cwd } });
+      await flushAsync();
+      assert.ok(
+        error.mock.calls.some((call) =>
+          /ledger settle failed: 台账补打炸了/u.test(String(call[0])),
+        ),
+        "真出错要点名，否则这一笔永远留在 pending 里没人知道",
+      );
+    });
+
+    it("启动补算单会话抛错 → 记 incomplete、不阻断其余补算", async () => {
+      const first = makeCtx();
+      apply(first);
+      const cwd = GATE_PROJECT_CWD;
+      await armedRule(first);
+      const sessionId = "s-recover-throw";
+      await fireCreated(first, { session: { id: sessionId, header: { cwd } } });
+      loopService(first).pass({
+        category: CATEGORY_GATE_FAILURE,
+        cwd,
+        sessionId,
+        signature: SIGNATURE_GATE_COMMAND,
+      });
+      const error = vi.spyOn(console, "error").mockImplementation(() => {
+        // 断言在下方
+      });
+      vi.spyOn(LessonStore.prototype, "sessionEnded").mockImplementation(async () => {
+        throw new Error("补算炸了");
+      });
+      const second = makeCtx();
+      apply(second);
+      await flushAsync();
+      await flushAsync();
+      assert.ok(
+        error.mock.calls.some((call) =>
+          /ledger recovery incomplete for s-recover-throw: 补算炸了/u.test(String(call[0])),
+        ),
+        "单会话抛错要留下点名日志，而不是中断整轮扫描",
+      );
+      assert.equal(typeof loopService(second).report, "function", "补算失败不阻断插件装载");
     });
 
     it("卸载时闭环已关闭 → 不做退出清算（与事件版同一条规则）", async () => {
@@ -945,13 +1469,13 @@ describe("host：lesson-loop 的宿主半", () => {
         detail: "f",
       });
       assert.equal(await svc.ruleAction(first.candidate!.id, "arm"), "persisted");
-      fireCreated(ctx, { session: { id: "s9", header: { cwd } } });
+      await fireCreated(ctx, { session: { id: "s9", header: { cwd } } });
       ctx.value["enabled"] = false;
       // 异步 disposer 由卸载 await（cordis fiber.d.ts:38-41「they may be async, in which
       // case unloading awaits them」）→ 这里 await 全部释放器，观测点从"给一次宏任务"
       // 升级成"退出清算真的写完了"。
       await Promise.all(ctx.effects.map((dispose) => dispose()));
-      assert.equal(svc.rules()[0]?.samples, 0, "插件关闭期间不写度量");
+      assert.equal(cardsOnDisk()[0]?.samples, 0, "插件关闭期间不写度量");
     });
 
     it("退出清算单条抛错 → 记日志且不把卸载带炸", async () => {
@@ -967,7 +1491,7 @@ describe("host：lesson-loop 的宿主半", () => {
         signature: SIGNATURE_GATE_COMMAND,
         detail: "f",
       });
-      fireCreated(ctx, { session: { id: "s9", header: { cwd } } });
+      await fireCreated(ctx, { session: { id: "s9", header: { cwd } } });
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded").mockImplementation(async () => {
         throw new Error("store 已坏");
       });
@@ -1008,13 +1532,13 @@ describe("host：lesson-loop 的宿主半", () => {
         },
         session: { id: "s1", header: { cwd: GATE_PROJECT_CWD } },
       };
-      fireCreated(ctx, agent);
+      await fireCreated(ctx, agent);
       assert.equal(injected.length, 1);
       const msg = injected[0] as {
         source?: Record<string, unknown>;
         content?: { text?: string }[];
       };
-      assert.equal(msg.source?.["kind"], "plugin:lesson-loop");
+      assert.equal(msg.source?.["kind"], LESSON_SOURCE_KIND_FIXTURE);
       assert.match(msg.content![0]!.text!, /经验规则/u);
     });
 
@@ -1043,12 +1567,16 @@ describe("host：lesson-loop 的宿主半", () => {
         },
         session: { id: "s1", header: { cwd: GATE_PROJECT_CWD } },
       };
-      fireCreated(ctx, agent);
+      await fireCreated(ctx, agent);
       assert.equal(injected.length, 1);
       const { source } = injected[0] as { source: Record<string, unknown> };
       assert.notEqual(source["kind"], "plugin");
       assert.equal(typeof source["kind"], "string");
-      assert.equal(source["kind"], "plugin:lesson-loop", "kind 须是本插件的 producer-owned 串");
+      assert.equal(
+        source["kind"],
+        LESSON_SOURCE_KIND_FIXTURE,
+        "kind 须是本插件的 producer-owned 串",
+      );
       assert.equal(source["plugin"], undefined, "退役包装的 plugin 字段不得再出现");
       assert.equal(source["form"], "instructions", "自有 form 字段必须保留");
     });
@@ -1069,7 +1597,7 @@ describe("host：lesson-loop 的宿主半", () => {
       await armingReport(svc, CATEGORY_TRANSIENT_FAILURE, "transient-1");
       await armingReport(svc, "max-tokens", "max-1");
       const injected: unknown[] = [];
-      fireCreated(ctx, {
+      await fireCreated(ctx, {
         inject: (message: unknown) => {
           injected.push(message);
         },
@@ -1110,7 +1638,7 @@ describe("host：lesson-loop 的宿主半", () => {
       });
       assert.equal(await svc.ruleAction(receipt.candidate!.id, "arm"), "persisted");
       const injected: unknown[] = [];
-      fireCreated(ctx, {
+      await fireCreated(ctx, {
         inject: (message: unknown) => {
           injected.push(message);
         },
@@ -1141,7 +1669,7 @@ describe("host：lesson-loop 的宿主半", () => {
       await armingReport(svc, CATEGORY_GATE_FAILURE, "zero-1");
       await armingReport(svc, CATEGORY_TRANSIENT_FAILURE, "zero-2");
       const injected: unknown[] = [];
-      fireCreated(ctx, {
+      await fireCreated(ctx, {
         inject: (message: unknown) => {
           injected.push(message);
         },
@@ -1178,7 +1706,7 @@ describe("host：lesson-loop 的宿主半", () => {
           session: { id: "s1", header },
         };
       };
-      fireCreated(ctx, mkAgent());
+      await fireCreated(ctx, mkAgent());
       // 无规则
       assert.equal(injected.length, 0);
       const ctx2 = makeCtx();
@@ -1192,12 +1720,12 @@ describe("host：lesson-loop 的宿主半", () => {
         detail: "d",
       });
       assert.equal(await svc2.ruleAction(second.candidate!.id, "arm"), "persisted");
-      fireCreated(ctx2, mkAgent({ cwd: GATE_PROJECT_CWD, delegationDepth: 1 }));
+      await fireCreated(ctx2, mkAgent({ cwd: GATE_PROJECT_CWD, delegationDepth: 1 }));
       // 子代理
       assert.equal(injected.length, 0);
       const ctx3 = makeCtx({ value: { injectEnabled: false } });
       apply(ctx3);
-      fireCreated(ctx3, mkAgent());
+      await fireCreated(ctx3, mkAgent());
       // 开关关
       assert.equal(injected.length, 0);
     });
@@ -1544,6 +2072,35 @@ describe("host：lesson-loop 的宿主半", () => {
     });
   });
 
+  it("崩溃补算：清算写失败时台账行仍留未落定（下一轮开机还能补）", async () => {
+    const dbFile = path.join(scratch, "data", PLUGIN_ID_FIXTURE, LESSON_DB_FILE);
+    const before = openDb({ path: dbFile });
+    assert.notEqual(before, null, "库须能打开");
+    before!.noteLedger("s-rem", "p-rem", "violated", "r1");
+
+    const ctx = makeCtx();
+    apply(ctx);
+    // 建一个内存桶：卸载时 flushSessions 先逐桶清算、再补算台账残留。
+    await fireCreated(ctx, { session: { id: "s-rem", header: { cwd: GATE_PROJECT_CWD } } });
+    // 毁掉规则表（旁路连接）⇒ 任何 commit 的 save 都被拒（settledOk(false)）：补算这一腿
+    // 不许打落定标记——打了就等于把这笔会话从待补清单里删掉。
+    const side = new DatabaseSync(dbFile);
+    side.exec("DROP TABLE rules");
+    side.close();
+    for (const dispose of ctx.effects) {
+      dispose();
+    }
+    await flushAsync();
+
+    const after = openDb({ path: dbFile });
+    assert.notEqual(after, null, "库须仍可打开");
+    assert.deepEqual(
+      after!.pendingLedger("s-rem").map((row) => row.project),
+      ["p-rem"],
+      "写没成功 ⇒ settled_at 不许打上，否则这一笔会话永远补不回来",
+    );
+  });
+
   describe("ctx 契约与行 config 底座", () => {
     it("ctx 不满足 HostCtx 结构 → 急停抛错（不用断言糊过去）", () => {
       // 核验的是 0.2.1-alpha.2 的实际调用形态：effect/on 接线、inject+fiber 挂页面策略、
@@ -1616,105 +2173,22 @@ describe("host：lesson-loop 的宿主半", () => {
       );
       assert.notEqual(configIssues({ enabled: "yes" }), undefined, "布尔位给字符串必须被拒");
       assert.notEqual(configIssues({ decayDays: 0 }), undefined, "min 1 必须被拒");
-      // 规则库与开关同段之后，这一条从"锦上添花"变成了硬要求：条目 Config 的校验发生在
-      // cordis 装载期且**无处 catch**（抛错 = 整条插件不加载、开关与服务一起没）。人改坏
-      // rules 只能让规则库降级，不许打死别的东西——所以这个字段是 .loose() 的。
+      // 规则库字段已从 schema 摘除。cordis 的 `~standard.validate` 对未声明键是透传的，
+      // 所以老 profile 里那段 `rules:` 仍会进到 apply 的 config（迁移靠它），但校验不认它：
+      // 坏值也不会打死整条目（条目 Config 校验抛错 = 整条插件不加载）。
       assert.equal(
         configIssues({ [RULES_FIELD]: "用户手改坏的存量段" }),
         undefined,
-        "坏 rules 不得让整条目校验失败（同段之后那就是整条插件不加载）",
+        "未声明字段不得参与校验，更不许因此判整条目失败",
       );
-      assert.deepEqual(
-        resolvedFieldOf({ [RULES_FIELD]: "用户手改坏的存量段" }, RULES_FIELD),
-        [],
-        "坏 rules 解析成空库：条目照常装载，坏的只有规则面",
-      );
-    });
-  });
-
-  it("isSettingsProvider 三态：非记录 / 记录但缺 CAS 方法 / 齐全", () => {
-    // 0.2.1-alpha.2 的 CAS 面只有 describe + update；`register` 已随宿主移除，绝不能再当判据
-    // （探它 = 每一条真宿主都被判成"没有 CAS 面"，规则库结构性失效）。
-    assert.equal(isSettingsProvider("not-a-provider"), false);
-    assert.equal(isSettingsProvider(null), false);
-    assert.equal(isSettingsProvider({ update: (): void => undefined }), false);
-    assert.equal(isSettingsProvider({ describe: (): void => undefined }), false);
-    assert.equal(
-      isSettingsProvider({
-        describe: (): void => undefined,
-        update: (): void => undefined,
-      }),
-      true,
-    );
-  });
-
-  describe("规则降级：装载不许被存量数据或半装配炸断", () => {
-    it("settings 没有 CAS 能力（缺 update）⇒ 记 error 日志、服务与开关照常装载", () => {
-      const error = vi.spyOn(console, "error").mockImplementation(() => {
-        // 断言在下方
-      });
-      const ctx = makeCtx();
-      // 留 describe（ctx契约要求它）、拿掉 update：isSettingsProvider 认不出这套半装配的类型。
-      const surface = ctx.settings as unknown as Record<string, unknown>;
-      Reflect.deleteProperty(surface, "update");
-      apply(ctx);
-      assert.match(
-        error.mock.calls.map(String).join("\n"),
-        /no CAS surface/u,
-        "要把『规则库不可用、开关仍生效』点破",
-      );
-      assert.notEqual(
-        ctx.provided["lessonLoop"],
-        undefined,
-        "规则面不可用不许连带打死总线与设置卡读的那一段",
-      );
-      for (const dispose of ctx.effects) {
-        dispose();
-      }
-      error.mockRestore();
-    });
-
-    it("条目段的 rules 被存量坏数据改成非数组 ⇒ 记日志并降级为读空/拒写，装载不抛", async () => {
-      // 0.1.6 这条路的入口是"register 被 schema 打回"；0.2.1-alpha.2 没有 register 可打回，坏值
-      // 由 Config 的 .loose() 在解析期吸收成 []。降级因此改挂在 describe().user 那层原文
-      // 上（value 已被修成看起来合法），并且比旧版更严：坏内容留在文档里等人修，
-      // 本进程一次都不写。
-      const error = vi.spyOn(console, "error").mockImplementation(() => {
-        // 断言在下方
-      });
-      const ctx = makeCtx();
-      ctx.value[RULES_FIELD] = "用户手改坏的存量段";
-      apply(ctx);
-      assert.match(
-        error.mock.calls.map(String).join("\n"),
-        /rules namespace rejected/u,
-        "坏数据要被点名，而不是静默当成空库",
-      );
-      const svc = loopService(ctx);
-      assert.deepEqual(svc.rules(), [], "读空");
-      const receipt = await svc.report({
-        source: "manual",
-        category: "c",
-        cwd: GATE_PROJECT_CWD,
-        signature: "s",
-        detail: "d",
-      });
-      assert.equal(receipt.ok, false);
-      assert.equal(receipt.reason, PERSIST_FAILED, "读不懂的这一刻不许写");
-      assert.equal(ctx.rulesProvider.writesOf(SETTINGS_NAMESPACE), 0, "整段一次都没被写过");
+      const passed = plugin.Config["~standard"].validate({
+        [RULES_FIELD]: "用户手改坏的存量段",
+      }) as { value?: Record<string, unknown> };
       assert.equal(
-        ctx.rulesProvider.peek(SETTINGS_NAMESPACE)?.[RULES_FIELD],
+        passed.value?.[RULES_FIELD],
         "用户手改坏的存量段",
-        "坏内容保持原样等人修，开关段也不被顺手覆写",
+        "原文透传，读不读得懂由迁移端口自己判",
       );
-      // 同段之后最容易丢的就是这条：规则库降级不许牵连的开关的读写。
-      ctx.value["injectEnabled"] = false;
-      assert.equal(
-        (loopService(ctx).stats()["config"] as Record<string, unknown>)["injectEnabled"],
-        false,
-        "开关照改照生效",
-      );
-      error.mockRestore();
     });
   });
 
@@ -1757,23 +2231,28 @@ describe("host：lesson-loop 的宿主半", () => {
       }
     });
 
-    it("规则库与开关同段：整条链只碰 `lesson-loop` 一段，0.1.6 的第二段不再被创建", async () => {
-      // 0.1.6 这里有**两段**：`lesson-loop`（开关，settings.register(PLUGIN_NAME, …)）与
-      // `lesson-loop-rules`（规则库，register(RULES_NAMESPACE, RulesSchema, {base})）。
-      // 0.2.1-alpha.2 的命名空间就是 profile 条目 id 且一条目一份 Config，第二段因此无处安放——
-      // 迁移的做法是把规则数组并成同一 Config 的第 12 个 volatile 字段（rules）。
-      // 这条断言钉的是拓扑本身：卡片必须落在开关那一段里，而旧段名一次都不许被写出来
-      // （写进孤儿段 = 宿主 describe() 永远看不见，规则库静默失联）。
-      const ctx = makeCtx();
+    it("规则库不再写设置段：旧 rules 原文只作迁移源，搬进 SQLite 后原样留在文档里", async () => {
+      // 用户拍板：`config.rules` 立即从 schema 摘除。插件不再从设置段读写规则，唯一用途
+      // 是首次迁移把老 profile 里的原文搬进库；**不回写**（未知字段会被宿主 update 拒掉，
+      // 留着也是库丢失后的最后一份存量）。
+      const ctx = makeCtx({
+        rules: [{ ...undeterminableRow(), id: "legacy", signature: "legacy-sig" }],
+      });
       apply(ctx);
       await armedRule(ctx);
       const section = ctx.rulesProvider.peek(SETTINGS_NAMESPACE);
-      assert.ok(Array.isArray(section?.[RULES_FIELD]), "armed 卡片要落在开关同段的 rules 数组里");
-      assert.equal(rulesOf(ctx).length, 1);
-      // 同一段里两样东西各有各的形态：规则是文档原文写进去的（用户可直接编辑），
-      // 开关没写进文档、由 schema 的 .default() 解析出来（0.2.1-alpha.2 无 base 层）。
+      assert.equal(
+        (section?.[RULES_FIELD] as readonly unknown[] | undefined)?.length,
+        1,
+        "迁移不回写：旧数组原样留在文档里",
+      );
+      assert.equal(rulesOf(ctx).length, 2, "存量一张 + 新卡一张，规则库在 SQLite 里");
       assert.equal(ctx.rulesProvider.resolvedOf(SETTINGS_NAMESPACE)["enabled"], true);
-      assert.ok(ctx.rulesProvider.writesOf(SETTINGS_NAMESPACE) > 0, "写的就是条目 id 那一段");
+      assert.equal(
+        ctx.rulesProvider.writesOf(SETTINGS_NAMESPACE),
+        0,
+        "规则库的写路径已不在设置段：一次都不该写",
+      );
       assert.equal(
         ctx.rulesProvider.peek("lesson-loop-rules"),
         undefined,
@@ -1809,8 +2288,8 @@ describe("host：lesson-loop 的宿主半", () => {
         maxLessonsBytes: 0,
         // 规则正文写入上限：4000 字符（armed 正文整段注入提示词）。
         maxStatementChars: 4000,
-        // 原 RULES_BASE 的 { rules: [] }：数组整片覆盖，空库的完整默认就是 []。
-        rules: [],
+        // 证据时间线页大小：默认 20（设置卡可改，5-100）。
+        evidencePageSize: 20,
         // 两枚部署值：默认与旧常量同值（120s 蒸馏墙钟 / 24h 衰减周期），行为冻结。
         // 手写字面值而不引常量——引常量就成了自证，常量改了该先红。
         digestTimeoutMs: 120_000,
@@ -1867,6 +2346,24 @@ describe("host：lesson-loop 的宿主半", () => {
       );
     });
 
+    it("会话没有 header.cwd、也没有目录变更事件 → 归因留空，蒸馏照常跑完", async () => {
+      // 归因从"会话当前工作目录"来（foldCwd）；连 header 都没有时要能不炸地跑完，
+      // runDigest 退到不带 cwd 的老口径（没有 cwd 的项目键由 deriveProject 兜）。
+      const ctx = makeCtx({
+        services: {
+          llm: fakeLlm("[]"),
+          agentDefaultModel: { currentSelection: () => ({ provider: "p", model: "m" }) },
+        },
+      });
+      apply(ctx);
+      const result = await ctx.command?.handler({
+        agent: { session: { id: "s1", header: {} } },
+        rawInput: "",
+      });
+      assert.equal(result?.kind, "success");
+      assert.equal(ctx.observeCalls.length, 1, "没有目录也要读一次事件流");
+    });
+
     it("模型没归纳出新规则 → 明确回执；rawInput 作为附加说明进提示词", async () => {
       const capture: { prompt?: string } = {};
       const ctx = makeCtx({
@@ -1893,23 +2390,30 @@ describe("host：lesson-loop 的宿主半", () => {
         },
       });
       apply(ctx);
-      // 端口从这一刻起拒写：模型提出了候选、但一条都落不进库。
-      ctx.rulesProvider.failWrites(5);
+      // 端口从这一刻起拒写：模型提出了候选、但一条都落不进库（规则库主介质是 SQLite，
+      // 这里直接让补录回执报 persisted:false，等价于"库没写成"）。
+      const added = vi
+        .spyOn(LessonStore.prototype, "addCandidate")
+        .mockImplementation(async () => ({
+          card: { id: "never-persisted" } as never,
+          persisted: false,
+        }));
       const handler = ctx.command?.handler;
       assert.ok(handler !== undefined, "命令已注册");
       const result = await handler(digestInvocation());
       assert.equal(result.kind, "error", "没落盘不许报成功");
       assert.equal(result.text, fill(MESSAGES.zh.digestPartialFailure, { count: 0, failed: 1 }));
-      assert.equal(ctx.rulesProvider.writesOf(PLUGIN_ID_FIXTURE), 0, "库里确实没有这张卡");
+      assert.ok(added.mock.calls.length > 0, "确实走了补录这条路");
+      assert.equal(rulesOf(ctx).length, 0, "库里确实没有这张卡");
     });
   });
 
   describe("会话开始注入的分支", () => {
-    it("enabled=false → 不预种台账也不注入", () => {
+    it("enabled=false → 不预种台账也不注入", async () => {
       const ctx = makeCtx({ value: { enabled: false } });
       apply(ctx);
       const injected: unknown[] = [];
-      fireCreated(ctx, {
+      await fireCreated(ctx, {
         inject: (message: unknown) => {
           injected.push(message);
         },
@@ -1922,16 +2426,16 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(ended.mock.calls.length, 0);
     });
 
-    it("agent 缺失 / 无 session → 不碰台账、不注入", () => {
+    it("agent 缺失 / 无 session → 不碰台账、不注入", async () => {
       const ctx = makeCtx();
       apply(ctx);
       const injected: unknown[] = [];
-      fireCreated(ctx, {
+      await fireCreated(ctx, {
         inject: (message: unknown) => {
           injected.push(message);
         },
       });
-      fireCreated(ctx, undefined);
+      await fireCreated(ctx, undefined);
       assert.deepEqual(injected, []);
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
       fireDisposed(ctx, {});
@@ -1940,15 +2444,22 @@ describe("host：lesson-loop 的宿主半", () => {
       assert.equal(ended.mock.calls.length, 0);
     });
 
-    it("同一会话二次 created → 台账按最新 cwd 归因", () => {
+    it("同一会话二次 created → 台账按最新 cwd 归因", async () => {
       const ctx = makeCtx();
       apply(ctx);
-      fireCreated(ctx, { session: { id: "s1", header: { cwd: "/repo/aaa" } } });
-      fireCreated(ctx, { session: { id: "s1", header: { cwd: "/repo/bbb" } } });
+      await fireCreated(ctx, { session: { id: "s1", header: { cwd: "/repo/aaa" } } });
+      await fireCreated(ctx, { session: { id: "s1", header: { cwd: "/repo/bbb" } } });
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
       fireDisposed(ctx, { id: "s1" });
-      assert.equal(ended.mock.calls.length, 1);
-      assert.equal(ended.mock.calls[0]?.[0], deriveProject("/repo/bbb"));
+      await flushAsync();
+      // 归因是"会话当前目录"，而台账按项目分桶：这场会话在两个目录里各在场过一次，
+      // 收尾就各清算一次（先入桶先清）。第二次 created 的 header 只改"最近所在桶"，
+      // 不抹掉先前的桶——那正是改造前会丢 exposure 的地方。
+      assert.equal(ended.mock.calls.length, 2);
+      assert.deepEqual(
+        ended.mock.calls.map((call) => call[0]),
+        [deriveProject("/repo/aaa"), deriveProject("/repo/bbb")],
+      );
     });
 
     it("agent.inject 抛错 → 只记日志，注入链不炸总线", async () => {
@@ -1958,13 +2469,383 @@ describe("host：lesson-loop 的宿主半", () => {
       const ctx = makeCtx();
       apply(ctx);
       await armedRule(ctx);
-      fireCreated(ctx, {
+      await fireCreated(ctx, {
         inject: () => {
           throw new Error("注入炸了");
         },
         session: { id: "s9", header: { cwd: GATE_PROJECT_CWD } },
       });
-      assert.match(String(error.mock.calls[0]?.[0]), /session-start inject failed: 注入炸了/u);
+      // 注入这一步已从"会话开始那一枪"扩成幂等对账（三个触发点共用），日志前缀随之改名。
+      assert.match(String(error.mock.calls[0]?.[0]), /rule injection failed: 注入炸了/u);
+    });
+  });
+
+  describe("注入对账（幂等 / 压缩补回 / 换目录重做）", () => {
+    it("同内容仍在面上 → 跳过、不重复注入（resume 场景）", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      await armedRule(ctx);
+      const digest = await injectedDigest(ctx);
+      // resume：日志里那条本包注入还在，且它的 seq 仍在 surface.nodes 里。
+      ctx.sessionEvents = [ownMessageEvent(3, digest)];
+      const injected: unknown[] = [];
+      await fireCreated(ctx, {
+        inject: (message: unknown) => injected.push(message),
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD }, surface: { nodes: [0, 3] } },
+      });
+      assert.equal(injected.length, 0, "同内容不再重复注入");
+    });
+
+    it("旧块仍在面上但内容不同 → 前置「替换先前那份」的说明", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      await armedRule(ctx);
+      ctx.sessionEvents = [ownMessageEvent(2, "上一份 lesson-loop 摘要（别处注入的）")];
+      const injected: unknown[] = [];
+      await fireCreated(ctx, {
+        inject: (message: unknown) => injected.push(message),
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD }, surface: { nodes: [2] } },
+      });
+      assert.equal(injected.length, 1);
+      const text = injectedText(injected[0]);
+      assert.ok(
+        text.startsWith(MESSAGES.zh.digestReplacesEarlier),
+        "说明必须放在新正文之前，否则模型读不出这是替换",
+      );
+      assert.match(text, /经验规则/u);
+    });
+
+    it("旧块被压缩折进摘要（日志有、面上没有）→ 补回并说明替换", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      await armedRule(ctx);
+      const digest = await injectedDigest(ctx);
+      // 压缩把那条消息折进摘要：seq 离开 surface.nodes，但日志里不删事件。
+      ctx.sessionEvents = [ownMessageEvent(7, digest)];
+      const injected: unknown[] = [];
+      await fireCreated(ctx, {
+        inject: (message: unknown) => injected.push(message),
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD }, surface: { nodes: [0, 9] } },
+      });
+      assert.equal(injected.length, 1, "压缩之后必须补回一次");
+      assert.ok(injectedText(injected[0]).startsWith(MESSAGES.zh.digestReplacesEarlier));
+    });
+
+    it("workspace-root/change → 归因换成新目录，按新桶重注", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      // 两个目录各一条 armed 规则；换成 B 之后注入的必须是 B 那份（正文里带 B 的路径）。
+      await armedRule(ctx, { cwd: "/repo/a", signature: "sig-a" });
+      await armedRule(ctx, { cwd: "/repo/b", signature: "sig-b" });
+      const injected: unknown[] = [];
+      const agent = {
+        inject: (message: unknown) => injected.push(message),
+        session: { id: "s1", header: { cwd: "/repo/a" } },
+      };
+      await fireCreated(ctx, agent);
+      assert.equal(injected.length, 1);
+      const first = injectedText(injected[0]);
+      assert.match(first, /sig-a/u, "首次注入读的是 A 的桶");
+      // 宿主先追加事件再派发（事件流是会话的唯一真相），假件按同序：先写进事件流。
+      // 首次注入那条也在日志里（真实宿主里它由 inject 落进 inbox 事件流）。
+      const change = {
+        type: EVENT_WORKSPACE_ROOT_CHANGE,
+        seq: 4,
+        time: 2,
+        data: { cwd: "/repo/b" },
+      };
+      ctx.sessionEvents = [ownMessageEvent(3, first), change];
+      fireSessionEvent(ctx, { id: "s1" }, change);
+      await flushAsync();
+      assert.equal(injected.length, 2, "换目录后要按新桶重做一次");
+      assert.match(injectedText(injected[1]), /sig-b/u, "重注的是 B 的桶");
+      assert.ok(
+        injectedText(injected[1]).startsWith(MESSAGES.zh.digestReplacesEarlier),
+        "旧块说的是别的目录，要说明替换",
+      );
+    });
+
+    it("compaction/end → 把被折进摘要的那份补回一次", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      await armedRule(ctx);
+      const injected: unknown[] = [];
+      await fireCreated(ctx, {
+        inject: (message: unknown) => injected.push(message),
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD }, surface: { nodes: [] } },
+      });
+      const first = injectedText(injected[0]);
+      // 压缩收尾事件：本包那条已折进摘要（日志有正文、seq 不在面上）。
+      const end = { type: EVENT_COMPACTION_END, seq: 8, time: 3, data: { id: "c1" } };
+      ctx.sessionEvents = [end, ownMessageEvent(5, first)];
+      fireSessionEvent(ctx, { id: "s1" }, end);
+      await flushAsync();
+      assert.equal(injected.length, 2);
+      assert.ok(injectedText(injected[1]).startsWith(MESSAGES.zh.digestReplacesEarlier));
+    });
+
+    it("session/event 的非触发类型、缺注册表、不在注册表 → 都不碰注入", async () => {
+      // ① 别的类型：什么都不做。
+      const ctx = makeCtx();
+      apply(ctx);
+      await armedRule(ctx);
+      let calls = 0;
+      const agent = {
+        inject: () => {
+          calls += 1;
+        },
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD } },
+      };
+      ctx.liveAgents.set("s1", agent);
+      fireSessionEvent(ctx, { id: "s1" }, { type: "assistant/message", seq: 2 });
+      await flushAsync();
+      assert.equal(calls, 0, "非触发类型不重注");
+      // ② injectEnabled 关掉时，这段处理器整段不参与（只读标志，不读事件流）。
+      const off = makeCtx({ value: { injectEnabled: false } });
+      apply(off);
+      const observe = vi.fn<() => Promise<unknown>>();
+      off.services["sessionQuery"] = {
+        ...(off.services["sessionQuery"] as object),
+        observeSession: observe,
+      };
+      const change = { type: EVENT_WORKSPACE_ROOT_CHANGE, seq: 1, data: { cwd: "/repo/b" } };
+      fireSessionEvent(off, { id: "s1" }, change);
+      await flushAsync();
+      assert.equal(observe.mock.calls.length, 0, "注入关掉时不读事件流");
+      // ③ 会话身份缺失 / 空串：连注册表都不查（`inject` 只能落到确实的一场会话上）。
+      const anonymous = makeCtx();
+      apply(anonymous);
+      await armedRule(anonymous);
+      fireSessionEvent(anonymous, {}, change);
+      fireSessionEvent(anonymous, { id: "" }, change);
+      await flushAsync();
+      // ④ 注册表里没有这场会话：处理器拿不到 Agent，静默返回。
+      const gone = makeCtx();
+      apply(gone);
+      await armedRule(gone);
+      fireSessionEvent(gone, { id: "nope" }, change);
+      await flushAsync();
+      // ⑤ 宿主没给 agents 服务：不炸、不注入。
+      const bare = makeCtx();
+      delete bare.services["agents"];
+      apply(bare);
+      await armedRule(bare);
+      fireSessionEvent(bare, { id: "s1" }, change);
+      await flushAsync();
+    });
+
+    it("没有 session id → 仍按 header 注入一次（没有对账读口）", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      await armedRule(ctx);
+      const injected: unknown[] = [];
+      await fireCreated(ctx, {
+        inject: (message: unknown) => injected.push(message),
+        session: { header: { cwd: GATE_PROJECT_CWD } },
+      });
+      assert.equal(injected.length, 1);
+      assert.equal(ctx.observeCalls.length, 0, "没有会话身份就没有事件流可读");
+    });
+
+    it("事件流里的畸形载荷不参与对账（容错读法）", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      await armedRule(ctx);
+      const injected: unknown[] = [];
+      await fireCreated(ctx, {
+        inject: (message: unknown) => injected.push(message),
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD }, surface: { nodes: [] } },
+      });
+      // 第二次 created 时事件流里只有畸形载荷：都认不出是本包那份，按"没有旧块"注入。
+      ctx.sessionEvents = [
+        // 空 cwd 的目录变更：不折叠（保住 header 的归因）。
+        { type: EVENT_WORKSPACE_ROOT_CHANGE, seq: 1, time: 1, data: { cwd: "" } },
+        // content 不是数组 → 认不出正文。
+        {
+          type: EVENT_USER_MESSAGE,
+          seq: 2,
+          time: 1,
+          data: { source: { kind: LESSON_SOURCE_KIND_FIXTURE }, content: "不是数组" },
+        },
+        // 文本块类型不是 text → 拼出来是空串。
+        {
+          type: EVENT_USER_MESSAGE,
+          seq: 3,
+          time: 1,
+          data: {
+            source: { kind: LESSON_SOURCE_KIND_FIXTURE },
+            content: [{ type: "image", text: "x" }],
+          },
+        },
+        // 别家插件的消息 → 不是本包那份。
+        {
+          type: EVENT_USER_MESSAGE,
+          seq: 4,
+          time: 1,
+          data: { source: { kind: "plugin:other" }, content: [{ type: "text", text: "他家的" }] },
+        },
+      ];
+      await fireCreated(ctx, {
+        inject: (message: unknown) => injected.push(message),
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD }, surface: { nodes: [] } },
+      });
+      assert.equal(injected.length, 2);
+      const text = injectedText(injected[1]);
+      assert.doesNotMatch(text, /替换先前/u);
+      assert.match(text, /经验规则/u, "畸形载荷不该让注入整块失效");
+    });
+
+    it("header 没有 cwd、事件里也没有 → 归因留空，任何桶都不注入", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      await armedRule(ctx);
+      const injected: unknown[] = [];
+      await fireCreated(ctx, {
+        inject: (message: unknown) => injected.push(message),
+        session: { id: "s1", header: {} },
+      });
+      assert.equal(injected.length, 0, "没有目录就没有桶，已生效规则不属于任何项目");
+    });
+
+    it("同 tick 两个触发点 → 串行排队，跑完不留下悬挂的链", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      await armedRule(ctx);
+      const injected: unknown[] = [];
+      const agent = {
+        inject: (message: unknown) => injected.push(message),
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD } },
+      };
+      ctx.liveAgents.set("s1", agent);
+      const first = {
+        type: EVENT_WORKSPACE_ROOT_CHANGE,
+        seq: 1,
+        time: 1,
+        data: { cwd: GATE_PROJECT_CWD },
+      };
+      // 同一项目的第二次变更（换到没有 armed 规则的目录时注入本来就该是空的，
+      // 那会把这条用例变成"零注入也算过"）。
+      const second = {
+        type: EVENT_WORKSPACE_ROOT_CHANGE,
+        seq: 2,
+        time: 2,
+        data: { cwd: GATE_PROJECT_CWD },
+      };
+      ctx.sessionEvents = [first, second];
+      // 两个触发点在同一 tick 各起一条链：后一条把前一条排在自己前面。
+      fireSessionEvent(ctx, { id: "s1" }, first);
+      fireSessionEvent(ctx, { id: "s1" }, second);
+      await flushAsync();
+      await flushAsync();
+      // 假件的事件流在两条链之间不变，两次读到的都是"没有旧块" → 各注入一次（真实宿主里
+      // 第二次读得到第一次追加的那条，于是会走"同内容跳过"或"追加替换"）。
+      assert.equal(injected.length, 2);
+      // 链结束时只删自己那一条：再来一个触发点仍能起链（没有被悬挂的 Promise 卡死）。
+      fireSessionEvent(ctx, { id: "s1" }, second);
+      await flushAsync();
+      await flushAsync();
+      assert.equal(injected.length, 3, "链跑完就被清掉，下一次触发照常执行");
+    });
+
+    it("多桶清算里有一桶写失败 → 只还原未落定那桶，重试不重复计已落定的", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      await armedRule(ctx, { cwd: "/repo/a", signature: "sig-a" });
+      await armedRule(ctx, { cwd: "/repo/b", signature: "sig-b" });
+      const svc = loopService(ctx);
+      const projectA = deriveProject("/repo/a");
+      const projectB = deriveProject("/repo/b");
+      await fireCreated(ctx, {
+        inject: () => {
+          // 只关心台账
+        },
+        session: { id: "s1", header: { cwd: "/repo/a" } },
+      });
+      // 两个目录各报一次违规（都带本会话 id）→ 两个桶各记一笔。
+      await svc.report({
+        source: SOURCE_QUALITY_GATE,
+        category: CATEGORY_GATE_FAILURE,
+        cwd: "/repo/a",
+        sessionId: "s1",
+        signature: "sig-a",
+        detail: "d",
+      });
+      await svc.report({
+        source: SOURCE_QUALITY_GATE,
+        category: CATEGORY_GATE_FAILURE,
+        cwd: "/repo/b",
+        sessionId: "s1",
+        signature: "sig-b",
+        detail: "d",
+      });
+      // 只让 B 那一桶写失败（A 真落定）。
+      const settle = vi
+        .spyOn(LessonStore.prototype, "sessionEnded")
+        .mockImplementation(async (project) => project !== projectB);
+      fireDisposed(ctx, { id: "s1" });
+      await flushAsync();
+      assert.deepEqual(
+        settle.mock.calls.map((call) => call[0]),
+        [projectA, projectB],
+        "逐桶串行：A 落定，B 失败",
+      );
+      // 失败把整行还原（含未落定的 B）；重试时 A 已落定不再计，只重试 B。
+      fireDisposed(ctx, { id: "s1" });
+      await flushAsync();
+      assert.deepEqual(
+        settle.mock.calls.map((call) => call[0]),
+        [projectA, projectB, projectB],
+        "重试只对未落定的 B 再走一次，已落定的 A 不重复计 samples",
+      );
+    });
+
+    it("已清算的会话不重建桶：再次 created 后收尾走 header 兜底", async () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
+      await fireCreated(ctx, {
+        inject: () => {
+          // 不关心注入，只看台账
+        },
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD } },
+      });
+      fireDisposed(ctx, { id: "s1" });
+      await flushAsync();
+      assert.equal(ended.mock.calls.length, 1, "首次清算按桶走一条");
+      // 同一 id 再次 created：hasSettled 为真 → 不重建桶。
+      await fireCreated(ctx, {
+        inject: () => {
+          // 同上
+        },
+        session: { id: "s1", header: { cwd: GATE_PROJECT_CWD } },
+      });
+      fireDisposed(ctx, { id: "s1" });
+      await flushAsync();
+      assert.equal(ended.mock.calls.length, 2, "已清算会话的第二次收尾走 header 兜底");
+    });
+  });
+
+  describe("常驻段的替换/退役通知（本地化 + 换语言重注册）", () => {
+    it("注册时就带上两枚本地化通知，locale 变更后先撤再注册", () => {
+      const ctx = makeCtx();
+      apply(ctx);
+      const zh = ctx.section;
+      assert.ok(zh, "常驻段未注册");
+      assert.equal(zh.replacement, MESSAGES.zh.sectionReplacement);
+      assert.equal(zh.retirement, MESSAGES.zh.sectionRetirement);
+      assert.equal(ctx.sectionRegistrations, 1);
+      // 换语言：宿主推 locale 失效 → 先 dispose 再 section，两枚通知重新捕获成英文。
+      ctx.localeValue = { preference: "en" };
+      fireSettingsUpdated(ctx, "locale");
+      assert.equal(ctx.sectionRegistrations, 2, "换语言必须重注册一次");
+      const en = ctx.section;
+      assert.ok(en, "重注册后段应回到槽位");
+      assert.equal(en.replacement, MESSAGES.en.sectionReplacement);
+      assert.equal(en.retirement, MESSAGES.en.sectionRetirement);
+      assert.doesNotMatch(en.replacement ?? "", /\p{Script=Han}/u);
+      // 别的命名空间变更不重注册（段文本没变，重注册只会白造一次通知）。
+      fireSettingsUpdated(ctx, "other-plugin");
+      assert.equal(ctx.sectionRegistrations, 2);
     });
   });
 
@@ -2080,12 +2961,14 @@ describe("host：lesson-loop 的宿主半", () => {
         signature: SIGNATURE_GATE_COMMAND,
       });
       for (let index = 1; index <= 200; index += 1) {
-        fireCreated(ctx, { session: { id: `s${index}`, header: { cwd: GATE_PROJECT_CWD } } });
+        // oxlint-disable-next-line eslint/no-await-in-loop -- 逐场会话建条目（容量断言要求全部登记完）
+        await fireCreated(ctx, { session: { id: `s${index}`, header: { cwd: GATE_PROJECT_CWD } } });
       }
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
-      // s0 已被丢出 → 收尾走"无台账"后备，pass 集合为空（没被丢就会带着 id）
+      // 容量修剪只丢内存里的 watch 条目；s0 的 pass 已经在 session_ledger 里。
+      // 收尾清算必须从台账捡回它，而不是按“无台账”的空集合算——台账是持久事实源。
       fireDisposed(ctx, { id: "s0", header: { cwd: GATE_PROJECT_CWD } });
-      assert.deepEqual(ended.mock.calls[0]?.[2], new Set());
+      assert.deepEqual(ended.mock.calls[0]?.[2], new Set([id]));
       // 末位的新会话还在表里：pass 记录下来照常清算
       svc.pass({
         category: CATEGORY_GATE_FAILURE,
@@ -2123,8 +3006,12 @@ describe("host：lesson-loop 的宿主半", () => {
       apply(ctx);
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
       fireDisposed(ctx, { id: "ghost" });
-      // 第五位是 exposure 开关：该会话的首个 dispose 边为 true，重复边为 false。
-      assert.deepEqual(ended.mock.calls[0], ["default", new Set(), new Set(), "ghost", true]);
+      // 第五位是 exposure 开关：该会话的首个 dispose 边为 true，重复边为 false。第六位是
+      // `onPersisted`：库在时清算把它交给 saveRules，两个计数与台账消费同事务提交（库缺席
+      // 时才整位不发）。「无台账」指台账行缺失，库本身仍在该用例的装配里。
+      const [call] = ended.mock.calls;
+      assert.deepEqual(call?.slice(0, 5), ["default", new Set(), new Set(), "ghost", true]);
+      assert.equal(typeof call[5], "function", "库在时必须带同事务落定钩子");
     });
 
     it("sessionEnded 抛错 → 只记日志", async () => {
@@ -2411,7 +3298,7 @@ describe("host：lesson-loop 的宿主半", () => {
       });
       assert.equal(await svc.ruleAction(first.candidate!.id, "arm"), "persisted");
       const injected: unknown[] = [];
-      fireCreated(ctx, {
+      await fireCreated(ctx, {
         inject: (message: unknown) => {
           injected.push(message);
         },
@@ -2493,26 +3380,16 @@ describe("host：lesson-loop 的宿主半", () => {
       warn.mockRestore();
     });
 
-    it("行已在投影里、rules 却是非数组 ⇒ 出 rejected 那条 error", () => {
+    it("旧 config.rules 是非数组 ⇒ 迁移端口读成 unusable 并点名，不猜也不清空", () => {
       const error = vi.spyOn(console, "error").mockImplementation(() => {
         // 断言在下方
       });
-      const ctx = makeCtx();
-      // 直接给一张"本条目的行在、user.rules 是字符串"的投影：假件的 describe() 面就是
-      // readonly unknown[]，故按行造数据而不是改写原投影（那需要往 unknown 上再断言一层）。
-      ctx.settings.describe = () => [
-        {
-          ns: PLUGIN_ID_FIXTURE,
-          value: { rules: [] },
-          user: { rules: "not-an-array" },
-          revision: 0,
-        },
-      ];
+      const ctx = makeCtx({ rawRules: "not-an-array" });
       apply(ctx);
       assert.match(
         error.mock.calls.map(String).join("\n"),
         /rules namespace rejected/u,
-        "行在投影里却读不懂，就是数据坏了，必须点名",
+        "原文读不懂，就是数据坏了，必须点名",
       );
       error.mockRestore();
     });
@@ -2599,7 +3476,7 @@ describe("host：lesson-loop 的宿主半", () => {
         detail: "f",
       });
       assert.equal(await svc.ruleAction(first.candidate!.id, "arm"), "persisted");
-      fireCreated(ctx, { session: { id: "s-w4", header: { cwd } } });
+      await fireCreated(ctx, { session: { id: "s-w4", header: { cwd } } });
       // 换一枚"要跨一个宏任务才写完"的 sessionEnded：同步 disposer 会在拆纤当场把它丢下
       const settled: string[] = [];
       vi.spyOn(LessonStore.prototype, "sessionEnded").mockImplementation(async () => {
@@ -2636,7 +3513,7 @@ describe("host：lesson-loop 的宿主半", () => {
 
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
       // 先让会话有台账（正常 start），再结束掉它——此后台账里没有这条会话。
-      fireCreated(ctx, { session: { id: "s-race", header: { cwd } } });
+      await fireCreated(ctx, { session: { id: "s-race", header: { cwd } } });
       fireDisposed(ctx, { id: "s-race", header: { cwd } });
       const settledCount = ended.mock.calls.length;
       // 会话已经结束，这时来一条 armed 命中（带 sessionId 的那条）
@@ -2701,7 +3578,7 @@ describe("host：lesson-loop 的宿主半", () => {
       const sid = "s-pass-race";
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
       // 正常建台账 → 结束它，此后台账里没有这条会话，但它在已清算集合里。
-      fireCreated(ctx, { session: { id: sid, header: { cwd } } });
+      await fireCreated(ctx, { session: { id: sid, header: { cwd } } });
       fireDisposed(ctx, { id: sid, header: { cwd } });
       const settledCount = ended.mock.calls.length;
       // 迟到的 pass：它命中的是已 armed 的规则，旧实现会在这里重建条目。
@@ -2715,8 +3592,9 @@ describe("host：lesson-loop 的宿主半", () => {
       await Promise.all(ctx.effects.map((dispose) => dispose()));
       const exited = ended.mock.calls.slice(settledCount).filter((call) => call[3] === sid);
       assert.equal(exited.length, 0, "已清算的会话不该因为一条迟到的 pass 而重新进台账");
-      // 反面证据：suppressed 仍是 0（若条目被重建并清算，这里会变成 1）。
-      assert.equal(svc.rules().find((rule) => rule.id === id)?.suppressed, 0);
+      // 反面证据：suppressed 仍是 0（若条目被重建并清算，这里会变成 1）。读数走新连接：
+      // 上面那轮卸载已经关掉本插件的连接。
+      assert.equal(cardsOnDisk().find((rule) => rule.id === id)?.suppressed, 0);
     });
 
     it("会话仍在台账时，armed 命中要记进本会话的 violated（供收尾抑制 exposure）", async () => {
@@ -2734,7 +3612,7 @@ describe("host：lesson-loop 的宿主半", () => {
         detail: "seed",
       });
       assert.equal(await svc.ruleAction(seeded.candidate!.id, "arm"), "persisted");
-      fireCreated(ctx, { session: { id: "s-live", header: { cwd } } });
+      await fireCreated(ctx, { session: { id: "s-live", header: { cwd } } });
       // 会话仍在台账里时来一条 armed 命中
       const hit = await svc.report({
         source: SOURCE_QUALITY_GATE,
@@ -2756,14 +3634,14 @@ describe("host：lesson-loop 的宿主半", () => {
       // 审查点：两个入口各判一次会让同一条会话被计两次 samples。
       const ctx = makeCtx();
       apply(ctx);
-      fireCreated(ctx, { session: { id: "s-dup", header: { cwd: GATE_PROJECT_CWD } } });
+      await fireCreated(ctx, { session: { id: "s-dup", header: { cwd: GATE_PROJECT_CWD } } });
       const ended = vi.spyOn(LessonStore.prototype, "sessionEnded");
       // 事件路径先清算一次（首个边）
       fireDisposed(ctx, { id: "s-dup", header: { cwd: GATE_PROJECT_CWD } });
       assert.equal(ended.mock.calls[0]?.[4], true);
       // 已清算的会话再出现（resume）：台账不再预种（它注定不会再被清算），退出清算
       // 因此也不会为它再起一笔——去重收敛成"两个入口合计只清算一次"。
-      fireCreated(ctx, { session: { id: "s-dup", header: { cwd: GATE_PROJECT_CWD } } });
+      await fireCreated(ctx, { session: { id: "s-dup", header: { cwd: GATE_PROJECT_CWD } } });
       await Promise.all(ctx.effects.map((dispose) => dispose()));
       assert.equal(
         ended.mock.calls.filter((call) => call[3] === "s-dup").length,
@@ -2813,13 +3691,58 @@ describe("host：lesson-loop 的宿主半", () => {
     it("退出清算交回的是异步 disposer（形状钉：不靠宏任务赌一拍）", async () => {
       const ctx = makeCtx();
       apply(ctx);
-      fireCreated(ctx, { session: { id: "s-shape", header: { cwd: GATE_PROJECT_CWD } } });
+      await fireCreated(ctx, { session: { id: "s-shape", header: { cwd: GATE_PROJECT_CWD } } });
       const results = ctx.effects.map((dispose) => dispose());
       assert.ok(
         results.some((value) => isThenable(value)),
         "至少一枚释放器必须是可 await 的：否则在飞的 provider 写会被拆纤截断",
       );
       await Promise.all(results);
+    });
+  });
+
+  describe("旧字段缺席与库不可用", () => {
+    it("老 patch 压根没有 rules 键：装载照常，规则读空、不跑迁移写", async () => {
+      const ctx = makeCtx({ omitRawRules: true });
+      apply(ctx);
+      await flushAsync();
+      const body = (
+        ctx.get("lessonLoopRules") as { rules: (request: object) => { rules: [] } }
+      ).rules({});
+      assert.deepEqual(body.rules, []);
+    });
+
+    it("sqlite 打不开：规则端口判不可用，写动作被拒而不是崩", async () => {
+      const open = vi.spyOn(LessonDb, "open").mockReturnValue(null);
+      try {
+        const ctx = makeCtx({ omitRawRules: true });
+        apply(ctx);
+        await flushAsync();
+        const service = ctx.get("lessonLoopRules") as {
+          rules: (request: object) => { rules: unknown[] };
+          ruleAction: (request: { id: string; action: string }) => Promise<{ ok: boolean }>;
+        };
+        assert.deepEqual(service.rules({}).rules, []);
+        const refused = await service.ruleAction({ id: "ghost", action: "archive" });
+        assert.equal(refused.ok, false);
+        // 有会话建过又结束时，台账补算会拿到 db===null：直接收手，不造暴露度。
+        await fireCreated(ctx, { session: { id: "s-nodb", header: { cwd: GATE_PROJECT_CWD } } });
+        fireDisposed(ctx, { id: "s-nodb", header: { cwd: GATE_PROJECT_CWD } });
+        await flushAsync();
+      } finally {
+        open.mockRestore();
+      }
+    });
+
+    it("ruleDetail 的页大小取自 evidencePageSize 现取引用", async () => {
+      const ctx = makeCtx({ value: { evidencePageSize: 5 } });
+      apply(ctx);
+      await flushAsync();
+      const id = await armedRule(ctx);
+      const service = ctx.get("lessonLoopRules") as {
+        ruleDetail: (request: { id: string }) => { ok: boolean; nextCursor: number | null };
+      };
+      assert.equal(service.ruleDetail({ id }).nextCursor, null, "空证据的下一页为空");
     });
   });
 });

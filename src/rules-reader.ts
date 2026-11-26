@@ -36,6 +36,8 @@ import { RULES_BUNDLE_PACKAGE, RULES_REMOTE_NAMESPACE } from "../lib/rules-shape
 import type {
   LessonsRequest,
   LessonsResult,
+  RuleDetailReplyOrFailure,
+  RuleDetailRequest,
   RuleActionReply,
   RuleActionRequest,
   RulesRequest,
@@ -98,6 +100,37 @@ const RULE_ACTION_SCHEMA = z.object(
   { error: "rule-action request must be an object" },
 );
 
+const RULE_DETAIL_ID_MESSAGE = "rule-detail request requires a string id";
+const RULE_DETAIL_OBJECT_MESSAGE = "rule-detail request must be an object";
+const RULE_DETAIL_CURSOR_MESSAGE =
+  "rule-detail request cursor must be a non-negative integer when present";
+const RULE_DETAIL_SCHEMA = z.object(
+  {
+    id: z.string({ error: RULE_DETAIL_ID_MESSAGE }),
+    cursor: z
+      .number({ error: RULE_DETAIL_CURSOR_MESSAGE })
+      .refine((value) => Number.isInteger(value) && value >= 0, {
+        error: RULE_DETAIL_CURSOR_MESSAGE,
+      })
+      .optional(),
+  },
+  { error: RULE_DETAIL_OBJECT_MESSAGE },
+);
+
+/** 证据分页请求的客户端 parser。 */
+const RULE_DETAIL_CODEC: TypertCodec<RuleDetailRequest> = {
+  mode: "strict",
+  typeSymbol: `${PACKAGE_NAME}#rule-detail-request`,
+  create: () => ({
+    parse(value: unknown): RuleDetailRequest {
+      const request = parseOrThrow(RULE_DETAIL_SCHEMA, value);
+      return request.cursor === undefined
+        ? { id: request.id }
+        : { id: request.id, cursor: request.cursor };
+    },
+  }),
+};
+
 /** 规则列表请求的客户端 parser：只核本方法真正读的那一位（`project` 是串或缺失）。 */
 const RULES_CODEC: TypertCodec<RulesRequest> = {
   mode: "strict",
@@ -139,7 +172,7 @@ const RULE_ACTION_CODEC: TypertCodec<RuleActionRequest> = {
   }),
 };
 
-/** 把宿主那四个方法挂到客户端远程通道上的描述符（`id` 的形状照生成器：`<包>#<命名空间>/<方法>`）。
+/** 把宿主那组方法挂到客户端远程通道上的描述符（`id` 的形状照生成器：`<包>#<命名空间>/<方法>`）。
  *  导出它只为一件事：`test/rules-remote.test.ts` 拿它与宿主侧 `remoteMethods()` 的标记对质
  *  —— 两侧分叉时卡片不会报错，只会"读不到"，所以那条比较必须在门禁里。 */
 export const RULES_DESCRIPTORS: readonly InvocationDescriptor[] = [
@@ -171,6 +204,15 @@ export const RULES_DESCRIPTORS: readonly InvocationDescriptor[] = [
     result: { mode: "src-json" },
   },
   {
+    id: `${PACKAGE_NAME}#${RULES_REMOTE_NAMESPACE}/ruleDetail`,
+    service: RULES_REMOTE_NAMESPACE,
+    namespace: RULES_REMOTE_NAMESPACE,
+    method: "ruleDetail",
+    invocation: { kind: "direct" },
+    parameters: [{ name: "request", wire: "request", source: "json", codec: RULE_DETAIL_CODEC }],
+    result: { mode: "src-json" },
+  },
+  {
     id: `${PACKAGE_NAME}#${RULES_REMOTE_NAMESPACE}/ruleAction`,
     service: RULES_REMOTE_NAMESPACE,
     namespace: RULES_REMOTE_NAMESPACE,
@@ -190,20 +232,27 @@ interface RulesNamespace {
   rules: (request: RulesRequest) => Promise<RemoteResult<RulesResult>>;
   lessons: (request: LessonsRequest) => Promise<RemoteResult<LessonsResult>>;
   ruleAction: (request: RuleActionRequest) => Promise<RemoteResult<RuleActionReply>>;
+  ruleDetail: (request: RuleDetailRequest) => Promise<RemoteResult<RuleDetailReplyOrFailure>>;
 }
 
 /**
  * 卡片用到的读取器。`stats` 交回原始记录（卡片那层逐字段守卫照旧生效）；拒绝回执原样
  * 交回，由卡片决定怎么显示——传输/网关失败才抛。
+ *
+ * `ruleDetail` 是**唯一带两支**的读方法：宿主的 400/404/500 是以数据形式回执
+ * （`{ ok: false, error, status }`）而不是网关层失败，`unwrapRemote` 只认后者，
+ * 所以这里必须把联合类型一路交到卡片，由它按 `ok` 分流——收窄成 `RuleDetailReply`
+ * 会让失败回执被当成成功回执读，`evidence` 变成 undefined，渲染期炸在 `entries.length`。
  */
 export interface RulesReader {
   stats: () => Promise<Record<string, unknown>>;
   rules: (request?: RulesRequest) => Promise<RulesResult>;
   lessons: (request?: LessonsRequest) => Promise<LessonsResult>;
   ruleAction: (id: string, action: string, statement?: string) => Promise<RuleActionReply>;
+  ruleDetail: (id: string, cursor?: number) => Promise<RuleDetailReplyOrFailure>;
 }
 
-/** 网关拒绝回执 → 抛错（四个读取方法同一段判据，抽出来保证规则一致：错误前缀
+/** 网关拒绝回执 → 抛错（每个读取方法同一段判据，抽出来保证规则一致：错误前缀
  *  `code: message` 不许某一处悄悄变体）。 */
 function unwrapRemote<Value>(result: RemoteResult<Value>): Value {
   if (!result.ok) {
@@ -212,13 +261,33 @@ function unwrapRemote<Value>(result: RemoteResult<Value>): Value {
   return result.value;
 }
 
-/** 同上：命名空间服务（挂载之后才有，缺它说明网关没认这枚贡献）。 */
+/** 命名空间必须提供的全部方法名（diagnostic 与守卫同源，免得两处各写一份）。 */
+const RULES_NAMESPACE_METHODS = [
+  "stats",
+  "rules",
+  "lessons",
+  "ruleAction",
+  "ruleDetail",
+] as const satisfies readonly (keyof RulesNamespace)[];
+
+/** 同上：命名空间服务（挂载之后才有，缺它说明网关没认这枚贡献）。
+ *
+ *  **五个方法一个都不能少**：本包的宿主半与客户端半同一个 bundle 发布，两者对外方法集
+ *  恒等（test/rules-remote.test.ts 拿 RULES_DESCRIPTORS 与宿主 remoteMethods() 对质）。
+ *  把某一枚放宽成可选，等于给"宿主还是上一版、客户端已升"这个窗口造一条静默降级路径
+ *  ——那一格里 stats/rules/lessons 全都还在，只有新的那枚缺席，读面却会被整体判成"没提供"，
+ *  更糟的是有人会把这条放宽读成"兼容旧宿主"，于是新方法的失败从此没人负责。 */
 const isRulesNamespace = (value: unknown): value is RulesNamespace =>
-  isRecord(value) &&
-  typeof value["stats"] === "function" &&
-  typeof value["rules"] === "function" &&
-  typeof value["lessons"] === "function" &&
-  typeof value["ruleAction"] === "function";
+  isRecord(value) && RULES_NAMESPACE_METHODS.every((name) => typeof value[name] === "function");
+
+/** 缺哪些方法——只进错误文案，不参与类型收窄。 */
+function missingNamespaceMethods(value: unknown): string {
+  if (!isRecord(value)) {
+    return "（不是对象）";
+  }
+  const missing = RULES_NAMESPACE_METHODS.filter((name) => typeof value[name] !== "function");
+  return missing.length === 0 ? "（齐全）" : missing.join(", ");
+}
 
 /**
  * 造出真正的读取器（挂载一次 + 每次读命名空间服务）。
@@ -241,7 +310,10 @@ function buildRulesReader(ctx: RemoteHost, remote: RemoteMounter): RulesReader {
     }
     const namespace = ctx.get?.(RULES_SERVICE_KEY, false);
     if (!isRulesNamespace(namespace)) {
-      throw new Error(`${RULES_SERVICE_KEY} 未提供：宿主网关没有挂上这枚命名空间`);
+      // 点名缺哪几枚：只说"未提供"时，"网关没挂上"与"挂了但是旧版少一枚方法"长得一模一样。
+      throw new Error(
+        `${RULES_SERVICE_KEY} 未提供：宿主网关没有挂上这枚命名空间（缺 ${missingNamespaceMethods(namespace)}）`,
+      );
     }
     return namespace;
   };
@@ -259,6 +331,11 @@ function buildRulesReader(ctx: RemoteHost, remote: RemoteMounter): RulesReader {
     async lessons(request: LessonsRequest = {}): Promise<LessonsResult> {
       const ns = await namespaceOf();
       const result = await ns.lessons(request);
+      return unwrapRemote(result);
+    },
+    async ruleDetail(id: string, cursor?: number): Promise<RuleDetailReplyOrFailure> {
+      const ns = await namespaceOf();
+      const result = await ns.ruleDetail(cursor === undefined ? { id } : { id, cursor });
       return unwrapRemote(result);
     },
     async ruleAction(id: string, action: string, statement?: string): Promise<RuleActionReply> {

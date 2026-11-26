@@ -25,6 +25,7 @@ import { pathToFileURL } from "node:url";
 import { Context } from "@deepseek-ai/cordis";
 import { Loader } from "@deepseek-ai/cordis-plugin-loader";
 import { deriveProject } from "../../lib/lesson-store.ts";
+import { LessonDb } from "../../lib/lesson-db.ts";
 import { RULES_FIELD, SETTINGS_NAMESPACE } from "../../lib/rules-layout.ts";
 import { makeSettingsProvider } from "../rules-fake.ts";
 import type { SettingsProviderFake } from "../rules-fake.ts";
@@ -115,6 +116,8 @@ describe("装载时序：开机迁移只在本条目 ACTIVE 之后读规则库",
   let scratch: string;
   let origDshHome: string | undefined;
   let live: TestCtx | undefined;
+  /** 测试侧另开的只读连接：afterEach 必须先关它再删临时目录（Windows 上打开的文件删不掉）。 */
+  let readDb: LessonDb | null = null;
 
   beforeAll(async () => {
     await mkdir(path.join(FIXTURE_DIR, "lib"), { recursive: true });
@@ -131,12 +134,14 @@ describe("装载时序：开机迁移只在本条目 ACTIVE 之后读规则库",
   afterEach(async () => {
     await live?.fiber?.dispose();
     live = undefined;
+    readDb?.close();
+    readDb = null;
     if (origDshHome === undefined) {
       delete process.env["DSH_HOME"];
     } else {
       process.env["DSH_HOME"] = origDshHome;
     }
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   afterAll(async () => {
@@ -168,7 +173,17 @@ describe("装载时序：开机迁移只在本条目 ACTIVE 之后读规则库",
     });
     await ctx.plugin(Loader);
     live = ctx;
-    await ctx.loader.create({ id: ENTRY_ID, name: pathToFileURL(FIXTURE_HOST).href });
+    await ctx.loader.create({
+      id: ENTRY_ID,
+      name: pathToFileURL(FIXTURE_HOST).href,
+      // 迁移源是条目行 config 里的旧 `rules:`（字段已从 schema 摘除，宿主对未声明键透传）。
+      config: {
+        [RULES_FIELD]: [
+          fragmentRow("frag-1", FRAGMENT_SIGNATURE, FRAGMENT_CWD),
+          fragmentRow("frag-2", `${FRAGMENT_CWD}/src/b.ts`, FRAGMENT_CWD),
+        ],
+      },
+    });
     await ctx.loader.await().catch(() => null);
     // 迁移链是 apply 里 fire-and-forget 的异步链，多排几个宏任务边界让它跑完。
     await flushAsync(0);
@@ -186,19 +201,29 @@ describe("装载时序：开机迁移只在本条目 ACTIVE 之后读规则库",
 
     // 时序断言：插件对规则库的每一次读都必须发生在本条目 ACTIVE 之后
     // （修复前第一条就是 PENDING 期读，这里会红）。
-    expect(trace.length, "迁移至少读过一次规则库").toBeGreaterThan(0);
+    // 设置段已不在规则读路径上：门控的价值只剩"一次 PENDING 读都不许有"（下面的断言）。
+
     expect(
       trace.filter((sample) => sample.state !== 2),
       "装载期（PENDING）读规则库 = 静默地什么也没做，不许再有",
     ).toStrictEqual([]);
 
-    const rows = provider.peek(ENTRY_ID)?.[RULES_FIELD] as Record<string, unknown>[];
-    const signatures = rows.map((row) => row["signature"]);
+    // 归并结果落在 SQLite 库（settings 里的 rules 段搬完就清空，只留字段）。
+    const dbPath = path.join(scratch, "data", ENTRY_ID, "lesson-loop.db");
+    const db = LessonDb.open({ path: dbPath });
+    readDb = db;
+    expect(db, "迁移后库文件须可打开").not.toBeNull();
+    const rows = db === null ? [] : [...db.rules.load().cards];
+    const signatures = rows.map((row) => row.signature);
     expect(signatures, "两条路径型碎片必须折成一张类别级稳定卡").toStrictEqual([STABLE_SIGNATURE]);
-    expect(rows[0]?.["occurrences"], "归并累加观察次数").toBe(4);
+    expect(rows[0]?.occurrences, "归并累加观察次数").toBe(4);
     expect(
-      rows.every((row) => row["project"] === deriveProject(FRAGMENT_CWD)),
+      rows.every((row) => row.project === deriveProject(FRAGMENT_CWD)),
       "存量卡的 project 键必须归一到 deriveProject(cwd)",
     ).toBe(true);
+    expect(
+      (provider.peek(ENTRY_ID)?.[RULES_FIELD] as readonly unknown[] | undefined)?.length,
+      "旧位不回写：两条碎片原文仍在文档里（库丢了的最后一份存量）",
+    ).toBe(2);
   });
 });

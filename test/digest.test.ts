@@ -58,6 +58,9 @@ const SOURCE_QUALITY_GATE = "quality-gate";
 const CATEGORY_GATE_FAILURE = "gate-failure";
 const PROJECT_FIXTURE = "proj-1a2b3c4d";
 const SIGNATURE_GATE_COMMAND = "pnpm check";
+/** 一条合法的模型产出（同一载荷在解析、全链、无 cwd 三处复用）：收成常量免得字面量散落。 */
+const GATE_FAILURE_JSON =
+  '[{"category":"gate-failure","signature":"pnpm check","statement":"先自检"}]';
 
 /** 契约行剥掉两段说明后的骨架（两段说明各只出现一次，replaceAll 两次即清空）。 */
 function contractSkeleton(line: string, messages: LessonLoopMessages): string {
@@ -519,7 +522,7 @@ describe("digest 蒸馏流水线", () => {
     });
 
     it("解析：纯 JSON / 包裹在散文里 / 非法输入 / 表外类别", () => {
-      const good = '[{"category":"gate-failure","signature":"pnpm check","statement":"先自检"}]';
+      const good = GATE_FAILURE_JSON;
       assert.equal(parseDigestOutput(good).rules.length, 1);
       assert.equal(parseDigestOutput(`结论如下：\n${good}\n以上。`).rules.length, 1);
       // 找不到数组 → parsed:false（与"合法的空数组"分开，后者 parsed:true）
@@ -569,6 +572,9 @@ describe("digest 蒸馏流水线", () => {
       assert.equal(result.created.length, 1);
       assert.equal(store.rules().length, 1);
       assert.equal(store.rules()[0]?.origin, "lessons-digest");
+      // 蒸馏出来的卡必须落在会话当前目录上：注入面按 cwd 归属项目规则，缺它就只能靠
+      // project 字符串猜（派生值，会随目录别名分叉）。
+      assert.equal(store.rules()[0]?.cwd, "/repo/proj", "候选卡带上会话当前 cwd");
       // 无差评：LLM 返回 [] → created 空
       const r2 = await runDigest(
         store,
@@ -595,7 +601,7 @@ describe("digest 蒸馏流水线", () => {
       const result = await runDigest(
         store,
         fakeSession(),
-        fakeLlm('[{"category":"gate-failure","signature":"pnpm check","statement":"先自检"}]'),
+        fakeLlm(GATE_FAILURE_JSON),
         { provider: "prov", model: "m1" },
         { ...runZh, events: [negativePut("m1", "门禁又没过")] },
       );
@@ -603,6 +609,21 @@ describe("digest 蒸馏流水线", () => {
       assert.equal(result.dropped.length, 1, "它必须出现在 dropped 里，由命令回显如实报告");
       assert.equal(result.dropped[0]?.signature, "pnpm check");
       assert.equal(store.rules().length, 0, "库里确实没有这张卡");
+    });
+
+    it("会话没有 cwd（且入参也没给）→ 候选卡不带 cwd，而不是落一个空串", async () => {
+      // cwd 缺席时 addCandidate 的入参里**不许出现**这个键：空串会被 nonEmptyString 折成
+      // undefined 还好，但若有人把 `cwd: ""` 直传进卡，项目归属判据会把它当成一个真实目录。
+      const store = makeStore();
+      const result = await runDigest(
+        store,
+        { id: "s1" as SessionId, header: {} },
+        fakeLlm(GATE_FAILURE_JSON),
+        { provider: "prov", model: "m1" },
+        { ...runZh, events: [negativePut("m1", "门禁又没过")] },
+      );
+      assert.equal(result.created.length, 1);
+      assert.equal("cwd" in (store.rules()[0] ?? {}), false, "没有 cwd 就不许写这个键");
     });
 
     it("缺模型选择抛错；finish 非 stop 抛错", async () => {
