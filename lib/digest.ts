@@ -267,6 +267,13 @@ export interface DigestRunOptions {
   /** 蒸馏墙钟（毫秒）：由 entry config 的 `digestTimeoutMs` 交进来，
    *  本模块不再自带那个数（DEFAULT_DIGEST_TIMEOUT_MS 只剩 schema 默认这一处用途）。 */
   timeoutMs: number;
+  /**
+   * 会话**当前**工作目录（调用方按宿主 `workspace-root/change` 折过，见 host 的 foldCwd）。
+   * 给的候选卡要落在这个目录对应的项目桶里：工作树里蒸馏出来的规则必须归工作树，下次进
+   * 工作树才注入得到。缺省回落 `session.header.cwd`（原始项目目录）——那是只有单目录会话
+   * 才成立的口径，调用方有现值时不该省这一步。
+   */
+  cwd?: string;
 }
 
 /** 守卫后的模型选择：provider / model 已在 runDigest 入口判过（必有、非空白）。 */
@@ -420,10 +427,14 @@ const MAX_CANDIDATE_DETAIL_CHARS = 400;
 type CandidateAttempt = Awaited<ReturnType<LessonStore["addCandidate"]>> | null;
 
 /** 单条落库（异常折成 null）：单条失败不拖垮整次蒸馏，否则"前面已落库的候选"
- *  会随整体失败一起从回执里消失——用户以为一条都没写，库里却留下了无处对账的卡。 */
+ *  会随整体失败一起从回执里消失——用户以为一条都没写，库里却留下了无处对账的卡。
+ *
+ *  `cwd` 一并落进候选卡（与 report() 的首报同口径）：蒸馏出来的规则要能被"会话当前目录"
+ *  的归属判据认出来，否则它只在 project 字符串恰好一致时才注入得到。 */
 async function attemptCandidate(
   store: LessonStore,
   project: string,
+  cwd: string | undefined,
   entry: DigestParsedRule,
   prompt: string,
 ): Promise<CandidateAttempt> {
@@ -435,6 +446,7 @@ async function attemptCandidate(
       statement: entry.statement,
       detail: prompt.slice(0, MAX_CANDIDATE_DETAIL_CHARS),
       source: "lessons-digest",
+      ...(cwd === undefined ? {} : { cwd }),
     });
   } catch (error) {
     console.error(`[lesson-loop] digest persist failed: ${errorText(error)}`);
@@ -450,6 +462,7 @@ async function attemptCandidate(
 async function persistCandidates(
   store: LessonStore,
   project: string,
+  cwd: string | undefined,
   parsed: readonly DigestParsedRule[],
   prompt: string,
 ): Promise<{ created: DigestCreatedRule[]; dropped: DigestCreatedRule[] }> {
@@ -480,7 +493,7 @@ async function persistCandidates(
     if (entry === undefined) {
       return;
     }
-    const receipt = await attemptCandidate(store, project, entry, prompt);
+    const receipt = await attemptCandidate(store, project, cwd, entry, prompt);
     if (receipt === null) {
       // 这一档没有 card，回执带上报原文。
       acc.dropped.push({
@@ -503,6 +516,34 @@ async function persistCandidates(
 }
 
 /**
+ * 模型选择的跨边界守卫：宿主 `currentSelection()` 递来的可能是缺位的半截对象，类型声明
+ * 说的是宿主的承诺，这里只认 string。统一取 trim 后的值——既挡住 `{ provider: null,
+ * model: 5 }` 一类的穿透（它们会在 .trim() 处 TypeError，把一句未本地化的底层错误甩给
+ * 用户），也让 " p " 这种带空白的取值不再原样进 llm.stream。
+ * 单独成函数是为了让 runDigest 的分支数留在 lint 的复杂度上限内（判据与被判对象分开）。
+ */
+function resolveModelSelection(
+  selection: ModelSelection | undefined,
+  messages: LessonLoopMessages,
+): ResolvedModelSelection {
+  const providerRaw = selection?.provider;
+  const modelRaw = selection?.model;
+  const effortRaw = selection?.reasoningEffort;
+  const provider = typeof providerRaw === "string" ? providerRaw.trim() : "";
+  const model = typeof modelRaw === "string" ? modelRaw.trim() : "";
+  const reasoningEffort =
+    typeof effortRaw === "string" && effortRaw.trim().length > 0 ? effortRaw.trim() : undefined;
+  if (provider.length === 0 || model.length === 0) {
+    throw new Error(messages.errNoModelSelection);
+  }
+  return {
+    provider,
+    model,
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+  };
+}
+
+/**
  * 执行一次蒸馏：差评收集 → LLM 归纳 → 建候选规则（origin 'lessons-digest'）。
  * 任何一步失败都抛错由调用方呈现（命令 handler / 端点）。
  */
@@ -514,20 +555,7 @@ export async function runDigest(
   options: DigestRunOptions,
 ): Promise<DigestResult> {
   const { messages, extra, events, timeoutMs } = options;
-  // 选择是宿主 currentSelection() 的跨边界交付（可能是缺位的半截对象）：类型声明说的
-  // 是宿主的承诺，守卫只认 string。统一取 trim 后的值——既挡住 `{ provider: null,
-  // model: 5 }` 一类的穿透（它们会在 .trim() 处 TypeError，把一句未本地化的底层错误
-  // 甩给用户），也让 " p " 这种带空白的取值不再原样进 llm.stream。
-  const providerRaw = selection?.provider;
-  const modelRaw = selection?.model;
-  const effortRaw = selection?.reasoningEffort;
-  const provider = typeof providerRaw === "string" ? providerRaw.trim() : "";
-  const model = typeof modelRaw === "string" ? modelRaw.trim() : "";
-  const reasoningEffort =
-    typeof effortRaw === "string" && effortRaw.trim().length > 0 ? effortRaw.trim() : undefined;
-  if (provider.length === 0 || model.length === 0) {
-    throw new Error(messages.errNoModelSelection);
-  }
+  const resolved = resolveModelSelection(selection, messages);
   // 墙钟规则只在三处出现：configSchema 的 min(1000) 是**配置表**约束（设置卡/文档），
   // 本守卫只管"能不能拿去 setTimeout"——有限正数且不超过 Node 的 2^31-1 毫秒上限
   // （超出会溢出成立即触发，等于零墙钟）。文案因此只说本守卫自己的规则，不重复
@@ -544,15 +572,10 @@ export async function runDigest(
     );
   }
   const feedbacks = collectNegativeFeedback(unknownArray(events));
-  const project = deriveProject(session.header?.cwd);
+  const cwd = options.cwd ?? session.header?.cwd;
+  const project = deriveProject(cwd);
   const background = lessonsBackground(store, project, messages);
   const prompt = buildDigestPrompt(feedbacks, background, messages, extra);
-
-  const resolved: ResolvedModelSelection = {
-    provider,
-    model,
-    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-  };
   const raw = await streamDigestText(llm, resolved, prompt, messages, timeoutMs);
   if (raw.length === 0) {
     throw new Error(messages.errEmptyDigest);
@@ -570,7 +593,7 @@ export async function runDigest(
       `[lesson-loop] digest output: ${String(rejected)} candidate(s) proposed by the model were all rejected by category/statement validation`,
     );
   }
-  const { created, dropped } = await persistCandidates(store, project, parsed, prompt);
+  const { created, dropped } = await persistCandidates(store, project, cwd, parsed, prompt);
   return {
     project,
     feedbackCount: feedbacks.length,

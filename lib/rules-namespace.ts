@@ -1,27 +1,30 @@
-// rules-namespace：规则库的官方存放位置——本条目设置命名空间里的 `rules` 数组字段。
+// rules-namespace：旧设置面里 `rules` 数组字段的**只读兼容层**。
 //
-// 为什么从"自管 $DSH_HOME/metrics/lesson-loop-rules.json"搬到 settings：
-//   1. dsh 承认的用户数据目录只有 settings 文档与 sessions/storages/cache/logs，
-//      插件自开 `metrics/` 属越界（用户手工编辑、备份、清理都不在官方面上）；
-//   2. settings provider 已自带跨进程写锁（atomic-write 的 .lock 兄弟文件）、
-//      逐 namespace 合并与"外部编辑热加载"，规则库正是需要这三件事的状态。
+// 历史：规则库原先存本条目设置命名空间（`lesson-loop`）的 `rules` 数组。0.1.16 起
+// 规则、教训流水与会话台账都搬进 SQLite（lib/lesson-db.ts），`rules` 字段已从 Config
+// schema 摘除（用户拍板），生产不再经本文件的 `save()` 写回设置文档。
 //
-// 0.2.1-alpha.2 里规则数组与开关**同属一段**（`lesson-loop`），这不是妥协而是唯一形态：宿主
-// 的设置面按 profile 条目建模（一个条目一份 `Config`、一个命名空间 = 条目 id），
-// 插件侧的 `settings.register`/`get`/`installSection` 已整体移除——再开一段就等于再造
-// 一个插件条目。旧那条"分属两段"的理由（provider 用 `schema(mergeLayers(base, section))`
-// 校验，坏存量把 register 打回、连带打死另一段）在 0.2.1-alpha.2 换了一种触发方式，因此也换了
-// 一道检查，见下面 RulesFieldSchema 的 `.loose()` 与 load() 的双层判定（user 原文 + 解析值）。
+// 现在只剩两种用途：
+//   1. `RulesFieldSchema` —— 与旧文档同形的数组声明；**消费者只有测试**
+//      （test/schema-coverage.test.ts 的字段形状表、test/lesson-store.test.ts 的
+//      `RulesFieldSchema.inner`）。host.ts 只在头注释里解释它为什么必须用宿主 fork 的
+//      `@deepseek-ai/schemastery`（同一个 `Schema` 构造出这枚声明），运行期不 import 它；
+//      迁移读旧 patch 走的是下面的 `createRulesRepository`（`legacyRulesFromConfig` 把
+//      `config.rules` 原文包成合成面），不经过本 schema。
+//   2. `createRulesRepository(surface)` —— 端口实现，由一个合成的 `SettingsCasSurface`
+//      驱动，因此 `load()` 仍能把老规则读出来导入库。
+// 生产路径**不经真实设置面**：host.ts 的 `legacyRulesFromConfig` 把行 config 里残留的
+// `rules:` 原文包成一条合成 `describe()`（`revision: 0` 只作占位），再交给下面的
+// `createRulesRepository`。"不回写"的真正保险是那条合成面的 `update` 恒 reject——
+// 它不是宿主设置 provider，压根没有第二次写入的机会。`save()` 只服务单测与合成面。
 //
-// 读写规则（LessonStore 的 RulesRepository 实现）：
-//   读 —— `describe()` 里本条目那一条：`value` 是 cordis 解析后的当前值（volatile 字段
-//         已全部折成普通数据），`user` 是 profile 文档里那一层的原文，`revision` 是它的
-//         单调版本号；三者同一次同步读取，天然成对。
-//   写 —— provider 层 `update(ns, patch, expectedRevision)`：带 CAS 的 merge 写，数组键
-//         整片覆盖（mergeLayers 不数组合并），revision 被别处推进过则抛
-//         SettingsConflictError（由 LessonStore 重读重放）。
-// ⚠ 一段一个 revision：设置卡保存开关与规则库提交共用同一枚版本号，撞上了就是一次
-//   conflict → 重读 → 重放（RULES_CAS_RETRY_LIMIT 之内），不是错误而是常态。
+// 读写规则（仅供理解历史端口；生产不再走这条）：
+//   读 —— `describe()` 的 `value`（解析值）、`user`（profile 原文）、`revision` 三者同一次
+//         同步读取，天然成对；
+//   写 —— 端口层 `update(ns, patch, expectedRevision)` 带 CAS。历史文档曾把"宿主以
+//         `Config field "rules" is not volatile` 拒绝写回"写成第一层保险，这已经不作数：
+//         `rules` 已从 Config 整体摘除，它连"非 volatile 的声明字段"都不是，那枚错误不可能
+//         出现。真正拦住回写的是合成面的 `update`（见上）。
 
 import Schema from "@deepseek-ai/schemastery";
 // 规则库读写口绑官方声明（type-only：运行时服务由 ctx 注入，值导入会破坏 host.js 自包含）。

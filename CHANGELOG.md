@@ -2,6 +2,10 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The deviations below are deliberate: version headings carry no release date (publish times are recorded by the registry — `npm view <package> time`), and a release may add sections beyond the standard six, such as `Not changed, deliberately`.
 
+## 0.1.17
+
+会话结算台账与规则读取链的评审修复：台账队列的取走/回滚语义、schema v2 就地迁移、revision 自愈、分批导入与连接释放；ruleDetail 的 400/404/500 分流、证据单条/整页字节上限与可信位、命名空间守卫数据表化、候选卡 cwd。设置卡与门禁行为不变。
+
 ## 0.1.16
 
 宿主基线切到 `dsh 0.2.3-alpha.2`（Node `^24.22.3 || >=26.13.1`），devDependencies 与两份 README 的支持窗口同步；shared 经 catalog 抬到 `^0.2.13`。设置卡随 shared 的 v3 视觉层更新。规则库、默认配置与门禁不变。

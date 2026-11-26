@@ -25,8 +25,70 @@ export const RULES_REMOTE_NAMESPACE = "lessonLoopRules";
  */
 export const RULES_BUNDLE_PACKAGE = "@jayyuen66/dsh-lesson-loop";
 
-/** 人工动作的取值域（宿主侧的白名单校验；名单本身定义在 lib/rules-remote.ts）。 */
+/** 人工动作的取值域（宿主侧的白名单校验；名单本身定义在 lib/rules-remote.ts）。
+ *
+ *  **六枚，不含 `delete`**：这一位同时是宿主对外服务 `LessonLoopService.ruleAction` 的
+ *  动作域（host.ts 的 `RuleActionKind`），把 `delete` 写进来等于让任何拿到该服务的
+ *  兄弟插件都能硬删规则卡。彻底删除只经设置卡这条路，见 {@link RuleRemoteActionName}。 */
 export type RuleActionName = "arm" | "reject" | "demote" | "archive" | "edit" | "revive";
+
+/** 规则读取接口（Typert Remote，设置卡专用）接受的动作域 = 六枚 + `delete`。
+ *
+ *  硬删除是不可恢复的（证据一并消失），只留给人工在卡片上两段式确认，不进宿主服务契约。 */
+export type RuleRemoteActionName = RuleActionName | "delete";
+
+/** 证据时间线的一页（`ruleDetail` 的载荷）。`nextCursor === null` = 没有更多。 */
+export interface RuleDetailReply {
+  readonly ok: true;
+  readonly id: string;
+  readonly evidence: readonly RuleEvidenceView[];
+  readonly nextCursor: number | null;
+}
+
+/** 证据的单条投影：与 `RuleEvidence` 同形（detail 全量，卡片自己折叠展示）。
+ *
+ *  字段名必须与 `lib/lesson-store.ts` 的 `RuleEvidence` 逐字相同：`ruleDetail` 把这个
+ *  数组原样透传下去，写成 `rawSignature` 编译期照样通过（结构可赋值），但线上那份载荷
+ *  永远是 `signature`，按本类型读的消费方恒得 undefined。 */
+export interface RuleEvidenceView {
+  readonly ts: number;
+  readonly source: string;
+  readonly detail: string;
+  /** 折叠成稳定键之前的原始签名；只在确实发生过折叠时才有值。 */
+  readonly signature?: string;
+}
+
+/** 证据时间线默认每页条数。
+ *
+ *  host 的 `config.evidencePageSize` schema（`.min()/.max()/.default()`）与 rules-remote
+ *  的 clamp 都从这里取。20/5/100 曾经在三处各写一遍、注释自称同源实则各自独立——调了
+ *  区间漏改一处，服务端就会把设置卡允许的值悄悄夹回旧区间。 */
+export const EVIDENCE_PAGE_SIZE_DEFAULT = 20;
+/** 页大小合法下限（host schema 与规则服务 clamp 共用）。 */
+export const EVIDENCE_PAGE_SIZE_MIN = 5;
+/** 页大小合法上限（host schema 与规则服务 clamp 共用）。 */
+export const EVIDENCE_PAGE_SIZE_MAX = 100;
+
+/** 证据分页入参：`cursor` 是已取到的条数（0/缺省 = 最新一页）。 */
+export interface RuleDetailRequest {
+  readonly id: string;
+  readonly cursor?: number;
+}
+
+/** 证据分页的失败回执（400 = 参数不合法或缺 id、404 = 规则不存在、500 = 读面出错）。 */
+export interface RuleDetailFailure {
+  readonly ok: false;
+  readonly error: string;
+  readonly status: 400 | 404 | 500;
+}
+
+/** 证据分页的完整回执：成功给一页证据，失败给本地化文案。
+ *
+ *  **客户端必须按这两支读**：宿主的 400/404/500 是**以数据形式**返回的（本包的成功回执
+ *  自带 `ok: true`），网关层不会把它折成 rejected——把 `ruleDetail` 的返回类型写成
+ *  `RuleDetailReply` 会让失败回执以"成功"resolve，`reply.evidence` 得 undefined，
+ *  卡片首屏 `setDetail(undefined)`、加载更多时展开时渲染期抛错。 */
+export type RuleDetailReplyOrFailure = RuleDetailReply | RuleDetailFailure;
 
 /** 规则状态在卡片契约里的取值域。 */
 export type RuleStatusView = "candidate" | "armed" | "demoted" | "rejected" | "archived";
@@ -142,8 +204,9 @@ export type LessonsReply = LessonsResult | ReadRefused;
 export interface RuleActionDone {
   readonly ok: true;
   readonly id: string;
-  /** 回显的动作名：宿主白名单校验通过后才返回，必落 {@link RuleActionName} 取值域。 */
-  readonly action: RuleActionName;
+  /** 回显的动作名：宿主白名单校验通过后才返回，必落 {@link RuleRemoteActionName} 取值域
+   *  （含设置卡专用的 `delete`）。 */
+  readonly action: RuleRemoteActionName;
 }
 
 /** 拒绝回执：`status` 保留旧 HTTP 接口的语义码（400/404/500），卡片只读 `error`。

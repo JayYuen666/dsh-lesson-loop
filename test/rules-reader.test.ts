@@ -17,6 +17,10 @@ function namespaceOf(statsValue: Record<string, unknown>): Record<string, unknow
     rules: async () => ({ ok: true, value: { rules: [] } }),
     lessons: async () => ({ ok: true, value: { lessons: [] } }),
     ruleAction: async () => ({ ok: true, value: { id: "x", action: "arm" } }),
+    ruleDetail: async () => ({
+      ok: true,
+      value: { ok: true, id: "x", evidence: [], nextCursor: null },
+    }),
   };
 }
 
@@ -119,5 +123,34 @@ describe("客户端规则读取接口：$mount 的缓存纪律", () => {
       undefined,
     );
     assert.equal(createRulesReader({ get: () => ({}) }), undefined, "畸形 remote 保守当作没有");
+  });
+
+  it('命名空间少一枚方法 → 抛错并点名缺谁（不是笼统的"未提供"）', async () => {
+    const remote = {
+      $mount: async () => () => {
+        // 撤销器：本用例不关心
+      },
+    };
+    const { ruleDetail: _dropped, ...partial } = namespaceOf({ armed: 1 });
+    const reader = createRulesReader(ctxOf(remote, partial));
+    assert.ok(reader !== undefined);
+    // 五个方法一个都不能少：少一枚就把整条读面判成未提供，且错误文案必须指名道姓，
+    // 否则"网关没挂上"与"挂了但宿主是旧版少一枚"两种情况在日志里长得一样。
+    await assert.rejects(async () => reader.stats(), /缺 ruleDetail/u);
+  });
+
+  it("ruleDetail 的失败回执照原样交回（4xx/5xx 是数据不是异常），由卡片按 ok 分流", async () => {
+    const remote = {
+      $mount: async () => () => {
+        // 撤销器：本用例不关心
+      },
+    };
+    const failure = { ok: false, error: "找不到该规则", status: 404 } as const;
+    const reader = createRulesReader(
+      ctxOf(remote, { ...namespaceOf({}), ruleDetail: async () => ({ ok: true, value: failure }) }),
+    );
+    assert.ok(reader !== undefined);
+    // 收窄成 RuleDetailReply 的旧签名会把这份回执当成功读，evidence 变 undefined。
+    assert.deepEqual(await reader.ruleDetail("ghost"), failure);
   });
 });

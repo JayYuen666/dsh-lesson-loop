@@ -57,11 +57,13 @@ export interface UiMessages {
   readonly fieldCount: string;
   readonly promotionSection: string;
   readonly capacitySection: string;
+  readonly evidenceSection: string;
   /** 数字输入里的单位后缀。 */
   readonly unitTimes: string;
   readonly unitDays: string;
   readonly unitBytes: string;
   readonly unitChars: string;
+  readonly unitRows: string;
   /** 数字输入越界时的就地提示。 */
   readonly outOfRange: string;
   readonly enabledLabel: string;
@@ -88,6 +90,8 @@ export interface UiMessages {
   readonly maxLessonsBytesHint: string;
   readonly maxStatementCharsLabel: string;
   readonly maxStatementCharsHint: string;
+  readonly evidencePageSizeLabel: string;
+  readonly evidencePageSizeHint: string;
 
   // ── 规则评审区 ────────────────────────────────────────────────────────
   /** 分节标题模板（{title} + {count}，中/英的全角半角括号由字典自己定）。 */
@@ -129,6 +133,14 @@ export interface UiMessages {
   readonly btnReject: string;
   readonly btnDismiss: string;
   readonly btnRevive: string;
+  /** 证据时间线的展开按钮与分页。 */
+  readonly btnEvidence: string;
+  readonly btnDelete: string;
+  readonly btnDeleteConfirm: string;
+  readonly evidenceEmpty: string;
+  readonly evidenceMore: string;
+  readonly evidenceUnavailable: string;
+  readonly evidenceFailed: string;
 
   /** 卡片底部：怎么蒸馏新规则。 */
   readonly digestHint: string;
@@ -221,17 +233,19 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     loopSection: "闭环",
     fieldCount: "{count} 字段",
     promotionSection: "晋升与衰减",
-    capacitySection: "容量",
+    capacitySection: "容量与流水",
+    evidenceSection: "证据读取",
     unitTimes: "次",
     unitDays: "天",
     unitBytes: "字节",
     unitChars: "字符",
+    unitRows: "条",
     outOfRange: "超出允许范围，未保存",
     enabledLabel: "启用闭环",
     enabledHint: "关闭后上报被丢弃、不注入、常驻段与 /lessons-digest 一并停用",
     reportEnabledLabel: "教训落盘",
     reportEnabledHint:
-      "danger-guard / quality-gate / session-rescue 的失败事件写入 cache/lesson-loop/events.jsonl 并归并规则卡",
+      "danger-guard / quality-gate / session-rescue 的失败事件写入本地 SQLite 教训流水并归并规则卡",
     injectEnabledLabel: "会话开始注入规则",
     injectEnabledHint:
       "agent/created 时按项目注入 armed 规则全文（agent.inject，不唤醒；子会话跳过）",
@@ -254,11 +268,17 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     decayDaysLabel: "不可判定观察窗口",
     decayDaysHint:
       "armed 超此天数却从未被遵守过 → 卡片标记「不可判定」交人工停用/归档（不再自动归档；复发已达降级门槛同样触发）（1-365，默认 30）",
-    maxLessonsBytesLabel: "events.jsonl 磁盘保险丝",
-    maxLessonsBytesHint: "0 = 不设上限（默认，内容零截断）；硬上限 1 GiB；仅在磁盘需要保护时设置",
+    // 单位不再写进标签：这一格走共享 NumberField 并带 `unit: "unitBytes"`（client-entry
+    // 的 configNumber），两处都写"字节"会在同一行把量纲重复一遍；量纲由 unit 与 hint 各说一次。
+    maxLessonsBytesLabel: "教训流水磁盘上限",
+    maxLessonsBytesHint:
+      "0 = 不设上限（默认，内容零截断）；按 UTF-8 字节计，硬上限 1 GiB；仅在磁盘需要保护时设置",
     maxStatementCharsLabel: "规则正文上限",
     maxStatementCharsHint:
       "arm/edit 时生效正文的字符上限（按 UTF-16 码元计；1-100000，默认 4000）；超限的写入被拒，已落库的正文不受影响",
+    evidencePageSizeLabel: "证据时间线每页条数",
+    evidencePageSizeHint:
+      "展开一条规则的证据时每次取多少条（5-100，默认 20）；只影响读取分页，证据本身全量落库",
 
     sectionHeading: "{title}（{count}）",
     sectionCandidates: "待确认候选（人工升格）",
@@ -287,6 +307,13 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     btnReject: "拒绝",
     btnDismiss: "不采纳",
     btnRevive: "重新候选",
+    btnEvidence: "证据",
+    btnDelete: "彻底删除",
+    btnDeleteConfirm: "确认彻底删除",
+    evidenceEmpty: "还没有现场证据",
+    evidenceMore: "加载更多",
+    evidenceUnavailable: "当前部署没有规则读取通道",
+    evidenceFailed: "证据读取失败，请重试",
 
     digestHint: "蒸馏新规则：会话内运行 /lessons-digest（把本会话人工差评归纳为候选规则）。",
   },
@@ -314,18 +341,20 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     loopSection: "Loop",
     fieldCount: "{count} fields",
     promotionSection: "Promotion and decay",
-    capacitySection: "Capacity",
+    capacitySection: "Capacity and event stream",
+    evidenceSection: "Evidence reading",
     unitTimes: "times",
     unitDays: "days",
     unitBytes: "bytes",
     unitChars: "characters",
+    unitRows: "rows",
     outOfRange: "Out of the allowed range — not saved",
     enabledLabel: "Enable the loop",
     enabledHint:
       "When off: reports are dropped, nothing is injected, the standing prompt section and /lessons-digest are both disabled",
     reportEnabledLabel: "Persist lessons",
     reportEnabledHint:
-      "Failure events from danger-guard / quality-gate / session-rescue are written into cache/lesson-loop/events.jsonl and merged into rule cards",
+      "Failure events from danger-guard / quality-gate / session-rescue are written into the local SQLite lesson stream and merged into rule cards",
     injectEnabledLabel: "Inject rules at session start",
     injectEnabledHint:
       "injects full armed rules per project on agent/created (agent.inject, without waking the driver; subagent sessions are skipped)",
@@ -350,12 +379,16 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     decayDaysLabel: "Undeterminable observation window",
     decayDaysHint:
       "Armed longer than this with never a follow-through marks the card as undeterminable for a human to disable/archive (no more silent archiving; reaching the violation threshold triggers it too) (1-365, default 30)",
-    maxLessonsBytesLabel: "events.jsonl disk fuse",
+    // 同 zh：量纲交给 `unit: "unitBytes"` 与 hint 各说一次，标签本身不再重复"bytes"。
+    maxLessonsBytesLabel: "Lesson stream disk limit",
     maxLessonsBytesHint:
-      "0 = no cap (default, content never truncated); hard cap 1 GiB; set only to protect the disk",
+      "0 = no cap (default, content never truncated); measured in UTF-8 bytes, hard cap 1 GiB; set only to protect the disk",
     maxStatementCharsLabel: "Rule statement length limit",
     maxStatementCharsHint:
       "Character limit for an armed rule statement on arm/edit (UTF-16 units; 1-100000, default 4000); longer writes are refused, stored statements are unaffected",
+    evidencePageSizeLabel: "Evidence timeline page size",
+    evidencePageSizeHint:
+      'How many evidence rows each "load more" fetches (5-100, default 20); affects paging only, evidence is stored in full',
 
     sectionHeading: "{title} ({count})",
     sectionCandidates: "Pending candidates (human promotion)",
@@ -386,6 +419,13 @@ export const UI_MESSAGES: MessagesCatalog<UiMessages> = {
     btnReject: "Reject",
     btnDismiss: "Dismiss",
     btnRevive: "Back to candidates",
+    btnEvidence: "Evidence",
+    btnDelete: "Delete permanently",
+    btnDeleteConfirm: "Confirm permanent delete",
+    evidenceEmpty: "No on-site evidence yet",
+    evidenceMore: "Load more",
+    evidenceUnavailable: "This deployment has no rule read channel",
+    evidenceFailed: "Evidence request failed — retry",
 
     digestHint:
       "To distil new rules: run /lessons-digest inside a session (it turns this session's negative feedback into candidate rules).",

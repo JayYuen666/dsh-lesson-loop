@@ -19,6 +19,12 @@ export default definePluginConfig({
     { files: ["lib/jsonl-fuse.ts"], apis: FUSE_SYNC_WRITES },
     // lib/lesson-jsonl.ts 只用到 mkdirSync（目录补建）；appendFileSync 已收进 fuse 层。
     { files: ["lib/lesson-jsonl.ts"], apis: ["mkdirSync"] },
+    // lib/lesson-db.ts：SQLite 的 DatabaseSync 端口本身就是同步的，开库时补建 data/ 目录
+    // 与收紧库文件权限只能用 mkdirSync/chmodSync（异步化会把"开库前目录就位"变成竞态）。
+    { files: ["lib/lesson-db.ts"], apis: ["mkdirSync", "chmodSync"] },
+    // lib/db-migration.ts：迁移与 SQLite 写同一口径同步完成（save 的 Promise 只是端口外壳），
+    // 流水导入后改名 .bak 也只能是同步的，否则"搬完再改名"会读到正在写的文件。
+    { files: ["lib/db-migration.ts"], apis: ["renameSync"] },
     // 仅测试用：用例在临时目录里造夹具（mkdtempSync）、把锁文件 mtime 做旧驱动
     // 「陈旧锁接管」分支（utimesSync）、门禁的源码收集按 lstatSync 跳过软链。
     // 生产代码不豁免 —— lib/、src/、host.ts 再出现这些调用会被 lint 拦下。

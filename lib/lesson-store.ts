@@ -32,6 +32,7 @@ import { randomUUID } from "node:crypto";
 import { deriveProjectKey } from "@jayyuen66/dsh-plugin-shared/lib/project-key";
 import type { LessonLoopMessages } from "./messages.ts";
 import { fieldOf, isRecord } from "@jayyuen66/dsh-plugin-shared/lib/record";
+import type { RuleActionName } from "./rules-shape.ts";
 // 事件流水的写到磁配置内容（追加/读取/磁盘保险丝）在 lib/lesson-jsonl.ts：这一层的失败纪律是"只日志、
 // 不抛穿热路径"，与本文件的规则库 CAS 回执是两件事，因此分家。
 import { appendJsonl, readJsonl } from "./lesson-jsonl.ts";
@@ -369,6 +370,7 @@ export type RuleActionResult =
   | "persist-failed"
   | "invalid-statement"
   | "statement-too-long"
+  | "invalid-status"
   | "unchanged";
 
 // ── 规则库端口（settings 命名空间的读写入；实现在 lib/rules-namespace.ts）────
@@ -397,8 +399,26 @@ export type RulesWriteOutcome = "persisted" | "conflict" | "rejected";
 export interface RulesRepository {
   /** 读这一刻的库（同步：provider 的 describe() 就是同步快照）。 */
   readonly load: () => RulesRead;
-  /** 带 revision 的 CAS 整片写；回执见 RulesWriteOutcome。 */
-  readonly save: (cards: readonly RuleCard[], revision: number) => Promise<RulesWriteOutcome>;
+  /**
+   * 带 revision 的 CAS 整片写；回执见 RulesWriteOutcome。
+   *
+   * `onPersisted` 是 SQLite 端口的**同事务落定钩子**：会话清算把台账打标放进来，
+   * 规则计数与 `settled_at` 要么一起提交、要么一起回滚。其它端口可忽略；
+   * 只有真正走到 COMMIT 前才会调用，conflict/rejected 不调用。
+   */
+  readonly save: (
+    cards: readonly RuleCard[],
+    revision: number,
+    onPersisted?: () => void,
+  ) => Promise<RulesWriteOutcome>;
+}
+
+/** 教训流水的读写端口：文件 JSONL（旧介质）与 SQLite（新介质）两种实现。
+ *  读侧返回**已归一**的教训（坏行由实现自己跳过），与旧 `recentLessons` 逐条同语义。 */
+export interface LessonsLog {
+  readonly append: (record: LessonRecord, maxBytes: number) => void;
+  readonly recent: (project?: string, limit?: number) => LessonRecord[];
+  readonly count: () => number;
 }
 
 /** 蒸馏补录（addCandidate）的回执：卡（计划态）+ **它是否真的落库**。
@@ -430,8 +450,10 @@ export const DEFAULT_MAX_STATEMENT_CHARS = 4000;
 const MAX_STATEMENT_CHARS_CAP = 100_000;
 
 export interface StoreOptions {
-  /** 事件流水 JSONL（官方 cache 目录下；单写者追加）。 */
+  /** 事件流水 JSONL（旧介质；`lessons` 缺省时才用）。 */
   lessonsFile: string;
+  /** 教训流水端口；给定即优先于 {@link lessonsFile}（SQLite 实现在 lib/lesson-db.ts）。 */
+  lessons?: LessonsLog;
   /** 规则库端口（设置命名空间 `lesson-loop` 的 `rules` 数组）。 */
   rules: RulesRepository;
   /**
@@ -660,7 +682,7 @@ export function normalizeRuleCardRow(value: unknown): RuleCard | null {
  * 之外的字段漂移不再整行丢弃，否则一次版本升级就把历史教训从管理界面与蒸馏背景
  * 里抹掉（丢掉的正是要拿去归纳规则的材料）。
  */
-function normalizeLessonRow(value: unknown): LessonRecord | null {
+export function normalizeLessonRow(value: unknown): LessonRecord | null {
   const category = fieldOf(value, "category");
   const signature = fieldOf(value, "signature");
   if (typeof category !== "string" || typeof signature !== "string") {
@@ -792,6 +814,20 @@ function trimmedStatement(statement: string | undefined): string | undefined {
 }
 
 /**
+ * store 内部接受的动作集合：`RuleActionName` 的六枚 + `delete`。
+ * 远端白名单（lib/rules-remote.ts 的 ALLOWED_ACTIONS）与卡片按钮都按 `RuleActionName` 走，
+ * 两者是同一份取值域的两端；`delete` 只在这里与远端白名单里出现，宿主对外服务
+ * `LessonLoopService.ruleAction` 的动作域仍是六枚（见 lib/rules-shape.ts 的
+ * `RuleRemoteActionName`）——硬删除只能从设置卡发起。
+ */
+export type RuleActionNameInternal = RuleActionName | "delete";
+
+/** 人工动作的"缺正文"信号（字面量在返回类型与两处 return 之间共用，不散写）。 */
+const ACTION_NO_STATEMENT = "no-statement" as const;
+/** 人工动作的"正文超长"信号（同上）。 */
+const ACTION_TOO_LONG = "too-long" as const;
+
+/**
  * 人工动作落地。返回动作有没有真的改了卡：
  * - "changed"：状态/正文/计数有实际变化，updatedAt 推进到 now，写盘。
  * - "no-statement"：arm/edit 需要非空正文而拿不到（缺省、空白）。空正文的规则一旦
@@ -806,11 +842,6 @@ function trimmedStatement(statement: string | undefined): string | undefined {
  * arm 会清零历史度量：复发/干净/暴露三项计数属于**那一次升格**的生命周期，带着旧值
  * 进新一轮会让降级裁决读到混合证据。
  */
-/** 人工动作的"缺正文"信号（字面量在返回类型与两处 return 之间共用，不散写）。 */
-const ACTION_NO_STATEMENT = "no-statement" as const;
-/** 人工动作的"正文超长"信号（同上）。 */
-const ACTION_TOO_LONG = "too-long" as const;
-
 function applyRuleAction(
   rule: RuleCard,
   action: "arm" | "reject" | "demote" | "archive" | "edit" | "revive",
@@ -890,6 +921,83 @@ function dropCards(cards: RuleCard[], doomed: ReadonlySet<string>): void {
   }
 }
 
+/** 人工动作的两种终态（字面量在多处共用，散写会被重复字面量规则判红）。 */
+const OUTCOME_NOT_FOUND = "not-found";
+const OUTCOME_PERSIST_FAILED = "persist-failed";
+
+/** 非删除动作的计划值域（applyRuleAction 的三个 no-* 各自对应一种调用方语义）。 */
+type ActionPlan = "changed" | "missing" | "no-statement" | "too-long" | "no-change";
+
+/** 一次人工动作的入参（凑成对象是为了不让参数表随判据增长）。 */
+interface ActionRequest {
+  readonly id: string;
+  readonly action: Exclude<RuleActionNameInternal, "delete">;
+  readonly statement?: string | undefined;
+  readonly now: number;
+  readonly maxChars: number;
+}
+
+/** 在 commit 的工作数组上做一次人工动作：只有 changed 才写盘（两个 no-* 是"库未动"）。 */
+function planAction(cards: RuleCard[], request: ActionRequest): Planned<ActionPlan> {
+  const rule = cards.find((row) => row.id === request.id);
+  if (rule === undefined) {
+    return { value: "missing", write: false };
+  }
+  const applied = applyRuleAction(
+    rule,
+    request.action,
+    request.statement,
+    request.now,
+    request.maxChars,
+  );
+  return applied === "changed"
+    ? { value: "changed", write: true }
+    : { value: applied, write: false };
+}
+
+/** 计划 → 回执：missing 的可信度决定"确实没有"还是"读不懂"，其余按值直译。 */
+function outcomeOf(planned: Committed<ActionPlan>): RuleActionResult {
+  switch (planned.value) {
+    case "missing": {
+      return planned.trustworthy ? OUTCOME_NOT_FOUND : OUTCOME_PERSIST_FAILED;
+    }
+    case "no-statement": {
+      return "invalid-statement";
+    }
+    case "too-long": {
+      return "statement-too-long";
+    }
+    case "no-change": {
+      return "unchanged";
+    }
+    case "changed": {
+      return planned.ok ? "persisted" : OUTCOME_PERSIST_FAILED;
+    }
+    /* v8 ignore next —— 值域已在此闭合：新增 ActionPlan 成员时 switch-exhaustiveness 会先报红，这一支不可构造 */
+    default: {
+      throw new Error(`[lesson-loop] unhandled action plan: ${String(planned.value)}`);
+    }
+  }
+}
+
+/** 彻底删除这一支的计划结果（与其它动作的值域分开取名，避免与 "missing" 混读）。 */
+const DELETE_MISSING = "delete-missing";
+const DELETE_FORBIDDEN = "delete-forbidden";
+type DeletePlan = typeof DELETE_MISSING | typeof DELETE_FORBIDDEN | "changed";
+
+/** 删除计划：只对已归档/已拒绝的卡放行（候选/已升格先归档再删，避免误点抹掉判决证据）。 */
+function planDelete(cards: RuleCard[], id: string): Planned<DeletePlan> {
+  const rule = cards.find((row) => row.id === id);
+  if (rule === undefined) {
+    return { value: DELETE_MISSING, write: false };
+  }
+  if (rule.status !== "archived" && rule.status !== "rejected") {
+    return { value: DELETE_FORBIDDEN, write: false };
+  }
+  dropCards(cards, new Set([id]));
+  return { value: "changed", write: true };
+}
+
 /** 同 (project, category, signature) 键命中。 */
 function findByKey(cards: readonly RuleCard[], key: string): RuleCard | undefined {
   return cards.find((row) => ruleKey(row.project, row.category, row.signature) === key);
@@ -920,6 +1028,7 @@ const CLEAN_PASS: MergePass = { merged: 0, dirty: false };
 export class LessonStore {
   private readonly opts: StoreOptions & Required<Pick<StoreOptions, "lessonsFile" | "rules">>;
   private readonly repo: RulesRepository;
+  private readonly lessonsLog: LessonsLog;
   private readonly now: () => number;
   /** 上一次 report 的「流水已写、规则库没写成」记号（见 report 的注释）。
    *  只活到下一次 report 成功或换了一条教训为止：它是**一次失败重试**的去重，
@@ -930,6 +1039,32 @@ export class LessonStore {
     this.opts = opts;
     this.repo = opts.rules;
     this.now = opts.now ?? Date.now;
+    // 文件介质（旧 JSONL）的实现留在这里：端口只有三位，读侧归一规则仍只此一份。
+    const file = opts.lessonsFile;
+    this.lessonsLog = opts.lessons ?? {
+      append: (record, maxBytes): void => {
+        appendJsonl(file, record, maxBytes);
+      },
+      recent: (project, limit = 0): LessonRecord[] => {
+        const out: LessonRecord[] = [];
+        for (const row of readJsonl(file)) {
+          const lesson = normalizeLessonRow(row);
+          if (lesson !== null && (project === undefined || lesson.project === project)) {
+            out.push(lesson);
+          }
+        }
+        return limit > 0 ? out.slice(-limit) : out;
+      },
+      count: (): number => {
+        let count = 0;
+        for (const row of readJsonl(file)) {
+          if (normalizeLessonRow(row) !== null) {
+            count += 1;
+          }
+        }
+        return count;
+      },
+    };
   }
 
   /** 磁盘保险丝（settings 运行时可调；0 = 不设上限）。**这个字段唯一的写入归一口**：
@@ -1031,6 +1166,7 @@ export class LessonStore {
    */
   private async commit<Value>(
     plan: (cards: RuleCard[]) => Planned<Value>,
+    onPersisted?: () => void,
   ): Promise<Committed<Value>> {
     // 递归而非 for + await：CAS 重放本质是"一次写一等"，循环里的 await 会被 lint 判为
     // 该并发（并发不了：同一端口上两笔整片覆写只会互相撞 revision）。
@@ -1050,7 +1186,7 @@ export class LessonStore {
         // "库里真没有"再覆写上去，等于替坏数据背书——坏内容保持原样等人修，读取接口已如实报空。
         return { ok: false, value: planned.value, trustworthy };
       }
-      const outcome = await this.repo.save(cards, current.revision);
+      const outcome = await this.repo.save(cards, current.revision, onPersisted);
       if (outcome === "persisted") {
         return { ok: true, value: planned.value, trustworthy };
       }
@@ -1111,7 +1247,7 @@ export class LessonStore {
     const ledgerKey = lessonLedgerKey(rec);
     const alreadyAppended = ledgerKey === this.pendingLedgerKey;
     if (!alreadyAppended) {
-      appendJsonl(this.opts.lessonsFile, rec, this.opts.maxLessonsBytes ?? 0);
+      this.lessonsLog.append(rec, this.opts.maxLessonsBytes ?? 0);
     }
     const obs = observeLesson(rec, now);
     const key = ruleKey(rec.project, rec.category, obs.signature);
@@ -1293,14 +1429,16 @@ export class LessonStore {
    * 据此保留重试边（ lesson-store 的宿主接线靠它决定要不要还原清算标记与台账条目）。
    *
    * @param countExposure 首个 dispose 边计暴露；resume 出来的重复边只结算 suppressed。
+   * @param onPersisted 同事务落定钩子：只在本次真的写到磁盘前调用（见 RulesRepository.save）；
+   *   没有写入时由调用方在返回 true 后自行落定。
    */
   public async sessionEnded(
     project: string,
     violatedRuleIds: ReadonlySet<string>,
     passedRuleIds: ReadonlySet<string>,
-    sessionId?: string,
-    countExposure = true,
+    ...tail: [sessionId?: string, countExposure?: boolean, onPersisted?: () => void]
   ): Promise<boolean> {
+    const [sessionId, countExposure = true, onPersisted] = tail;
     const now = this.now();
     const outcome = await this.commit((cards): Planned<boolean> => {
       let dirty = false;
@@ -1324,7 +1462,7 @@ export class LessonStore {
         }
       }
       return { value: dirty, write: dirty };
-    });
+    }, onPersisted);
     // 汇报"已清算"只在**真的写进库**之后：没存住（CAS 耗尽/端口拒写/读不懂）时
     // samples/suppressed 在盘上一格没动，回执 false 让调用方保留重试边。
     if (outcome.value && !outcome.ok) {
@@ -1362,6 +1500,42 @@ export class LessonStore {
     return this.workingCards();
   }
 
+  /**
+   * 规则库这一刻读得出可信值吗（`usable:false` = 库里有读不懂的行，或 provider 缺位）。
+   *
+   * 为什么要把这一位暴露出来：`rules()` 在不可信读下退**空数组**（见 `workingCards`），
+   * 于是"库读不懂"与"库里真没有这张卡"在调用方眼里同形。读取接口据此把前者回 500、
+   * 后者回 404——把两者混成 404，用户看到的是"规则不见了"，而真实原因是读面坏了。
+   */
+  public rulesReadable(): boolean {
+    return this.repo.load().usable;
+  }
+
+  /**
+   * 单卡证据分页（卡片「证据时间线」用）：`cursor` 是已经发出去的条数，0/负数从最新一条
+   * 开始。返回的是**倒序**（最新在前）这一页，`nextCursor` 为 null 表示没有更多。
+   *
+   * 证据不再在写侧截断（SQLite 里是全量），故读取必须分页：一条教训的 detail 可能是整段
+   * 工具输出，把整份证据一次性序列化过网关，正是旧 `ruleViewOf` 刻意剔除 evidence 的理由。
+   * 找不到 id 时回 `null`（调用方按 404 处理）。
+   */
+  public ruleDetail(
+    id: string,
+    cursor: number,
+    pageSize: number,
+  ): { evidence: RuleEvidence[]; nextCursor: number | null } | null {
+    const rule = this.rules().find((row) => row.id === id);
+    if (rule === undefined) {
+      return null;
+    }
+    const newestFirst = rule.evidence.toReversed();
+    const start = Number.isInteger(cursor) && cursor > 0 ? cursor : 0;
+    const size = Math.max(0, pageSize);
+    const page = newestFirst.slice(start, start + size);
+    const end = start + page.length;
+    return { evidence: page, nextCursor: end < newestFirst.length ? end : null };
+  }
+
   /** 人工动作：arm（可携改写后的 statement）/ reject / demote / archive / edit / revive。
    *  返回 not-found = 可信读取接口上确实无此卡（id 错了，重试也没用）；persist-failed = 这一次
    *  没存住（含端口读不懂的那种），调用方提示重试，绝不当成"规则不存在"；
@@ -1369,47 +1543,40 @@ export class LessonStore {
    *  超过 maxStatementChars（库同样没动）；unchanged = 请求的终态本就成立。 */
   public async ruleAction(
     id: string,
-    action: "arm" | "reject" | "demote" | "archive" | "edit" | "revive",
+    action: RuleActionNameInternal,
     statement?: string,
   ): Promise<RuleActionResult> {
-    const outcome = await this.commit(
-      (cards): Planned<"changed" | "missing" | "no-statement" | "too-long" | "no-change"> => {
-        const rule = cards.find((row) => row.id === id);
-        if (rule === undefined) {
-          return { value: "missing", write: false };
-        }
-        const applied = applyRuleAction(
-          rule,
-          action,
-          statement,
-          this.now(),
-          this.maxStatementChars(),
-        );
-        // 两个 no-* 都不写盘：no-statement 是动作被拒（调用方回 400），no-change 是
-        // 请求的终态（正文 = 这段文字）本就成立——落一盘只改 updatedAt 的 CAS 覆写
-        // 没有语义。
-        return applied === "changed"
-          ? { value: "changed", write: true }
-          : { value: applied, write: false };
-      },
+    // 彻底删除与其它动作不同：它要**移除整张卡**，而 applyRuleAction 只改字段。删除只对
+    // 已经被人归档/拒绝的卡开放——候选/已升格的卡先归档再删，避免一次误点抹掉判决证据。
+    if (action === "delete") {
+      const deleted = await this.commit((cards): Planned<DeletePlan> => planDelete(cards, id));
+      if (deleted.value === DELETE_MISSING) {
+        return deleted.trustworthy ? OUTCOME_NOT_FOUND : OUTCOME_PERSIST_FAILED;
+      }
+      if (deleted.value === DELETE_FORBIDDEN) {
+        return "invalid-status";
+      }
+      return deleted.ok ? "persisted" : OUTCOME_PERSIST_FAILED;
+    }
+    const outcome = await this.commit((cards): Planned<ActionPlan> =>
+      planAction(cards, {
+        id,
+        action,
+        statement,
+        now: this.now(),
+        maxChars: this.maxStatementChars(),
+      }),
     );
-    if (outcome.value === "missing") {
-      return outcome.trustworthy ? "not-found" : "persist-failed";
-    }
-    if (outcome.value === "no-statement") {
-      return "invalid-statement";
-    }
-    if (outcome.value === "too-long") {
-      return "statement-too-long";
-    }
-    if (outcome.value === "no-change") {
-      return "unchanged";
-    }
-    return outcome.ok ? "persisted" : "persist-failed";
+    return outcomeOf(outcome);
   }
 
   /** /lessons-digest 与卡片手工补录直接建候选（origin 标记来源）。
-   *  键与 report() 同源：蒸馏出来的路径型签名同样折叠，否则机器建卡又会开一批碎片。 */
+   *  键与 report() 同源：蒸馏出来的路径型签名同样折叠，否则机器建卡又会开一批碎片。
+   *
+   *  `cwd` 与 report() 的那一位同义（会话当前工作目录，见 RuleCard.cwd）：蒸馏出来的候选
+   *  若不带它，卡片一旦进库就永远无法被项目归属判据认出——注入面按会话 cwd 归属项目规则，
+   *  缺 cwd 的卡只能靠 project 字符串猜，而 project 是派生值、会随目录别名分叉
+   *  （migrateProjectKeys 也因此跳过无 cwd 的卡）。 */
   public async addCandidate(input: {
     project: string;
     category: string;
@@ -1417,12 +1584,14 @@ export class LessonStore {
     statement: string;
     detail: string;
     source?: string;
+    cwd?: string;
   }): Promise<CandidateReceipt> {
     const now = this.now();
     const rawSignature = normalizeSignature(input.signature);
     const signature = stableSignatureFor(input.category, rawSignature);
     const raw = input.source ?? LESSONS_DIGEST_SOURCE;
     const source = noteSourceFallback(raw, normalizeLessonSource(raw));
+    const cwd = nonEmptyString(input.cwd);
     const key = ruleKey(input.project, input.category, signature);
     const outcome = await this.commit((cards) => {
       const existing = findByKey(cards, key);
@@ -1435,6 +1604,12 @@ export class LessonStore {
         // capEvidence 只留最近几条（见 lib/rules-layout.ts），而蒸馏正文是模型产出——
         // 模型连报几条同键条目就能把人工卡此前的真实证据整批挤出，且状态与计数一格不动，
         // 任何日志都不会发现。想留下这一笔，就在人审时自己写进卡片正文。
+        // cwd 是唯一对非候选卡也写的位：它是归属信息、不是蒸馏证据，补上只增不减内容，
+        // 而且不补就永远补不上（同一张卡之后仍会命中这一支）。
+        const filledCwd = cwd !== undefined && existing.cwd === undefined;
+        if (filledCwd) {
+          existing.cwd = cwd;
+        }
         if (existing.status === "candidate") {
           existing.evidence.push(evidenceRow(now, source, input.detail, rawSignature, signature));
           existing.occurrences += 1;
@@ -1442,9 +1617,10 @@ export class LessonStore {
           existing.lastSeenAt = now;
           return { value: existing, write: true };
         }
-        // 非候选命中一格未动：写一笔只改 updatedAt 的整片 CAS 覆盖，会把"最后一次
-        // 人工动作时间"污染成一次蒸馏摸过的时刻，还触发无意义的全库写。
-        return { value: existing, write: false };
+        // 非候选命中其余格未动：写一笔只改 updatedAt 的整片 CAS 覆盖，会把"最后一次
+        // 人工动作时间"污染成一次蒸馏摸过的时刻，还触发无意义的全库写。补 cwd 那一笔例外
+        // ——它必须落盘，所以 write 跟随 filledCwd，且刻意不动 updatedAt。
+        return { value: existing, write: filledCwd };
       }
       const card = newRuleCard({
         project: input.project,
@@ -1455,6 +1631,7 @@ export class LessonStore {
         source,
         lastSeenAt: now,
         evidence: evidenceRow(now, source, input.detail, rawSignature, signature),
+        ...(cwd === undefined ? {} : { cwd }),
         now,
       });
       cards.push(card);
@@ -1891,26 +2068,13 @@ export class LessonStore {
 
   /** 近期教训（project 过滤可选；limit ≤ 0 = 全量——内容零截断）。 */
   public recentLessons(project?: string, limit = 0): LessonRecord[] {
-    const out: LessonRecord[] = [];
-    for (const row of readJsonl(this.opts.lessonsFile)) {
-      const lesson = normalizeLessonRow(row);
-      if (lesson !== null && (project === undefined || lesson.project === project)) {
-        out.push(lesson);
-      }
-    }
-    return limit > 0 ? out.slice(-limit) : out;
+    return this.lessonsLog.recent(project, limit);
   }
 
   /** 有效教训数：与 recentLessons 同一归一规则（normalizeLessonRow 过滤后的条数），
    *  而不是 JSONL 原始行数——原始行数把"可解析但 category 漂移"之类读侧会兜底/丢弃的
    *  行也计进去，界面的"计数"会大于"列表全量长度"，两个数字对不上。 */
   public lessonsCount(): number {
-    let count = 0;
-    for (const row of readJsonl(this.opts.lessonsFile)) {
-      if (normalizeLessonRow(row) !== null) {
-        count += 1;
-      }
-    }
-    return count;
+    return this.lessonsLog.count();
   }
 }

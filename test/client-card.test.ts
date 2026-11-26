@@ -22,6 +22,7 @@ import { createElement } from "react";
 import {
   apply,
   buildCapacitySection,
+  buildEvidenceSection,
   buildLoopSection,
   buildPromotionSection,
   inject,
@@ -233,6 +234,7 @@ function configRows(translator: Translate): RowView[] {
     buildLoopSection(inputs),
     buildPromotionSection(inputs),
     buildCapacitySection(inputs),
+    buildEvidenceSection(inputs),
   ];
   const out: RowView[] = [];
   for (const section of sections) {
@@ -258,10 +260,11 @@ const CONFIG_FIELDS = [
   "decayDays",
   "maxLessonsBytes",
   "maxStatementChars",
+  "evidencePageSize",
 ];
 
 describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置表）", () => {
-  it("12 个设置字段各有 label/hint，且取自字典（中文与迁移前逐字一致）", () => {
+  it("13 个设置字段各有 label/hint，且取自字典（中文与迁移前逐字一致）", () => {
     const rows = configRows(tZh);
     assert.deepEqual(
       rows.map((item) => item.field),
@@ -270,9 +273,9 @@ describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置
     assert.equal(rows[0]?.label, "启用闭环");
     assert.equal(rows[4]?.label, "候选升格门槛");
     assert.match(rows[0]?.hint ?? "", /\/lessons-digest/u);
-    // 写到磁盘串钉在**真实流水路径**上：host 写的是 cache/lesson-loop/events.jsonl
-    // （host.ts 的 `lessonsFile: cacheFile("events.jsonl")`），旧串 metrics/lessons.jsonl 那个文件根本不存在。
-    assert.match(rows[1]?.hint ?? "", /cache\/lesson-loop\/events\.jsonl/u);
+    // 主介质已迁到 SQLite：写盘串不能再把旧的 events.jsonl 当成当前目标。
+    assert.match(rows[1]?.hint ?? "", /本地 SQLite 教训流水/u);
+    assert.equal(rows[12]?.label, "证据时间线每页条数", "新增的页大小字段必须真的上卡");
     for (const item of rows) {
       assert.notEqual(item.label, "");
       assert.notEqual(item.hint, "");
@@ -286,13 +289,15 @@ describe("配置行文案（settings 命名空间 lesson-loop 的运行时配置
       CONFIG_FIELDS,
     );
     assert.equal(rows[0]?.label, "Enable the loop");
-    // 同一件事的英文侧：换语言不许把路径换掉。
-    assert.match(rows[1]?.hint ?? "", /cache\/lesson-loop\/events\.jsonl/u);
-    // 保险丝钉的是**流水文件当前那个名字**：host 写的是 cache/lesson-loop/events.jsonl
-    // （host.ts 的 `lessonsFile: cacheFile("events.jsonl")`），旧的
-    // metrics/lessons.jsonl 已不存在，串还写着它就是卡片文案在承诺一段没人写的数据。
-    // 精确等号（不是 includes）＝字典一改这里就红，逼着两处一起对齐。
-    assert.equal(rows[10]?.label, "events.jsonl disk fuse");
+    // 同一件事的英文侧：主介质已迁到 SQLite，文案不许再把旧 events.jsonl 当写盘目标。
+    assert.match(rows[1]?.hint ?? "", /local SQLite lesson stream/u);
+    // 容量字段的标签必须说"教训流水"，不能再指向已退役的 events.jsonl；精确等号（不是
+    // includes）＝字典一改这里就红，逼着两处一起对齐。**量纲不在标签里**：这一格同时带
+    // `unit: "unitBytes"`，共享 NumberField 会在输入框右侧另起一枚 `dsu-unit` 画单位，
+    // 标签再写一遍 "(bytes)" 就是同一行把量纲重复两次。
+    assert.equal(rows[10]?.label, "Lesson stream disk limit");
+    assert.match(rows[10]?.hint ?? "", /UTF-8 bytes/u, "量纲由 hint 与 unit 各说一次");
+    assert.equal(rows[12]?.label, "Evidence timeline page size", "英文侧同一字段不残留中文");
     for (const item of rows) {
       assert.doesNotMatch(item.label, HAN, `${item.field} 标题混进中文`);
       assert.doesNotMatch(item.hint, HAN, `${item.field} 说明混进中文`);
@@ -417,6 +422,7 @@ const fakeRulesRemote = {
   rules: async () => ({ ok: true, rules: [] }),
   lessons: async () => ({ ok: true, count: 0, lessons: [] }),
   ruleAction: async () => ({ ok: true, id: "x", action: "arm" }),
+  ruleDetail: async () => ({ ok: true, id: "x", evidence: [], nextCursor: null }),
 } as never;
 
 function ruleText(translator: Translate, row: RuleCardView): string {
@@ -587,7 +593,7 @@ describe("apply 接线：两语字典注册与 translator 下发", () => {
       // 时为 undefined），照官方形状给，不再自造三位小快照。
       getSnapshot: (): ConfigFormSnapshot<Record<string, unknown>> => ({
         status: "ready",
-        value: { enabled: true },
+        value: { enabled: true, evidencePageSize: 20 },
         base: {},
         user: { enabled: true },
         revision: 3,

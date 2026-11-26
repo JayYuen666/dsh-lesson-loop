@@ -62,6 +62,9 @@ import {
 } from "./rules-fake.ts";
 import type { RulesFacet } from "./rules-fake.ts";
 
+/** 持久化回执 `persist-failed` 的字面量（三处断言共用，免得撞 no-duplicate-string）。 */
+const OUTCOME_PERSIST_FAILED = "persist-failed";
+
 // 重复出现的 fixture 值在此单点定义，避免同一字面量散落各处（改一处即全库生效）。
 const PROJECT_KEY_FIXTURE = "p-1234abcd";
 const PROJECT_KEY_WUKIL = "wukil-a58d36fe";
@@ -1404,6 +1407,56 @@ describe("lesson-store：台账、规则库与度量", () => {
       });
       assert.equal(candidate.card.origin, SOURCE_LESSONS_DIGEST);
     });
+
+    it("新建卡带上 cwd；命中已有卡时把缺席的 cwd 补上（非候选卡也补，且不动 updatedAt）", async () => {
+      // 蒸馏出来的卡必须能被项目归属判据认出：注入面按会话 cwd 归属规则，缺 cwd 的卡
+      // 只能靠 project 字符串猜（派生值，会随目录别名分叉）。
+      const store = makeStore();
+      const fresh = await store.addCandidate({
+        project: "p",
+        category: "c",
+        signature: "s",
+        statement: "st",
+        detail: "d",
+        cwd: CANON_CWD,
+      });
+      assert.equal(fresh.card.cwd, CANON_CWD, "新建卡落 cwd");
+
+      // 非候选卡（人工 reject 过）：cwd 是归属信息、不是蒸馏证据，补上只增不减内容；
+      // 这一笔必须落盘，但**不许**把 updatedAt 污染成"蒸馏摸过的时刻"。
+      // 类别刻意用表外类别（表内类别会把签名折叠到稳定键，同键判据就走不到了）。
+      seedRules([diskRow({ id: "kept", category: "c", signature: "s2", status: "rejected" })]);
+      const rejectedBefore = ruleById(makeStore(), "kept");
+      const bumped = await makeStore().addCandidate({
+        project: PROJECT_KEY_FIXTURE,
+        category: "c",
+        signature: "s2",
+        statement: "蒸馏正文不许改人工卡",
+        detail: "d",
+        cwd: CANON_CWD,
+      });
+      assert.equal(bumped.card.cwd, CANON_CWD, "非候选卡也补 cwd");
+      assert.equal(bumped.persisted, true, "补 cwd 那一笔必须真的落盘");
+      assert.equal(bumped.card.statement, rejectedBefore?.statement, "人工正文不被蒸馏改写");
+      assert.equal(bumped.card.updatedAt, rejectedBefore?.updatedAt, "只补 cwd 时不动人工动作时间");
+      assert.equal(
+        bumped.card.evidence.length,
+        rejectedBefore?.evidence.length,
+        "非候选卡不收蒸馏证据",
+      );
+    });
+  });
+
+  describe("rulesReadable：读面可信位（读取接口据此把 500 与 404 分开）", () => {
+    it("可读时为 true；端口读不懂（usable:false）时为 false", () => {
+      assert.equal(makeStore().rulesReadable(), true);
+      const scripted = scriptedRulesRepository({ reads: [{ usable: false, cards: [] }] });
+      const store = otherProcess(scripted.repo);
+      // rules() 在不可信读下退空数组：不把这一位暴露出来，"库读不懂"与"库里真没有"
+      // 在调用方眼里同形，读取接口会把读面故障报成"规则不存在"。
+      assert.deepEqual(store.rules(), []);
+      assert.equal(store.rulesReadable(), false);
+    });
   });
 
   describe("持久化", () => {
@@ -2332,10 +2385,12 @@ describe("lesson-store：台账、规则库与度量", () => {
     });
 
     it("ruleAction 没存住 → persist-failed（端点据此回 500），库里仍是旧状态", async () => {
-      facet = stuckFacet([stuckRow("s-arm", "candidate")]);
+      // 同一 id 在本用例里出现三次（造卡、动作、回读），提成局部名免得撞 no-duplicate-string。
+      const armId = "s-arm";
+      facet = stuckFacet([stuckRow(armId, "candidate")]);
       const store = makeStore();
-      assert.equal(await store.ruleAction("s-arm", "arm"), "persist-failed");
-      assert.equal(ruleById(store, "s-arm")?.status, "candidate", "失败写不得冒充已生效");
+      assert.equal(await store.ruleAction(armId, "arm"), OUTCOME_PERSIST_FAILED);
+      assert.equal(ruleById(store, armId)?.status, "candidate", "失败写不得冒充已生效");
       assert.equal(await store.ruleAction("rule-nope", "arm"), "not-found");
       assert.equal(facet.provider.writesOf(SETTINGS_NAMESPACE), 0);
     });
@@ -3922,6 +3977,126 @@ describe("lesson-store：台账、规则库与度量", () => {
       assert.equal(repository.load().usable, false);
       assert.equal(spy.count(), 2, "坏→好→坏：闩在读得懂那次重新武装，第二次坏还要报");
       spy.restore();
+    });
+  });
+
+  describe("证据时间线分页与彻底删除", () => {
+    it("ruleDetail：缺 id 交 null；倒序分页、nextCursor 收到末尾、非法 cursor 归 0", () => {
+      seedRules([
+        cardOf({
+          id: "ev",
+          evidence: [
+            { ts: 1, source: SOURCE_DANGER_GUARD, detail: "最早" },
+            { ts: 2, source: SOURCE_DANGER_GUARD, detail: "中间" },
+            { ts: 3, source: SOURCE_DANGER_GUARD, detail: "最新" },
+          ],
+        }),
+      ]);
+      const store = makeStore();
+      assert.equal(store.ruleDetail("missing", 0, 2), null, "不存在的 id 由调用方回 404");
+
+      const detail = (
+        cursor: number,
+        size: number,
+      ): NonNullable<ReturnType<typeof store.ruleDetail>> => {
+        const page = store.ruleDetail("ev", cursor, size);
+        if (page === null) {
+          throw new Error("ev 这张卡在夹具里，读不到就是回归");
+        }
+        return page;
+      };
+
+      const first = detail(0, 2);
+      assert.deepEqual(
+        first.evidence.map((row) => row.ts),
+        [3, 2],
+        "最新在前",
+      );
+      assert.equal(first.nextCursor, 2, "还有一页");
+
+      const second = detail(2, 2);
+      assert.deepEqual(
+        second.evidence.map((row) => row.ts),
+        [1],
+      );
+      assert.equal(second.nextCursor, null, "末尾即收口");
+
+      const past = detail(9, 2);
+      assert.deepEqual(past.evidence, [], "cursor 越界取到空页，不报错");
+      assert.equal(past.nextCursor, null);
+
+      const negative = detail(-1, 2);
+      assert.deepEqual(
+        negative.evidence.map((row) => row.ts),
+        [3, 2],
+        "负数按从头开始",
+      );
+
+      const zeroSize = detail(0, 0);
+      assert.deepEqual(zeroSize.evidence, [], "页大小 0 = 空页（不是「全部」）");
+      assert.equal(zeroSize.nextCursor, 0, "空页把 cursor 原样交回，由调用方决定要不要继续");
+    });
+
+    it("彻底删除只对已归档/已拒绝的卡开放：其余状态库不动并回 invalid-status", async () => {
+      seedRules([
+        cardOf({ id: "armed", signature: "armed", status: "armed" }),
+        cardOf({ id: "cand", signature: "cand", status: "candidate" }),
+      ]);
+      const store = makeStore();
+      const revisionBefore = facet.revision();
+      assert.equal(await store.ruleAction("armed", "delete"), "invalid-status");
+      assert.equal(await store.ruleAction("cand", "delete"), "invalid-status");
+      assert.deepEqual(
+        store
+          .rules()
+          .map((row) => row.id)
+          .toSorted(),
+        ["armed", "cand"],
+        "被拒的删除不许改卡",
+      );
+      assert.equal(facet.revision(), revisionBefore, "被拒的删除也不许写库（revision 不动）");
+    });
+
+    it("归档/拒绝的卡被删：整卡消失（不是改成 deleted 状态），其余卡原样", async () => {
+      seedRules([
+        cardOf({ id: "arch", signature: "arch", status: "archived" }),
+        cardOf({ id: "rej", signature: "rej", status: "rejected" }),
+        cardOf({ id: "keep", signature: "keep", status: "armed" }),
+      ]);
+      const store = makeStore();
+      assert.equal(await store.ruleAction("arch", "delete"), "persisted");
+      assert.equal(await store.ruleAction("rej", "delete"), "persisted");
+      assert.deepEqual(
+        store.rules().map((row) => row.id),
+        ["keep"],
+      );
+      assert.deepEqual(
+        facet.persisted().map((row) => row.id),
+        ["keep"],
+        "库里只剩未删的那张",
+      );
+    });
+
+    it("不存在的 id 回 not-found；读不懂时同一形状回 persist-failed（不冒充「没有」）", async () => {
+      const store = makeStore();
+      assert.equal(await store.ruleAction("ghost", "delete"), "not-found");
+
+      const scripted = scriptedRulesRepository({
+        reads: [{ usable: false, cards: [], revision: 4 }],
+      });
+      const blind = otherProcess(scripted.repo);
+      assert.equal(await blind.ruleAction("ghost", "delete"), OUTCOME_PERSIST_FAILED);
+      assert.equal(scripted.saves(), 0, "读不懂的那一刻一次都不许写");
+    });
+
+    it("写库被拒时如实回 persist-failed，卡还在（不许把「没删掉」报成删除）", async () => {
+      const scripted = scriptedRulesRepository({
+        reads: [{ cards: [cardOf({ id: "arch", signature: "arch", status: "archived" })] }],
+        outcomes: ["rejected"],
+      });
+      const store = otherProcess(scripted.repo);
+      assert.equal(await store.ruleAction("arch", "delete"), OUTCOME_PERSIST_FAILED);
+      assert.equal(scripted.saves(), 1, "尝试过写，但没成");
     });
   });
 });

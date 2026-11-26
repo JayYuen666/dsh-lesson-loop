@@ -1,33 +1,9 @@
-# Lesson loop
+Field names, defaults and ranges are in the in-card ⓘ help and the bundled README; every setting except the three restart-only values applies without restarting the host.
 
-Turns gate and approval evidence into rules: it promotes the ones that keep recurring, injects the armed ones into new turns, and lets the ones nobody follows decay.
+**The rule list is not a settings grid.** Each rule is acted on from its own card — arm, edit, demote, archive, reject, revive; a batch toggle would let one turn change every rule at once. Archived and rejected cards can be **deleted permanently**; that is irreversible and needs a second click to confirm.
 
-## What the card changes
+**Restart-only values.** `digestTimeoutMs`, `decayIntervalMs` and `maxInjectedRules` live in the `config:` block of this plugin's row and take effect on restart.
 
-- **Loop** — `enabled` (on) off drops the reports, injects nothing, stops the session-end settlement and the periodic decay pass, and disables the standing prompt section and the `/lessons-digest` command. `reportEnabled` (on) is the lesson-entry gate: `report()` and `/lessons-digest` refuse when it is off, while `pass()` accounting and the session-end settlement follow `enabled` alone. `injectEnabled` (on) puts armed rule text into new turns. `sectionEnabled` (on) keeps the fixed system-prompt section that tells the model how to use the rules.
-- **Promotion and decay** — `promoteThreshold` (1–20, default 3) how many reports move a candidate up to awaiting confirmation. `demoteThreshold` (1–50, default 3) how many recurrences arm-demote a rule. `demoteMinSamples` (1–100, default 5) the minimum number of "violation happened and was suppressed" samples before a demotion counts. `demoteRatio` (0.05–1, step 0.05, default 0.5) the ratio that triggers it. `reviveThreshold` (1–20, default 3) how many reports bring a rejected rule back to candidate. `decayDays` (1–365, default 30) how long an armed rule may go un-followed before it is marked undecidable and only a person can move it.
-- **Capacity** — `maxLessonsBytes` (0 = unlimited, hard cap 1 GiB) bounds the event stream on disk, not the rule library. `maxStatementChars` (1–100000, default 4000) bounds one rule statement.
+**Data and integration.** Evidence arrives from danger guard, quality gate and session rescue over the shared lesson bus; rules, lessons and the session ledger share one SQLite database at `$DSH_HOME/data/lesson-loop/lesson-loop.db`. Schema, concurrency and retention details are in the README.
 
-Every setting except the three restart-only values takes effect without restarting the host.
-
-## The rule list is not a settings grid
-
-Each rule is acted on individually from its own card — arm, edit, demote, archive, reject, revive. That is deliberate: a batch toggle would let one turn silently change every rule at once.
-
-## Restart-only values
-
-`digestTimeoutMs` (120000), `decayIntervalMs` (24 h) and `maxInjectedRules` (50) stay off the card as deployment tunings. Set them in the `config:` block of this plugin's row in `cordis.patch.yml`; they take effect on restart.
-
-## What it needs from outside
-
-The evidence comes from other plugins over the shared lesson bus — danger guard, quality gate and session rescue are the useful producers. With none of them installed the loop still learns from `/lessons-digest` and manual reports, but receives no gate evidence. The digest command is registered when the host exposes a command service; without it the command is simply absent and the rest still works.
-
-## Further detail
-
-The rule-store layout, the JSONL fuse that keeps a corrupt line from poisoning the store, and the digest prompt are in the package README (`README.md` / `README.zh-CN.md`).
-
-## Feedback
-
-Issues and pull requests are welcome: [https://github.com/JayYuen666/dsh-lesson-loop/issues](https://github.com/JayYuen666/dsh-lesson-loop/issues).
-
-If a plugin fails to boot, include the dsh host version, the profile install shape, and the browser console line. The `missed the module table` line is especially useful: it tells us whether the shared client row was materialized.
+Issues and pull requests: [https://github.com/JayYuen666/dsh-lesson-loop/issues](https://github.com/JayYuen666/dsh-lesson-loop/issues).
